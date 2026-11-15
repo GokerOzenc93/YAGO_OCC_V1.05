@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import initOpenCascade from 'opencascade.js';
-import { setOC } from 'replicad';
+import { cast, setOC } from 'replicad';
 import {
   type VirtualFace, type FaceDescriptor, type FilletInfo, type SubtractedGeometry, type Shape, shapeById, requestRebuild, vfOfPanel, type RefFacePick,
   type RailStripSpec, type RailExt, type RailExtTarget, type SketchFeature, useAppStore,
@@ -688,6 +688,21 @@ export const createHoleCylinder = async (start: Vec3, dir: Vec3, radius: number,
   const { makeCylinder } = await import('replicad');
   return makeCylinder(radius, length, start, dir);
 };
+/** DERİN kopya (yeni TShape). replicad `clone()` yüzeyseldir (aynı TShape'i paylaşır) ve OCC boolean'ı girdilerinin köşe / kenar
+ *  toleransını YERİNDE büyütebilir: teğete yakın tek bir kesişim gövde katısının toleransını 0 → 7,4 mm yapıyordu (ölçüldü); o andan sonra
+ *  gövdeyle ve ondan türeyen panellerle yapılan kesimler 7 mm içindeki her şeyi "çakışık" sayıp sessizce boş dönüyordu. Uzun ömürlü katı
+ *  (gövde, kardeş panel, önbellekteki katı) boolean'a bu kopyayla girer. Kopyalanamazsa katı aynen döner. */
+export function deepCopyShape<T>(shape: T): T {
+  const oc = window.__ocInstance, w = (shape as any)?.wrapped;
+  if (!oc || !w) return shape;
+  let cp: any = null;
+  try {
+    cp = new oc.BRepBuilderAPI_Copy_2(w, true, false);
+    const out = cast(cp.Shape()) as any;
+    return out?.wrapped && out.constructor === (shape as any).constructor ? out : shape;
+  } catch { return shape; }
+  finally { try { cp?.delete(); } catch { /* sarmalayıcı zaten bırakılmış */ } }
+}
 /** Çok araçlı tek boolean: base − (tüm araçlar) tek BRepAlgoAPI_Cut (SetTools). 16 delikte ardışık cut 958 ms → 119 ms.
  *  Glue (commonFace) kesimi atlıyor → kullanılmaz. `simplify` = eş-düzlem yüzleri birleştir. 3B katı değilse fırlatır. */
 export async function cutWithTools(base: any, tools: any[], simplify = false, /** OCC bulanık toleransı (mm): eş-yüzeyli çiftte sağlam kesim. */ fuzzy = 0): Promise<any> {
