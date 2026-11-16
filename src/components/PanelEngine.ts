@@ -24,6 +24,7 @@ import { edgeGapsOf, isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups }
 import { backGrooveCuttersFor, backNailStampFor, backStackAt, isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
 import { isPlinthVf, plinthBoxOf, plinthHoleCuttersFor, plinthLegBoxes, plinthSetsOf } from './PlinthService';
 import { type HoleCutter, holeCutterBox, panelHoleRecord } from './AccessoryService';
+import { type ConnSolidCut, connectorCutSig, connectorCutsFor } from './ConnectorService';
 
 // Kapak / arkalık levhaları köşe birleşimine girmez, gövdeyle kesilmez, damgalamaz — istisna: arkalığın iç parçası çakma kenarındaki
 // ve sırada sonra gelen gövde panelini basar (backNailStampFor).
@@ -1994,19 +1995,23 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       let grooved: { rp: any; geometry: THREE.BufferGeometry; holes: PanelHole[] } | null = null;
       if (groove && !isSheetPanel(panel)) {
         const boxes = isRotated ? [] : mergeGrooveCutters(backGrooveCuttersFor(panel));
-        const holes = plinthHoleCuttersFor(panel);
-        if (boxes.length || holes.length) {
+        // Bağlayıcılar: bu panelin B (uç + yüz) ya da A (temas yüzü) olduğu birleşimlerin delikleri + pocket / line katıları.
+        const conn = connectorCutsFor(panel);
+        _connSig.set(panel.id, conn.holes.length || conn.solids.length ? `${conn.holes.map(h => h.key).join(';')}~${conn.solids.map(c => c.key).join(';')}` : '');
+        const holes = [...plinthHoleCuttersFor(panel), ...conn.holes];
+        if (boxes.length || holes.length || conn.solids.length) {
           const base = meshed && meshed.shape === rp ? meshed.geometry : convertReplicadToThreeGeometry(rp);
           const pb = localBboxOf(base);
           const liveBoxes = pb ? boxes.filter(c => boxTouches(c, pb)) : [];
           const liveHoles = pb ? holes.filter(c => boxTouches(holeCutterBox(c), pb)) : [];
-          if (pb && (liveBoxes.length || liveHoles.length)) {
-            const sig = `${meshSignature(base)}|${liveBoxes.map(c => c.min.map(round1).join(',') + '/' + c.max.map(round1).join(',')).join(';')}|${liveHoles.map(c => c.key).join(';')}`;
+          const liveSolids = pb ? conn.solids.filter(c => boxTouches(c.box, pb)) : [];
+          if (pb && (liveBoxes.length || liveHoles.length || liveSolids.length)) {
+            const sig = `${meshSignature(base)}|${liveBoxes.map(c => c.min.map(round1).join(',') + '/' + c.max.map(round1).join(',')).join(';')}|${liveHoles.map(c => c.key).join(';')}|${liveSolids.map(c => c.key).join(';')}`;
             const hit = _grooveCache.get(panel.id);
             if (hit && hit.sig === sig) { ungrooved = base; grooved = { rp: hit.rp, geometry: hit.geometry, holes: hit.holes }; }
             else {
               const pbox = { min: [pb.min.x, pb.min.y, pb.min.z] as Vec3, max: [pb.max.x, pb.max.y, pb.max.z] as Vec3 };
-              const cut = await cutByTools(rp, liveBoxes, liveHoles, pbox);
+              const cut = await cutByTools(rp, liveBoxes, liveHoles, pbox, liveSolids);
               if (cut) {
                 const holeRecords = liveHoles.map(c => panelHoleRecord(c, pbox));
                 ungrooved = base; grooved = { rp: cut, geometry: convertReplicadToThreeGeometry(cut), holes: holeRecords };
@@ -2086,9 +2091,20 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
     }
   };
 
+  // BAĞLAYICI DÜZELTMESİ: birleşim, komşunun SON geometrisinden okunur. Panel üretilirken komşusu henüz eski / hiç üretilmemiş olabilir
+  // (tek-panel modu, geçiş içi sıra) → üretim bitince kesici imzası değişen paneller bir kez daha üretilir (ayak izi değişmez, VF'ye dokunulmaz).
+  const connectorFixup = async (vfs: VirtualFace[]) => {
+    for (let round = 0; round < 2; round++) {
+      const st = useAppStore.getState();
+      const stale = children.filter(c => { const p = shapeById(c.id, st.shapes); return !!p && !isSheetPanel(p) && connectorCutSig(p, st) !== (_connSig.get(c.id) ?? ''); });
+      if (!stale.length) return;
+      for (const c of stale) await buildPanel(c, vfs);
+    }
+  };
   if (singleMode) {
     const vfs = useAppStore.getState().virtualFaces.filter(f => (f as any).shapeId === parentShapeId);
     await buildPanel(changedChild!, vfs);
+    await connectorFixup(vfs);
     return;
   }
 
@@ -2105,6 +2121,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       currentVfs = recalc(currentVfs);
     }
   }
+  await connectorFixup(currentVfs);
   // Yalnız regen alanları yazılır — rebuild sürerken kullanıcının değiştirdiği alanlar ezilmez.
   const patches = new Map<string, Partial<VirtualFace>>();
   for (const f of currentVfs) {
@@ -2125,12 +2142,15 @@ const boxTouches = (c: CavityBox, b: THREE.Box3) => !(c.max[0] <= b.min.x + 0.01
   || c.max[1] <= b.min.y + 0.01 || c.min[1] >= b.max.y - 0.01 || c.max[2] <= b.min.z + 0.01 || c.min[2] >= b.max.z - 0.01);
 const _grooveCache = new Map<string, { sig: string; rp: any; geometry: THREE.BufferGeometry; holes: PanelHole[] }>();
 /** Çizim adımı sonucu önbelleği: panel id → (adım öncesi katı + adımlar) imzası. rp null = hiçbir adım uygulanamadı. */
+/** Panelin son üretimde kullandığı bağlayıcı kesici imzası ('' = yok): üretim sonunda güncel imzayla karşılaştırılır (connectorFixup). */
+const _connSig = new Map<string, string>();
 const _sketchCache = new Map<string, { sig: string; rp: any | null; geometry: THREE.BufferGeometry | null; errors: Record<string, string> }>();
 /** Kutu + silindir kesicileri tek boolean'da; sonuç kutusu sapıyorsa / hata verirse ardışık kesime düşer. Hiçbiri kesilemezse null. */
-async function cutByTools(rp: any, boxes: CavityBox[], holes: HoleCutter[], pb: CavityBox): Promise<any | null> {
+async function cutByTools(rp: any, boxes: CavityBox[], holes: HoleCutter[], pb: CavityBox, solids: ConnSolidCut[] = []): Promise<any | null> {
   const tools: any[] = [];
   for (const c of boxes) { try { tools.push(await createReplicadBoxAt(c.min, c.max)); } catch { /* bozuk kutu atlanır */ } }
   for (const c of holes) { try { tools.push(await createHoleCylinder(c.start, c.dir, c.radius, c.length)); } catch { /* bozuk silindir atlanır */ } }
+  for (const c of solids) { try { const t = await c.build(); if (t) tools.push(t); } catch { /* kurulamayan pocket / line atlanır */ } }
   if (!tools.length) return null;
   const sane = (s: any): boolean => {
     try {

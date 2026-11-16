@@ -11,6 +11,7 @@ import { AssemblyPanel } from './components/Assembly';
 import { AccessoriesPanel } from './components/Accessories';
 import { DraftViewport, DrawingPanel } from './components/DraftView';
 import { loadAccessoryLibrary } from './components/AccessoryService';
+import { seedConnectorSample } from './components/ConnectorService';
 // Yan etki: rebuild motoru store'a kaydolur (bkz. store.requestRebuild).
 import './components/PanelEngine';
 import './index.css';
@@ -65,7 +66,8 @@ function App() {
     setOpenCascadeLoading(true);
     initReplicad().catch(err => console.error('Failed to preload OpenCascade:', err)).finally(() => setOpenCascadeLoading(false));
     // Aksesuar kütüphanesi (ayak modelleri / setleri) tarayıcıdan (IndexedDB) yüklenir.
-    loadAccessoryLibrary().catch(err => console.error('Failed to load the accessory library:', err));
+    // Kütüphane yüklenince ilk açılışa özel örnek bağlayıcı ("Connector 1") eklenir.
+    loadAccessoryLibrary().then(seedConnectorSample).catch(err => console.error('Failed to load the accessory library:', err));
   }, []);
 
   const handleOpenCatalog = async () => { await loadCatalogItems(); setCatalogOpen(true); };

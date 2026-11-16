@@ -6,12 +6,13 @@
       yüzüne dayanır). Bu sürümde tanımlar gerçek panellere İŞLENMEZ; kayıt AccessoryService veritabanında (IndexedDB). */
 import * as THREE from 'three';
 import {
-  type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector, type EdgeConnectorRule, type PanelEdgeDir,
-  type PanelGroup, type PanelSurface, type PanelSurfaceRule, type PanelTypeConfig, type PanelTypeId, type PanelTypeRule, type Shape, type VirtualFace,
-  panelOfVf, shapeById, useAppStore,
+  type CavityBox, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector, type ConnectorLayout,
+  type EdgeConnectorRule, type PanelEdgeDir, type PanelGroup, type PanelSurface, type PanelSurfaceRule, type PanelTypeConfig, type PanelTypeId, type PanelTypeRule,
+  type Shape, type VirtualFace, panelOfVf, requestRebuild, shapeById, useAppStore, vfOfPanel,
 } from '../store';
-import { type Vec3, effectiveBodyGeometry, genId, localBboxOf, round1 } from './Geometry';
-import { PANEL_TYPE_CONFIG_ID, libraryDelete, libraryPut } from './AccessoryService';
+import { type Vec3, createHoleCylinder, createPrismTool, effectiveBodyGeometry, footprintGeometry, genId, localBboxOf, panelHasRotation, round1 } from './Geometry';
+import { type HoleCutter, PANEL_TYPE_CONFIG_ID, holeCutterOf, importAccessoryFile, libraryDelete, libraryPut } from './AccessoryService';
+import { isDoorPanel } from './DoorService';
 import { roleOfNormal } from './LegLayout';
 import { bodyFaces, bodyFrontAxis } from './PlinthService';
 import { geoAxes, panelFrameOf } from './PanelSchematics';
@@ -199,10 +200,12 @@ export function setVfPanelType(vfId: string, type: PanelTypeId | null): void {
   const st = useAppStore.getState(), vf = st.virtualFaces.find(f => f.id === vfId); if (!vf) return;
   const auto = groupOfVf(vf, st)?.panelType ?? autoPanelType({ ...vf, panelType: undefined }, st);
   st.updateVirtualFace(vfId, { panelType: type && type !== auto ? type : undefined });
+  refreshConnectorBodies(vf.shapeId);
 }
 /** Raf / dikme grubunun tipi: tüm üyeler (üyede elle seçim varsa o kalır). */
 export function setGroupPanelType(groupId: string, type: PanelTypeId | null): void {
   useAppStore.setState(s => ({ panelGroups: s.panelGroups.map(g => (g.id === groupId ? { ...g, panelType: type ?? undefined } : g)) }));
+  refreshConnectorBodies(useAppStore.getState().panelGroups.find(g => g.id === groupId)?.shapeId);
 }
 
 // ═════════════════════════════════════════════════ 3. KENAR ROLLERİ ═════════════════════════════════════════════════
@@ -234,6 +237,7 @@ export function panelOrientation(panel: Shape | undefined | null, st: St = useAp
 
 // ═════════════════════════════════════════════════ 4. TİP KURALLARI (kenar → bağlayıcı) ═════════════════════════════════════════════════
 const DEFAULT_EDGE_RULE: EdgeConnectorRule = { connectorId: null, mode: 'spacing', start: 50, end: 50, maxSpacing: 400, count: 2 };
+export const DEFAULT_CONNECTOR_LAYOUT: ConnectorLayout = { mode: 'spacing', start: 50, end: 50, maxSpacing: 400, count: 2 };
 const typeRuleOf = (type: PanelTypeId, cfg: PanelTypeConfig = useAppStore.getState().panelTypeConfig): PanelTypeRule => cfg.rules?.[type] ?? { edges: {} };
 export const edgeRuleOf = (type: PanelTypeId, edge: PanelEdgeDir, cfg?: PanelTypeConfig): EdgeConnectorRule => ({ ...DEFAULT_EDGE_RULE, ...(typeRuleOf(type, cfg).edges[edge] ?? {}) });
 /** Kenar boyunca bağlayıcı noktaları (kenarın başından mm). Kenar uç mesafelerine sığmıyorsa tek bağlayıcı ortada. */
@@ -247,6 +251,7 @@ export function edgeConnectorPositions(rule: Pick<EdgeConnectorRule, 'mode' | 's
 }
 async function savePanelTypeConfig(cfg: PanelTypeConfig): Promise<void> {
   useAppStore.getState().setPanelTypeConfig(cfg);
+  refreshConnectorBodies();
   await libraryPut('settings', { id: PANEL_TYPE_CONFIG_ID, ...cfg });
 }
 /** Kenar kuralını yazar; `patch` null → kenardan bağlayıcı kalkar. */
@@ -296,7 +301,8 @@ export function connSurfaceExtent(surface: ConnSurface, tB: number): { x0: numbe
 /** Yüzeyin altındaki malzeme kalınlığı (delik / operasyon en çok bu kadar derin; ≥ ise boydan boya). */
 export const connSurfaceDepth = (surface: ConnSurface, tA: number, tB: number): number => (surface === 'bFace' ? tB : surface === 'bEdge' ? CONN_REP.bLen : tA);
 
-export const newConnector = (name = 'Connector'): Connector => ({ id: genId('conn'), name, holes: [], ops: [], parts: [], tA: CONN_DEFAULT_T, tB: CONN_DEFAULT_T, createdAt: Date.now() });
+export const newConnector = (name = 'Connector'): Connector =>
+  ({ id: genId('conn'), name, holes: [], ops: [], parts: [], tA: CONN_DEFAULT_T, tB: CONN_DEFAULT_T, layout: { ...DEFAULT_CONNECTOR_LAYOUT }, createdAt: Date.now() });
 export const newConnHole = (init: Partial<ConnHole> = {}): ConnHole => ({ id: genId('ch'), surface: 'bFace', along: 0, across: 0, diameter: 8, depth: 12, ...init });
 export const newConnOp = (surface: ConnSurface, type: ConnOpType = 'pocket', init: Partial<ConnOp> = {}): ConnOp =>
   ({ id: genId('cop'), surface, type, depth: 5, width: 6, shapes: [], ...init });
@@ -318,12 +324,14 @@ export const connOpSummary = (op: ConnOp): string => {
 };
 export async function saveConnector(c: Connector): Promise<void> {
   useAppStore.getState().upsertConnector(c);
+  refreshConnectorBodies();
   await libraryPut('connectors', c);
 }
 /** Bağlayıcıyı siler; onu kullanan kenar kuralları boşalır. */
 export async function deleteConnector(id: string): Promise<void> {
   const st = useAppStore.getState();
   st.removeConnector(id);
+  refreshConnectorBodies();
   await libraryDelete('connectors', id);
   const cfg = st.panelTypeConfig, rules: PanelTypeConfig['rules'] = {};
   let touched = false;
@@ -337,3 +345,272 @@ export async function deleteConnector(id: string): Promise<void> {
 /** Bağlayıcıyı kullanan kenar sayısı (liste rozeti). */
 export const connectorUseCount = (id: string, cfg: PanelTypeConfig = useAppStore.getState().panelTypeConfig): number =>
   Object.values(cfg.rules ?? {}).reduce((n, r) => n + Object.values(r?.edges ?? {}).filter(e => e?.connectorId === id).length, 0);
+
+// ═════════════════════════════════════════════════ 6. BİRLEŞİMLER: bağlayıcının gerçek panellere atılması ═════════════════════════════════════════════════
+/* BİRLEŞİM = B panelinin UCU (kalınlık yüzü) A panelinin geniş yüzüne dayanıyor. B'nin tipinde o kenar için bağlayıcı tanımlıysa temas
+   boyunca bağlayıcı noktaları dizilir; her noktada bağlayıcının delikleri / operasyonları B'ye (yüz + uç) ve A'ya (temas yüzü) kesilir, modeli
+   sahneye konur. Yalnız eksene hizalı (dönmemiş, düz) paneller; kapaklar birleşime girmez. Okunan geometri kesilmemiş olandır (ayak izi). */
+export interface PanelJoint {
+  key: string; bId: string; aId: string; connector: Connector;
+  /** Temas düzleminde, B kalınlığının ortasında, temasın BAŞLANGIÇ ucundaki nokta (gövde-yerel). */
+  o: Vec3;
+  /** Birleşim çizgisi yönü (başlangıç → bitiş) · A'nın yüzünden B'nin içine · B'nin işlenen geniş yüzünün dış yönü. */
+  along: Vec3; nIn: Vec3; t: Vec3;
+  /** Temas boyu · B ve A kalınlığı · bağlayıcı noktaları (başlangıçtan mm). */
+  length: number; tB: number; tA: number; positions: number[];
+}
+type Range3 = { min: Vec3; max: Vec3; n: number };
+interface SlabInfo { box: THREE.Box3; size: Vec3; planes: Array<[Range3, Range3]> }
+const _slabCache = new WeakMap<THREE.BufferGeometry, SlabInfo | null>();
+/** Levhanın kutusu + kutunun altı düzleminin her birindeki köşelerin kapsamı (gerçek uç yüzü / geniş yüz; çentikli panelde kutudan küçük). */
+function slabInfo(geo: THREE.BufferGeometry | undefined): SlabInfo | null {
+  if (!geo) return null;
+  if (_slabCache.has(geo)) return _slabCache.get(geo)!;
+  const box = localBboxOf(geo), pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined;
+  let info: SlabInfo | null = null;
+  if (box && pos) {
+    const mk = (): Range3 => ({ min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity], n: 0 });
+    const planes: Array<[Range3, Range3]> = [[mk(), mk()], [mk(), mk()], [mk(), mk()]];
+    const lo = box.min.toArray() as Vec3, hi = box.max.toArray() as Vec3, v: Vec3 = [0, 0, 0];
+    for (let i = 0; i < pos.count; i++) {
+      v[0] = pos.getX(i); v[1] = pos.getY(i); v[2] = pos.getZ(i);
+      for (let a = 0; a < 3; a++) for (const side of [0, 1] as const) {
+        if (Math.abs(v[a] - (side ? hi[a] : lo[a])) > 0.3) continue;
+        const r = planes[a][side]; r.n++;
+        for (let k = 0; k < 3; k++) { if (v[k] < r.min[k]) r.min[k] = v[k]; if (v[k] > r.max[k]) r.max[k] = v[k]; }
+      }
+    }
+    info = { box, size: [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]], planes };
+  }
+  _slabCache.set(geo, info);
+  return info;
+}
+const unit = (axis: number, sign: number): Vec3 => { const v: Vec3 = [0, 0, 0]; v[axis] = sign; return v; };
+const overlap = (a0: number, a1: number, b0: number, b1: number): [number, number] => [Math.max(a0, b0), Math.min(a1, b1)];
+/** B yüzü işlemlerinin varsayılan tarafı = GÖRÜNMEYEN yüz: üst panel / üst kayıtta üst · öteki yataylarda alt · önsel panellerde arka;
+ *  yan panellerde gövdenin dışına bakan yüz (dikme: sol). Kenar kuralındaki `flipFace` öteki yüze çevirir. */
+function hiddenFaceRole(type: PanelTypeId, plane: Exclude<PanelPlane, 'any'>, body: Shape, box: THREE.Box3, thin: number, st: St): PanelEdgeDir {
+  if (plane === 'horizontal') return type === 'top' || type.startsWith('top') ? 'top' : 'bottom';
+  if (plane === 'frontal') return 'rear';
+  const bb = bodyBoxOf(body), c = (box.min.getComponent(thin) + box.max.getComponent(thin)) / 2, bc = bb ? (bb.min.getComponent(thin) + bb.max.getComponent(thin)) / 2 : c;
+  return Math.abs(c - bc) < 1 ? 'left' : roleOfDir(body, unit(thin, c > bc ? 1 : -1), st);
+}
+/** Kenar kuralının geçerli dizilimi: kenara özel değilse bağlayıcının kendi dizilimi. */
+export function ruleLayout(rule: EdgeConnectorRule, conn: Connector | undefined): ConnectorLayout {
+  const { mode, start, end, maxSpacing, count } = rule.custom ? rule : { ...DEFAULT_CONNECTOR_LAYOUT, ...(conn?.layout ?? {}) };
+  return { mode, start, end, maxSpacing, count };
+}
+const _jointCache = new Map<string, { sig: string; joints: PanelJoint[] }>();
+/** Gövdenin tüm birleşimleri (kural + temas). Sonuç panel geometrileri / tipler / kütüphane değişene kadar saklanır. */
+export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): PanelJoint[] {
+  const cfg = st.panelTypeConfig;
+  if (!st.connectors.length || !Object.values(cfg.rules ?? {}).some(r => Object.values(r?.edges ?? {}).some(e => e?.connectorId))) return [];
+  const body = shapeById(bodyId, st.shapes); if (!body) return [];
+  const slabs = st.shapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === bodyId && !isDoorPanel(s) && !s.parameters?.curved && !panelHasRotation(s))
+    .map(p => {
+      const vf = vfOfPanel(p, st.virtualFaces), geo = footprintGeometry(p), info = slabInfo(geo); if (!vf || !info) return null;
+      // Kalınlık ekseni: VF normali (dar şeritte en küçük ölçü kalınlık olmayabilir); belirsizse en küçük ölçü.
+      const na = vf.normal.map(Math.abs), byN = na.indexOf(Math.max(...na));
+      const thin = na[byN] > 0.9 ? byN : info.size.indexOf(Math.min(...info.size));
+      return { p, vf, info, thin, uuid: geo!.uuid, type: panelTypeOf(vf, st) };
+    }).filter((x): x is NonNullable<typeof x> => !!x);
+  const sig = `${slabs.map(s => `${s.p.id}:${s.uuid}:${s.type}`).join('|')}#${JSON.stringify(cfg.rules ?? {})}#${st.connectors.map(c => `${c.id}:${JSON.stringify(c.layout ?? 0)}`).join(',')}#${bodyFrontAxis(body, st).facing}`;
+  const hit = _jointCache.get(bodyId);
+  if (hit && hit.sig === sig) {
+    // Bağlayıcının içeriği (delik / model) değişmiş olabilir: nesne güncel listeden yeniden bağlanır.
+    return hit.joints.map(j => ({ ...j, connector: st.connectors.find(c => c.id === j.connector.id) ?? j.connector }));
+  }
+  const joints: PanelJoint[] = [];
+  for (const B of slabs) {
+    const edges = B.type ? cfg.rules?.[B.type]?.edges : undefined;
+    if (!B.type || !edges || !Object.values(edges).some(e => e?.connectorId)) continue;
+    const plane = PLANE_OF_ROLE[roleOfDir(body, unit(B.thin, 1), st)];
+    const faceRoles: [PanelEdgeDir, PanelEdgeDir] = [roleOfDir(body, unit(B.thin, 1), st), roleOfDir(body, unit(B.thin, -1), st)];
+    for (const i of [0, 1, 2]) if (i !== B.thin) for (const s of [1, -1]) {
+      const role = roleOfDir(body, unit(i, s), st), rule = edges[role];
+      const conn = rule?.connectorId ? st.connectors.find(c => c.id === rule.connectorId) : undefined;
+      if (!rule || !conn) continue;
+      const end = B.info.planes[i][s > 0 ? 1 : 0]; if (end.n < 3) continue;
+      const c = s > 0 ? B.info.box.max.getComponent(i) : B.info.box.min.getComponent(i), a = [0, 1, 2].find(k => k !== i && k !== B.thin)!;
+      const tB = end.max[B.thin] - end.min[B.thin];
+      // Dizilim yönü: kenarın bitiş ucunun rolüne bakan eksen yönü (derinlikte önden arkaya …).
+      const endRole = EDGE_ENDS[plane][role]?.[1];
+      const aSign = roleOfDir(body, unit(a, 1), st) === endRole ? 1 : roleOfDir(body, unit(a, -1), st) === endRole ? -1 : 1;
+      const want = hiddenFaceRole(B.type, plane, body, B.info.box, B.thin, st);
+      const tSign = (faceRoles[0] === want ? 1 : faceRoles[1] === want ? -1 : 1) * (rule.flipFace ? -1 : 1);
+      for (const A of slabs) {
+        if (A === B || A.thin !== i) continue;
+        const faceAt = s > 0 ? A.info.box.min.getComponent(i) : A.info.box.max.getComponent(i);
+        if (Math.abs(faceAt - c) > 0.6) continue;
+        const face = A.info.planes[i][s > 0 ? 0 : 1]; if (face.n < 3) continue;
+        const tOv = overlap(end.min[B.thin], end.max[B.thin], face.min[B.thin], face.max[B.thin]), aOv = overlap(end.min[a], end.max[a], face.min[a], face.max[a]);
+        if (tOv[1] - tOv[0] < tB * 0.6 || aOv[1] - aOv[0] < 10) continue;
+        const o: Vec3 = [0, 0, 0];
+        o[i] = c; o[B.thin] = (end.min[B.thin] + end.max[B.thin]) / 2; o[a] = aSign > 0 ? aOv[0] : aOv[1];
+        const length = round1(aOv[1] - aOv[0]);
+        joints.push({
+          key: `${B.p.id}|${role}|${A.p.id}`, bId: B.p.id, aId: A.p.id, connector: conn, o, along: unit(a, aSign), nIn: unit(i, -s), t: unit(B.thin, tSign),
+          length, tB: round1(tB), tA: round1(A.info.size[i]), positions: edgeConnectorPositions(ruleLayout(rule, conn), length),
+        });
+      }
+    }
+  }
+  if (_jointCache.size > 40) _jointCache.clear();
+  _jointCache.set(bodyId, { sig, joints });
+  return joints;
+}
+/** Bağlayıcı yüzey noktası → gövde-yerel konum + yüzeyin DIŞ normali (`s` = birleşim başlangıcından bağlayıcı noktasına mm). */
+export function jointSurfacePoint(j: PanelJoint, s: number, surface: ConnSurface, along: number, across: number): { pos: Vec3; normal: Vec3 } {
+  const k = s + along, off = surface === 'bFace' ? j.tB / 2 : across, into = surface === 'bFace' ? across : 0;
+  const pos = [0, 1, 2].map(x => j.o[x] + j.along[x] * k + j.t[x] * off + j.nIn[x] * into) as Vec3;
+  return { pos, normal: surface === 'bFace' ? j.t : surface === 'bEdge' ? (j.nIn.map(v => -v) as Vec3) : j.nIn };
+}
+/** Kesici katı (pocket / line): anahtar (önbellek imzası), kaba kutu (eleme) ve tembel kurucu. */
+export interface ConnSolidCut { key: string; box: CavityBox; build: () => Promise<unknown> }
+const CONN_MOUTH = 1;
+const keyOf = (...v: Array<number | string | Vec3>) => v.map(x => (Array.isArray(x) ? x.map(round1).join(',') : typeof x === 'number' ? round1(x) : x)).join('|');
+function boxAround(pts: Vec3[], pad: number): CavityBox {
+  const b = new THREE.Box3().setFromPoints(pts.map(p => new THREE.Vector3(...p))).expandByScalar(pad);
+  return { min: b.min.toArray() as Vec3, max: b.max.toArray() as Vec3 };
+}
+/** Panelin bağlayıcı kesicileri: B olduğu birleşimlerde yüz + uç işlemleri, A olduğu birleşimlerde temas yüzü işlemleri.
+ *  Delikler `HoleCutter` (panelin delik kaydına girer); pocket / line katıları ayrı. Derinlik malzemeyi aşarsa boydan boya. */
+export function connectorCutsFor(panel: Shape, st: St = useAppStore.getState()): { holes: HoleCutter[]; solids: ConnSolidCut[] } {
+  const out = { holes: [] as HoleCutter[], solids: [] as ConnSolidCut[] };
+  const bodyId = panel.parameters?.parentShapeId as string | undefined; if (!bodyId) return out;
+  for (const j of bodyJoints(bodyId, st)) {
+    const isB = j.bId === panel.id, isA = j.aId === panel.id; if (!isB && !isA) continue;
+    const mine = (s: ConnSurface) => (s === 'aFace' ? isA : isB);
+    const limitOf = (s: ConnSurface) => (s === 'bFace' ? j.tB : s === 'aFace' ? j.tA : Infinity);
+    const depthOf = (s: ConnSurface, d: number) => (d >= limitOf(s) - 1e-6 ? limitOf(s) + CONN_MOUTH : d);
+    j.positions.forEach((s, k) => {
+      for (const h of j.connector.holes) {
+        if (!mine(h.surface) || !(h.diameter > 0) || !(h.depth > 0)) continue;
+        const sp = jointSurfacePoint(j, s, h.surface, h.along, h.across), dir = sp.normal.map(v => -v) as Vec3;
+        out.holes.push(holeCutterOf({ center: sp.pos, dir, radius: h.diameter / 2, depth: depthOf(h.surface, h.depth) }, [0, 0, 0], `${j.key}#${k}:${h.id}`,
+          { kind: 'connector', connectorId: j.connector.id, holeId: h.id, joint: j.key, index: k }));
+      }
+      for (const op of j.connector.ops) {
+        if (!mine(op.surface) || !(op.depth > 0)) continue;
+        const depth = depthOf(op.surface, op.depth), at = (x: number, y: number) => jointSurfacePoint(j, s, op.surface, x, y);
+        const nOut = at(0, 0).normal, dir = nOut.map(v => -v) as Vec3;
+        const lifted = (p: Vec3): Vec3 => [p[0] + nOut[0] * CONN_MOUTH, p[1] + nOut[1] * CONN_MOUTH, p[2] + nOut[2] * CONN_MOUTH];
+        const cyl = (c: { x: number; y: number }, r: number) => {
+          const p = at(c.x, c.y).pos;
+          out.solids.push({ key: keyOf('c', p, r, depth, dir), box: boxAround([lifted(p), [p[0] + dir[0] * depth, p[1] + dir[1] * depth, p[2] + dir[2] * depth]], r),
+            build: () => createHoleCylinder(lifted(p), dir, r, depth + CONN_MOUTH) });
+        };
+        const prism = (poly: Array<{ x: number; y: number }>) => {
+          const pts = poly.map(q => at(q.x, q.y).pos);
+          out.solids.push({ key: keyOf('p', ...pts, depth, dir), box: boxAround([...pts.map(lifted), ...pts.map(p => [p[0] + dir[0] * depth, p[1] + dir[1] * depth, p[2] + dir[2] * depth] as Vec3)], 0.01),
+            build: () => createPrismTool(pts, nOut, CONN_MOUTH, depth) });
+        };
+        op.shapes.forEach(sh => {
+          if (op.type === 'pocket') {
+            if (sh.t === 'circle') cyl(sh.c, sh.r);
+            else if (sh.t === 'pline' && connShapeClosed(sh) && sh.v.length >= 3) prism(sh.v);
+            return;
+          }
+          // LINE: takım yolu — her doğru parçası `width` eninde dikdörtgen, köşe / uçlarda takım çapında silindir; dairede halka.
+          const w = op.width; if (!(w > 0)) return;
+          if (sh.t === 'circle') {
+            const p = at(sh.c.x, sh.c.y).pos, rOut = sh.r + w / 2, rIn = sh.r - w / 2;
+            out.solids.push({ key: keyOf('r', p, rOut, rIn, depth, dir), box: boxAround([lifted(p), [p[0] + dir[0] * depth, p[1] + dir[1] * depth, p[2] + dir[2] * depth]], rOut),
+              build: async () => {
+                const outer = await createHoleCylinder(lifted(p), dir, rOut, depth + CONN_MOUTH);
+                return rIn > 0.05 ? outer.cut(await createHoleCylinder(lifted(p), dir, rIn, depth + CONN_MOUTH)) : outer;
+              } });
+            return;
+          }
+          const pts = connShapePoints(sh);
+          for (let q = 0; q + 1 < pts.length; q++) {
+            const a = pts[q], b = pts[q + 1], dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy); if (l < 1e-6) continue;
+            const ox = (-dy / l) * (w / 2), oy = (dx / l) * (w / 2);
+            prism([{ x: a.x + ox, y: a.y + oy }, { x: b.x + ox, y: b.y + oy }, { x: b.x - ox, y: b.y - oy }, { x: a.x - ox, y: a.y - oy }]);
+          }
+          (connShapeClosed(sh) ? pts.slice(0, -1) : pts).forEach(c => cyl(c, w / 2));
+        });
+      }
+    });
+  }
+  return out;
+}
+/** Panelin bağlayıcı kesicilerinin imzası: motor, son üretimde kullandığıyla karşılaştırıp bayat paneli yeniden üretir. */
+export function connectorCutSig(panel: Shape, st: St = useAppStore.getState()): string {
+  const c = connectorCutsFor(panel, st);
+  return c.holes.length || c.solids.length ? `${c.holes.map(h => h.key).join(';')}~${c.solids.map(s => s.key).join(';')}` : '';
+}
+export interface ConnPartInstance { key: string; modelId: string; layerId?: string | null; pos: Vec3; quat: [number, number, number, number] }
+/** Gövdedeki bağlayıcı modelleri (sahne çizimi): her birleşim noktasında bağlayıcının modelleri, editördeki duruşuyla. */
+export function connectorPartInstances(bodyId: string, st: St = useAppStore.getState()): ConnPartInstance[] {
+  const out: ConnPartInstance[] = [], up = new THREE.Vector3(0, 1, 0);
+  for (const j of bodyJoints(bodyId, st)) {
+    if (!j.connector.parts.length) continue;
+    // Temsili çerçeve (x = nIn, y = t, z = −along) → gövde-yerel dönüş; sol-elli üçlüde z = x × y alınır (ayna yerine dönüş).
+    const X = new THREE.Vector3(...j.nIn), Y = new THREE.Vector3(...j.t), frame = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(X, Y, new THREE.Vector3().crossVectors(X, Y)));
+    j.positions.forEach((s, k) => j.connector.parts.forEach(part => {
+      const sp = jointSurfacePoint(j, s, part.surface, part.along, part.across), n = new THREE.Vector3(...sp.normal);
+      const rep = connSurfacePoint(part.surface, 0, 0, j.tB).normal;
+      const q = new THREE.Quaternion().setFromUnitVectors(up, new THREE.Vector3(...rep).multiplyScalar(part.flip ? -1 : 1))
+        .multiply(new THREE.Quaternion().setFromAxisAngle(up, (part.spin * Math.PI) / 180)).premultiply(frame);
+      const p = new THREE.Vector3(...sp.pos).addScaledVector(n, -part.inset);
+      out.push({ key: `${j.key}#${k}:${part.id}`, modelId: part.modelId, layerId: part.layerId, pos: [p.x, p.y, p.z], quat: [q.x, q.y, q.z, q.w] });
+    }));
+  }
+  return out;
+}
+let _refreshTimer: ReturnType<typeof setTimeout> | null = null;
+/** Kural / bağlayıcı / tip değişti: panelli gövdeler yeniden üretilir (delikler ve modeller güncellenir). Art arda değişiklikler tek seferde. */
+export function refreshConnectorBodies(onlyBodyId?: string): void {
+  if (_refreshTimer) clearTimeout(_refreshTimer);
+  _refreshTimer = setTimeout(() => {
+    _refreshTimer = null;
+    const st = useAppStore.getState();
+    const ids = new Set(st.shapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId).map(s => s.parameters.parentShapeId as string));
+    for (const id of ids) if (!onlyBodyId || id === onlyBodyId) void requestRebuild(id);
+  }, 120);
+}
+
+// ═════════════════════════════════════════════════ 7. ÖRNEK BAĞLAYICI ═════════════════════════════════════════════════
+/** Silindir STL (z yukarı, taban z = 0) — örnek bağlayıcının modelleri dosyasız üretilir. */
+function cylinderStl(name: string, r: number, h: number, seg = 36): string {
+  const f = (a: number[], b: number[], c: number[]) => `facet normal 0 0 0\nouter loop\nvertex ${a.join(' ')}\nvertex ${b.join(' ')}\nvertex ${c.join(' ')}\nendloop\nendfacet\n`;
+  let out = `solid ${name}\n`;
+  for (let i = 0; i < seg; i++) {
+    const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
+    const p0 = [r * Math.cos(a0), r * Math.sin(a0)], p1 = [r * Math.cos(a1), r * Math.sin(a1)];
+    out += f([0, 0, 0], [p1[0], p1[1], 0], [p0[0], p0[1], 0]) + f([0, 0, h], [p0[0], p0[1], h], [p1[0], p1[1], h])
+      + f([p0[0], p0[1], 0], [p1[0], p1[1], 0], [p1[0], p1[1], h]) + f([p0[0], p0[1], 0], [p1[0], p1[1], h], [p0[0], p0[1], h]);
+  }
+  return `${out}endsolid ${name}\n`;
+}
+/** ÖRNEK kam bağlayıcı (minifix düzeni): B yüzünde Ø15 × 12,5 kam yuvası (birleşimden 34) · B ucunda Ø8 × 34 mil kanalı · A yüzünde Ø5 × 11 mil deliği;
+ *  modeller: kam (yuvasında) + mil. Model üretilemezse yalnız deliklerle kaydedilir. */
+export async function addSampleConnector(name = 'Connector 1'): Promise<Connector> {
+  const c = newConnector(name);
+  c.holes = [
+    newConnHole({ surface: 'bFace', along: 0, across: 34, diameter: 15, depth: 12.5 }),
+    newConnHole({ surface: 'bEdge', along: 0, across: 0, diameter: 8, depth: 34 }),
+    newConnHole({ surface: 'aFace', along: 0, across: 0, diameter: 5, depth: 11 }),
+  ];
+  try {
+    const metal = useAppStore.getState().accessoryLayers.find(l => l.name.toLowerCase() === 'metal')?.id ?? null;
+    const stl = (file: string, r: number, h: number) => importAccessoryFile(new File([cylinderStl(file, r, h)], `${file}.stl`, { type: 'model/stl' }), 'mm', 'z');
+    const cam = await stl('cam-15', 7.5, 12), bolt = await stl('bolt-5x45', 2.5, 45);
+    c.parts = [
+      newConnPart(cam.id, { surface: 'bFace', along: 0, across: 34, inset: 12.5, layerId: metal }),
+      newConnPart(bolt.id, { surface: 'aFace', along: 0, across: 0, inset: 11, layerId: metal }),
+    ];
+  } catch (err) { console.warn('[YAGO][BAĞLAYICI] örnek model üretilemedi, yalnız delikler:', err); }
+  await saveConnector(c);
+  return c;
+}
+const SAMPLE_SEEDED_KEY = 'yago.accessories.connectorSampleSeeded';
+/** İlk açılışta bir kez: "Connector 1" yoksa örnek bağlayıcı eklenir (silinirse geri gelmez). */
+export async function seedConnectorSample(): Promise<void> {
+  try {
+    if (localStorage.getItem(SAMPLE_SEEDED_KEY)) return;
+    localStorage.setItem(SAMPLE_SEEDED_KEY, '1');
+    if (!useAppStore.getState().connectors.some(c => c.name.trim().toLowerCase() === 'connector 1')) await addSampleConnector();
+  } catch (err) { console.warn('[YAGO][BAĞLAYICI] örnek bağlayıcı eklenemedi:', err); }
+}

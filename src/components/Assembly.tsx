@@ -48,7 +48,7 @@ import {
 } from './PanelGroupService';
 import { confirmBodyPanelPlacement } from './Scene';
 import {
-  edgeConnectorPositions, panelOrientation, panelTypeChoice, panelTypeCode, panelTypeLabel, panelTypeShort, setGroupPanelType, setVfPanelType, surfaceRuleOf,
+  bodyJoints, panelOrientation, panelTypeChoice, panelTypeCode, panelTypeLabel, panelTypeShort, setGroupPanelType, setVfPanelType, surfaceRuleOf,
 } from './ConnectorService';
 import { useDraft as useSketch } from './Draft';
 import { beginFacePick, deleteSketch, editSketch, exitFace, sketchFeaturesOf } from './DraftView';
@@ -2300,6 +2300,9 @@ function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefin
   const c = panelTypeChoice(vf);
   if (!c) return null;
   const o = panelOrientation(panel);
+  // Kenara GERÇEKTEN atılan bağlayıcı sayısı: bu panelin o kenarıyla dayandığı birleşimlerden.
+  const joints = panel ? bodyJoints(vf.shapeId).filter(j => j.bId === panel.id) : [];
+  const placed = (role: PanelEdgeDir) => joints.filter(j => j.key.split('|')[1] === role).reduce((n, j) => n + j.positions.length, 0);
   const opts = c.options.map(t => [t, t === c.auto ? `${panelTypeLabel(t)} · auto` : panelTypeLabel(t)] as [PanelTypeId, string]);
   const edges = o ? [...o.edges].sort((a, b) => EDGE_ORDER.indexOf(a.role) - EDGE_ORDER.indexOf(b.role)) : [];
   return (
@@ -2313,9 +2316,9 @@ function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefin
           <div className="flex items-center gap-[3px]">
             {edges.map((e, i) => {
               const rule = cfg.rules?.[c.current]?.edges[e.role], conn = rule?.connectorId ? connectors.find(x => x.id === rule.connectorId) : undefined;
-              const n = conn ? edgeConnectorPositions(rule!, e.length).length : 0;
+              const n = conn ? placed(e.role) : 0;
               return (
-                <span key={i} title={`${EDGE_LABEL[e.role]} edge · ${fmt1(e.length)} mm${conn ? ` · ${n} × ${conn.name} where it butts against a panel` : ' · no connector'}`}
+                <span key={i} title={`${EDGE_LABEL[e.role]} edge · ${fmt1(e.length)} mm${conn ? (n ? ` · ${n} × ${conn.name}` : ` · ${conn.name} — nothing placed: this edge does not butt against a panel face`) : ' · no connector'}`}
                   className={`h-[18px] px-[5px] rounded-[5px] text-[9.5px] font-semibold flex items-center gap-[3px] ring-1
                     ${conn ? 'bg-[#fff4ec] text-[#c2410c] ring-[#f3c7a5]' : 'bg-white text-stone-500 ring-[#e3ddd4]'}`}>
                   {EDGE_LABEL[e.role]}{conn && <span className="tabular-nums font-bold">{n}</span>}

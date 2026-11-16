@@ -460,7 +460,10 @@ export type PanelTypeId =
 export type PanelSurface = PanelEdgeDir | 'shelf' | 'divider' | 'back';
 /** Kenar boyunca dizilim: 'spacing' = uçlardan mesafe + azami aralık (adet otomatik) · 'count' = sabit adet, eşit dağıtılır. */
 export type EdgeLayoutMode = 'spacing' | 'count';
-export interface EdgeConnectorRule { connectorId: string | null; mode: EdgeLayoutMode; start: number; end: number; maxSpacing: number; count: number }
+export interface ConnectorLayout { mode: EdgeLayoutMode; start: number; end: number; maxSpacing: number; count: number }
+/** Kenar kuralı. Dizilim normalde BAĞLAYICININ kendi diziliminden gelir; `custom` → bu kenara özel (alttaki alanlar).
+ *  `flipFace` → B yüzündeki işlemler panelin öteki geniş yüzüne (varsayılan: görünmeyen yüz — bkz. ConnectorService.hiddenFaceRole). */
+export interface EdgeConnectorRule extends ConnectorLayout { connectorId: string | null; custom?: boolean; flipFace?: boolean }
 /** Tip kuralı: kenar rolü (ön / arka / üst / alt / sol / sağ) → o kenar başka panele dayanıyorsa atılacak bağlayıcı. */
 export interface PanelTypeRule { edges: Partial<Record<PanelEdgeDir, EdgeConnectorRule>> }
 export interface PanelSurfaceRule { allowed: PanelTypeId[]; def: PanelTypeId }
@@ -480,7 +483,11 @@ export interface ConnOp { id: string; surface: ConnSurface; type: ConnOpType; de
 /** Bağlayıcı modeli (aksesuar dosyası): delik gibi yüzeye yerleşir; modelin +Y'si yüzeyden DIŞARI bakar (`flip` → içeri), `inset` malzemeye gömme,
  *  `spin` yüzey normali etrafında dönüş (°). Deliklerden bağımsızdır. */
 export interface ConnPart { id: string; modelId: string; surface: ConnSurface; along: number; across: number; inset: number; spin: number; flip?: boolean; layerId?: string | null }
-export interface Connector { id: string; name: string; holes: ConnHole[]; ops: ConnOp[]; parts: ConnPart[]; tA?: number; tB?: number; createdAt: number }
+export interface Connector {
+  id: string; name: string; holes: ConnHole[]; ops: ConnOp[]; parts: ConnPart[]; tA?: number; tB?: number; createdAt: number;
+  /** Birleşim boyunca dizilim (kenar kuralı özel değilse bu kullanılır). */
+  layout?: ConnectorLayout;
+}
 
 export const DEFAULT_QUICK_BODY: QuickBodyConfig = {
   base: 'plinth', thickness: 18,

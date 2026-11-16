@@ -597,7 +597,7 @@ export function legHolesAt(leg: Pick<LegModel, 'holes'>, parts: LegPartPlacement
 const unit = (v: Vec3): Vec3 => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
 /** KESİCİ SİLİNDİR (gövde-yerel; PanelEngine): `start` = ağız − dir·mouth, `length` = mouth + depth. `key` önbellek imzası. */
 export interface HoleCutter { id: string; key: string; start: Vec3; dir: Vec3; radius: number; length: number; mouth: number; source: PanelHole['source'] }
-export function holeCutterOf(at: LegHoleAt, origin: Vec3, id: string, source: PanelHole['source'], mouth = HOLE_MOUTH): HoleCutter {
+export function holeCutterOf(at: Pick<LegHoleAt, 'center' | 'dir' | 'radius' | 'depth'>, origin: Vec3, id: string, source: PanelHole['source'], mouth = HOLE_MOUTH): HoleCutter {
   const start: Vec3 = [origin[0] + at.center[0] - at.dir[0] * mouth, origin[1] + at.center[1] - at.dir[1] * mouth, origin[2] + at.center[2] - at.dir[2] * mouth];
   const length = mouth + at.depth;
   const key = `${start.map(round1).join(',')}|${at.dir.map(v => v.toFixed(3)).join(',')}|${round1(at.radius)}|${round1(length)}`;

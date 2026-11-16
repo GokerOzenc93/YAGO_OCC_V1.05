@@ -7,9 +7,9 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import * as THREE from 'three';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { ContactShadows, GizmoHelper, Grid, Html, Line, OrbitControls, useGizmoContext } from '@react-three/drei';
-import { Plus, Trash2, Upload, Pencil, RotateCcw, Drill, Check, Crosshair, Magnet, Maximize2, Minus, MousePointer2, PenLine, Spline, Square, BoxSelect, Circle as CircleIcon } from 'lucide-react';
+import { Plus, Trash2, Upload, Pencil, RotateCcw, Drill, Check, ChevronDown, FlaskConical, Crosshair, Magnet, Maximize2, Minus, MousePointer2, PenLine, Spline, Square, BoxSelect, Circle as CircleIcon } from 'lucide-react';
 import {
-  type AccessoryLayer, type AccessoryUnit, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector,
+  type AccessoryLayer, type AccessoryUnit, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector, type ConnectorLayout,
   type EdgeConnectorRule, type EdgeLayoutMode, type HoleSpec, type LegModel, type LegModelPart, type LegPartRole, type LegPreset, type PanelEdgeDir, type PanelSurface,
   type PanelTypeConfig, type PanelTypeId, useStoreFields,
 } from '../store';
@@ -23,11 +23,11 @@ import {
 } from './AccessoryService';
 import {
   ApplyBtn, CARD_BODY, CARD_BODY_STYLE, CardAction, ExitBtn, FIELD_INPUT, LegLayoutCells, LegLayoutDiagram, QB_CELL_ROW, QbNum, QbSection, QbSelect,
-  QbSwitch, ROW_SEL_BAR, ROW_SEL_HEAD, ReadCell, ReadValue, RowCells, RowChevron, SECTION_LABEL, type SegItem, Segmented, SelectBox, rectLegPoints, rowCardClass,
+  FieldBox, QbSwitch, ROW_SEL_BAR, ROW_SEL_HEAD, ReadCell, ReadValue, RowCells, RowChevron, SECTION_LABEL, type SegItem, Segmented, SelectBox, rectLegPoints, rowCardClass,
 } from './Assembly';
 import {
-  CONN_REP, CONN_SURFACES, EDGE_ENDS, EDGE_LABEL, PANEL_SURFACES, PANEL_TYPES, PANEL_TYPE_GROUPS, PLANE_EDGES, PLANE_LABEL, type PanelPlane, candidateTypesFor, cloneConnector,
-  connOpSummary, connShapeClosed, connShapePoints, connSurfaceCoords, connSurfaceDepth, connSurfaceExtent, connSurfacePoint, connThickness, connectorUseCount, deleteConnector,
+  CONN_REP, CONN_SURFACES, DEFAULT_CONNECTOR_LAYOUT, EDGE_ENDS, EDGE_LABEL, PANEL_SURFACES, PANEL_TYPES, PANEL_TYPE_GROUPS, PLANE_EDGES, PLANE_LABEL, type PanelPlane, candidateTypesFor, cloneConnector,
+  connOpSummary, connShapeClosed, connShapePoints, connSurfaceCoords, connSurfaceDepth, connSurfaceExtent, connSurfacePoint, connThickness, connectorUseCount, deleteConnector, addSampleConnector, ruleLayout,
   edgeConnectorPositions, edgeRuleOf, newConnHole, newConnOp, newConnPart, newConnector, panelTypeDef, panelTypeLabel, panelTypeShort, saveConnector, setEdgeRule, setSurfaceRule,
   surfaceLabel, surfaceRuleOf, typeEdgeCount,
 } from './ConnectorService';
@@ -722,9 +722,9 @@ function LayersPanel() {
 }
 
 /* ═════════════════════════════════ PANEL TİPLERİ ═════════════════════════════════
-   Üstte temsili dolap (ön görünüş + yan kesit; parçaya tıkla → tipi) ve tip çipleri. Seçili tipin kenar şeması: kenara tıkla → o kenarın
-   bağlayıcısı + dizilimi (kenar başka panele dayanıyorsa uygulanır). Altta yüzey başına sunulan tipler ve varsayılan (koyu çip).
-   Her değişiklik anında kaydedilir (kütüphane ayarı). */
+   Üstte temsili dolap (ön görünüş + yan kesit; parçaya tıkla → tipi) + tip listesi. Seçili tipin kenar şeması: kenara tıkla → bağlayıcı konur
+   (o kenar başka panelin yüzüne dayandığı her yerde atılır). Dizilim bağlayıcının kendisinden gelir; kenara özel dizilim / öteki yüz yalnız
+   seçili kenarda açılır. Yüz varsayılanları kapalı bir bölümde. Her değişiklik anında kaydedilir ve gövdeler yeniden üretilir. */
 const PT = { stroke: '#a69d91', fill: '#f0ebe3', back: '#f7f4ef', ghost: '#cfc7bc', sel: '#ea580c', selFill: '#fdeadb', ink: '#57534e', mute: '#a39b91' } as const;
 const MAP_W = 600, MAP_H = 720, MAP_D = 560;
 /** Temsili dolap parçası: `view` ön görünüş (x, y) ya da yan kesit (z, y; ön sağda). `solo` yalnız seçiliyken çizilir ve `hides` parçasının
@@ -808,13 +808,14 @@ function sampleSizeOf(type: PanelTypeId, plane: Exclude<PanelPlane, 'any'>): [nu
   return [564, def?.group === 'traverse' ? 80 : def?.group === 'plinth' ? 100 : 602];
 }
 type EdgeGeom = { role: PanelEdgeDir; x1: number; y1: number; x2: number; y2: number; nx: number; ny: number; length: number; fromStart: boolean };
-/** KENAR ŞEMASI: panel doğal bakışında; dört kenar rolüyle etiketli ve tıklanır. Bağlayıcılı kenar turuncu, noktalar örnek kenardaki yerleşim. */
-function TypeEdgeDiagram({ type, plane, sel, onSel, cfg }: {
-  type: PanelTypeId; plane: Exclude<PanelPlane, 'any'>; sel: PanelEdgeDir | null; onSel: (e: PanelEdgeDir | null) => void; cfg: PanelTypeConfig;
+/** KENAR ŞEMASI: panel doğal bakışında, dört kenar rolüyle etiketli. Kenara tık → bağlayıcı konur (turuncu; noktalar örnek ölçüdeki yerleşim);
+ *  bağlayıcılı kenara tık → o kenar seçilir, seçili kenara bir daha tık → bağlayıcı kalkar. */
+function TypeEdgeDiagram({ type, plane, cur, onEdge, cfg, connectors }: {
+  type: PanelTypeId; plane: Exclude<PanelPlane, 'any'>; cur: PanelEdgeDir | null; onEdge: (e: PanelEdgeDir) => void; cfg: PanelTypeConfig; connectors: Connector[];
 }) {
   const [hover, setHover] = useState<PanelEdgeDir | null>(null);
-  const VW = 480, VH = 236, [mw, mh] = sampleSizeOf(type, plane);
-  const k = Math.min(280 / mw, 132 / mh), w = mw * k, h = Math.max(mh * k, 30), x0 = (VW - w) / 2, y0 = (VH - h) / 2 + 2;
+  const VW = 480, VH = 204, [mw, mh] = sampleSizeOf(type, plane);
+  const k = Math.min(270 / mw, 112 / mh), w = mw * k, h = Math.max(mh * k, 30), x0 = (VW - w) / 2, y0 = (VH - h) / 2;
   const [eTop, eBottom, eLeft, eRight] = PLANE_EDGES[plane];
   const ends = EDGE_ENDS[plane];
   // Dizilimin başlangıç ucu şemada nerede: yatay kenarda sol mu, düşey kenarda alt mı.
@@ -825,30 +826,28 @@ function TypeEdgeDiagram({ type, plane, sel, onSel, cfg }: {
     { role: eRight, x1: x0 + w, y1: y0 + h, x2: x0 + w, y2: y0, nx: 1, ny: 0, length: mh, fromStart: ends[eRight]?.[0] === eBottom },
   ];
   return (
-    <svg viewBox={`0 0 ${VW} ${VH}`} className="block w-full select-none" onClick={() => onSel(null)} style={{ fontFamily: UI_FONT }}>
+    <svg viewBox={`0 0 ${VW} ${VH}`} className="block w-full select-none" style={{ fontFamily: UI_FONT }}>
       <rect x={x0} y={y0} width={w} height={h} rx={1.5} fill={PT.fill} stroke={PT.stroke} strokeWidth={1} />
-      <text x={VW / 2} y={y0 + h / 2 - (h > 44 ? 3 : -3.5)} textAnchor="middle" fontSize={11.5} fontWeight={600} fill={PT.ink}>{panelTypeShort(type)}</text>
-      {h > 44 && <text x={VW / 2} y={y0 + h / 2 + 11} textAnchor="middle" fontSize={9} fill={PT.mute} style={{ fontVariantNumeric: 'tabular-nums' }}>sample {mw} × {mh}</text>}
+      <text x={VW / 2} y={y0 + h / 2 + 4} textAnchor="middle" fontSize={11.5} fontWeight={600} fill={PT.ink}>{panelTypeShort(type)}</text>
       <text x={8} y={14} fontSize={8} fontWeight={600} fill={PT.mute} style={{ letterSpacing: '0.09em' }}>{PLANE_LABEL[plane].toUpperCase()}</text>
       {edges.map(e => {
-        const rule = cfg.rules?.[type]?.edges[e.role], has = !!rule?.connectorId, on = sel === e.role, hv = hover === e.role && !on;
-        const pts = has ? edgeConnectorPositions(rule!, e.length) : [];
-        const horiz = e.ny !== 0, mx = (e.x1 + e.x2) / 2, my = (e.y1 + e.y2) / 2;
-        const label = `${EDGE_LABEL[e.role].toUpperCase()}${has ? ` · ${pts.length}` : ''}`, lw = label.length * 5.6 + 16;
+        const rule = cfg.rules?.[type]?.edges[e.role], conn = rule?.connectorId ? connectors.find(c => c.id === rule.connectorId) : undefined;
+        const has = !!conn, on = cur === e.role && has, hv = hover === e.role;
+        const pts = has ? edgeConnectorPositions(ruleLayout(rule!, conn), e.length) : [];
+        const mx = (e.x1 + e.x2) / 2, my = (e.y1 + e.y2) / 2;
+        const label = EDGE_LABEL[e.role].toUpperCase(), lw = label.length * 5.6 + 16;
         const lx = mx + e.nx * (lw / 2 + 12), ly = my + e.ny * 20;
         const at = (d: number) => { const t = (e.fromStart ? d : e.length - d) / e.length; return { x: e.x1 + (e.x2 - e.x1) * t, y: e.y1 + (e.y2 - e.y1) * t }; };
         return (
-          <g key={e.role} onClick={ev => { stop(ev); onSel(on ? null : e.role); }} onMouseEnter={() => setHover(e.role)} onMouseLeave={() => setHover(null)} style={{ cursor: 'pointer' }}>
-            <title>{`${EDGE_LABEL[e.role]} edge — ${has ? `${pts.length} connector${pts.length === 1 ? '' : 's'} on the sample` : 'no connector'} · click to edit`}</title>
-            <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} stroke="transparent" strokeWidth={20} />
-            {(has || on || hv) && <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} stroke={has || on ? PT.sel : '#7d756b'} strokeWidth={on ? 3.4 : has ? 2.4 : 1.8} strokeLinecap="round"
-              strokeDasharray={on && !has ? '4 3' : undefined} />}
+          <g key={e.role} onClick={ev => { stop(ev); onEdge(e.role); }} onMouseEnter={() => setHover(e.role)} onMouseLeave={() => setHover(null)} style={{ cursor: 'pointer' }}>
+            <title>{`${EDGE_LABEL[e.role]} edge — ${has ? `${conn!.name} · click to ${on ? 'remove' : 'select'}` : 'click to put the connector on this edge'}`}</title>
+            <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} stroke="transparent" strokeWidth={22} />
+            {(has || hv) && <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} stroke={has ? PT.sel : '#7d756b'} strokeWidth={on ? 3.4 : has ? 2.4 : 1.8} strokeLinecap="round"
+              strokeDasharray={has ? undefined : '4 3'} />}
             {pts.map((d, i) => { const p = at(d); return <circle key={i} cx={p.x} cy={p.y} r={on ? 4.2 : 3.4} fill="#fff" stroke={PT.sel} strokeWidth={1.5} />; })}
-            <rect x={lx - lw / 2} y={ly - 9} width={lw} height={18} rx={9} fill={on ? '#292524' : hv ? '#ece7e0' : has ? '#fff4ec' : '#fff'}
+            <rect x={lx - lw / 2} y={ly - 9} width={lw} height={18} rx={9} fill={on ? '#292524' : has ? '#fff4ec' : hv ? '#ece7e0' : '#fff'}
               stroke={on ? '#292524' : has ? '#f3c7a5' : '#e3ddd4'} strokeWidth={0.9} style={{ transition: 'fill 0.12s' }} />
             <text x={lx} y={ly + 3.2} textAnchor="middle" fontSize={8.6} fontWeight={700} fill={on ? '#fff' : has ? '#c2410c' : PT.ink} style={{ letterSpacing: '0.07em' }}>{label}</text>
-            {/* dizilimin başlangıç ucu: küçük "0" */}
-            {on && (() => { const p = at(0); return <text x={p.x + (horiz ? 0 : e.nx * -9)} y={p.y + (horiz ? e.ny * -7 + 3 : 3)} textAnchor="middle" fontSize={8} fontWeight={700} fill={PT.sel}>0</text>; })()}
           </g>
         );
       })}
@@ -856,47 +855,48 @@ function TypeEdgeDiagram({ type, plane, sel, onSel, cfg }: {
   );
 }
 const LAYOUT_SEG: SegItem[] = [
-  { key: 'spacing', label: 'Spacing', title: 'Distance from both ends + maximum spacing — the count is worked out from the edge length' },
+  { key: 'spacing', label: 'Spacing', title: 'Distance from both ends + maximum gap — the count is worked out from the joint length' },
   { key: 'count', label: 'Count', title: 'Fixed number of connectors, spread evenly between the two end distances' },
 ];
-/** Seçili kenarın kuralı: bağlayıcı · dizilim kipi · uç mesafeleri · azami aralık / adet. Bağlayıcı "None" → kenar boş, öteki kutular pasif. */
-function EdgeRuleStrip({ type, plane, edge, cfg, connectors, onOpenConnectors }: {
-  type: PanelTypeId; plane: Exclude<PanelPlane, 'any'>; edge: PanelEdgeDir; cfg: PanelTypeConfig; connectors: Connector[]; onOpenConnectors: () => void;
-}) {
-  const rule = edgeRuleOf(type, edge, cfg), has = !!rule.connectorId && connectors.some(c => c.id === rule.connectorId);
-  const [a, b] = EDGE_ENDS[plane][edge] ?? ['left', 'right'];
-  const [eTop, eBottom] = PLANE_EDGES[plane], [mw, mh] = sampleSizeOf(type, plane);
-  const length = edge === eTop || edge === eBottom ? mw : mh;
-  const pts = has ? edgeConnectorPositions(rule, length) : [];
-  const set = (patch: Partial<EdgeConnectorRule>) => void setEdgeRule(type, edge, patch);
-  const opts: Array<[string, string]> = [['', connectors.length ? 'None' : 'No connectors yet'], ...connectors.map(c => [c.id, c.name] as [string, string])];
+const Unit = () => <span className="yago-unit shrink-0 pr-1">mm</span>;
+const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+/** Dizilim hücreleri (bağlayıcının kendi dizilimi ve kenara özel dizilim aynı parçayı kullanır): kip · iki uç mesafesi · azami aralık / adet. */
+function LayoutCells({ value, onChange, ends }: { value: ConnectorLayout; onChange: (patch: Partial<ConnectorLayout>) => void; ends: [string, string] }) {
   return (
-    <div className="flex flex-col gap-1" onClick={stop}>
-      <div className="flex items-center gap-1">
-        <span className="shrink-0 h-[28px] px-2 rounded-[7px] bg-[#292524] text-white text-[10px] font-bold tracking-[0.07em] flex items-center">{EDGE_LABEL[edge].toUpperCase()} EDGE</span>
-        <SelectBox label="Connector" className="flex-1" value={has ? rule.connectorId! : ''} options={opts}
-          title="Connector placed along this edge wherever the edge butts against another panel" onChange={v => (v ? set({ connectorId: v }) : void setEdgeRule(type, edge, null))} />
-        <div className="shrink-0 w-[132px]" style={{ opacity: has ? 1 : 0.45, pointerEvents: has ? 'auto' : 'none' }}>
-          <Segmented items={LAYOUT_SEG} active={rule.mode} onPick={m => set({ mode: m as EdgeLayoutMode })} height={24} />
-        </div>
-      </div>
-      <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
-        <EditCell label={`From ${a}`} title={`Distance of the first connector from the ${a} end of the edge (mm)`}><QbNum value={rule.start} min={0} w={38} passive={!has} onCommit={v => set({ start: v })} /><Unit /></EditCell>
-        <EditCell label={`From ${b}`} title={`Distance of the last connector from the ${b} end of the edge (mm)`}><QbNum value={rule.end} min={0} w={38} passive={!has} onCommit={v => set({ end: v })} /><Unit /></EditCell>
-        {rule.mode === 'count'
-          ? <EditCell label="Count" title="Number of connectors on the edge (1 = centred)"><QbNum value={rule.count} min={1} max={40} w={44} passive={!has} onCommit={v => set({ count: Math.round(v) })} /></EditCell>
-          : <EditCell label="Max gap" title="Largest allowed distance between two connectors — more are added as the edge gets longer (mm)"><QbNum value={rule.maxSpacing} min={10} w={38} passive={!has} onCommit={v => set({ maxSpacing: v })} /><Unit /></EditCell>}
-      </div>
-      <div className="yago-hint px-1 flex items-center gap-1 min-w-0">
-        {has ? <span className="truncate">On the {length} mm sample edge: {pts.length} connector{pts.length === 1 ? '' : 's'} at {pts.map(p => fmt1(p)).join(' · ')} mm from the {a}</span>
-          : connectors.length ? <span className="truncate">Choose a connector to put it on this edge — it is used wherever the edge butts against another panel</span>
-          : <><span className="truncate">No connectors in the library yet.</span>
-            <button type="button" onClick={e => { stop(e); onOpenConnectors(); }} className="shrink-0 font-semibold text-orange-700 hover:underline">Create one</button></>}
+    <div className="flex items-center gap-1">
+      <div className="shrink-0 w-[124px]"><Segmented items={LAYOUT_SEG} active={value.mode} onPick={m => onChange({ mode: m as EdgeLayoutMode })} height={28} /></div>
+      <div className="flex-1 min-w-0 grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
+        <EditCell label={cap(ends[0])} title={`Distance of the first connector from the ${ends[0]} of the joint (mm)`}><QbNum value={value.start} min={0} w={34} onCommit={v => onChange({ start: v })} /></EditCell>
+        <EditCell label={cap(ends[1])} title={`Distance of the last connector from the ${ends[1]} of the joint (mm)`}><QbNum value={value.end} min={0} w={34} onCommit={v => onChange({ end: v })} /></EditCell>
+        {value.mode === 'count'
+          ? <EditCell label="Count" title="Number of connectors on the joint (1 = centred)"><QbNum value={value.count} min={1} max={40} w={34} onCommit={v => onChange({ count: Math.round(v) })} /></EditCell>
+          : <EditCell label="Max gap" title="Largest allowed distance between two connectors — more are added as the joint gets longer (mm)"><QbNum value={value.maxSpacing} min={10} w={34} onCommit={v => onChange({ maxSpacing: v })} /></EditCell>}
       </div>
     </div>
   );
 }
-const Unit = () => <span className="yago-unit shrink-0 pr-1">mm</span>;
+/** Seçili kenarın ayarları — yalnız gerektiğinde: kenara özel dizilim (yoksa bağlayıcınınki) ve B yüzü işlemlerinin öteki yüze alınması. */
+function EdgeOptions({ type, plane, edge, cfg, connectors }: { type: PanelTypeId; plane: Exclude<PanelPlane, 'any'>; edge: PanelEdgeDir; cfg: PanelTypeConfig; connectors: Connector[] }) {
+  const rule = edgeRuleOf(type, edge, cfg), conn = connectors.find(c => c.id === rule.connectorId);
+  const [a, b] = EDGE_ENDS[plane][edge] ?? ['left', 'right'];
+  const set = (patch: Partial<EdgeConnectorRule>) => void setEdgeRule(type, edge, patch);
+  const eff = ruleLayout(rule, conn);
+  return (
+    <div className="flex flex-col gap-1" onClick={stop}>
+      <div className="flex items-center gap-2 h-[28px] pl-1">
+        <span className="shrink-0 h-[20px] px-2 rounded-full bg-[#292524] text-white text-[9.5px] font-bold tracking-[0.07em] flex items-center">{EDGE_LABEL[edge].toUpperCase()} EDGE</span>
+        <span className="flex-1 min-w-0 truncate yago-hint">{rule.custom ? 'own spacing' : `spacing from ${conn?.name ?? 'the connector'}`}</span>
+        <label className="shrink-0 flex items-center gap-1.5 cursor-pointer" title="Give this edge its own spacing instead of the connector's">
+          <span className="yago-label">Own spacing</span><QbSwitch on={!!rule.custom} onToggle={() => set(rule.custom ? { custom: false } : { ...eff, custom: true })} />
+        </label>
+        <label className="shrink-0 flex items-center gap-1.5 cursor-pointer" title="Machine the panel-face holes on the other wide face of this panel (default: the hidden face — underside, top of a top panel, outside of a side)">
+          <span className="yago-label">Other face</span><QbSwitch on={!!rule.flipFace} onToggle={() => set({ flipFace: !rule.flipFace })} />
+        </label>
+      </div>
+      {rule.custom && <LayoutCells value={rule} onChange={set} ends={[a, b]} />}
+    </div>
+  );
+}
 const CHIP = 'h-[22px] px-2 rounded-full text-[10.5px] font-semibold whitespace-nowrap transition-colors duration-150 flex items-center gap-1';
 const CHIP_ON = 'bg-[#292524] text-white ring-1 ring-[#292524]', CHIP_IDLE = 'bg-white text-stone-600 ring-1 ring-[#e3ddd4] hover:ring-[#bfb7ab] hover:text-stone-900 hover:bg-[#faf8f5]';
 const CHIP_OFF = 'bg-transparent text-stone-400 border border-dashed border-[#d6cfc3] hover:text-stone-700 hover:border-[#bfb7ab]';
@@ -947,67 +947,88 @@ const PLANE_SEG: SegItem[] = [
   { key: 'side', label: 'Side', title: 'Free panel standing like a side / divider' }, { key: 'horizontal', label: 'Horizontal', title: 'Free panel lying like a top / shelf' },
   { key: 'frontal', label: 'Frontal', title: 'Free panel standing like a back / plinth' },
 ];
+/** Tip seçimi: gruplu tek liste; bağlayıcı tanımlı tipler "●" ile işaretli. */
+function TypeSelect({ value, onChange, cfg }: { value: PanelTypeId; onChange: (t: PanelTypeId) => void; cfg: PanelTypeConfig }) {
+  return (
+    <FieldBox label="Panel type" title="Pick the panel type to set up — or click a part on the cabinet">
+      <div className="relative min-w-0">
+        <select value={value} onChange={e => onChange(e.target.value as PanelTypeId)} style={{ fontFamily: UI_FONT }}
+          className="h-[22px] pl-1 pr-5 rounded-[5px] bg-transparent text-[12px] font-semibold text-stone-800 appearance-none outline-none cursor-pointer text-right">
+          {PANEL_TYPE_GROUPS.map(g => (
+            <optgroup key={g.key} label={g.label}>
+              {PANEL_TYPES.filter(t => t.group === g.key).map(t => <option key={t.id} value={t.id}>{t.label}{typeEdgeCount(t.id, cfg) ? '  ●' : ''}</option>)}
+            </optgroup>
+          ))}
+        </select>
+        <ChevronDown size={11} strokeWidth={2.2} className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-stone-400" />
+      </div>
+    </FieldBox>
+  );
+}
 function PanelTypesPanel() {
   const { panelTypeConfig: cfg, connectors, setAccessoryCategory } = useStoreFields('panelTypeConfig', 'connectors', 'setAccessoryCategory');
-  const [sel, setSel] = useState<PanelTypeId>('leftSide');
+  const [sel, setSel] = useState<PanelTypeId>('bottom');
   const [edge, setEdge] = useState<PanelEdgeDir | null>(null);
+  const [connId, setConnId] = useState<string | null>(null);
   const [freePlane, setFreePlane] = useState<Exclude<PanelPlane, 'any'>>('side');
+  const [facesOpen, setFacesOpen] = useState(false);
   const [openSurface, setOpenSurface] = useState<PanelSurface | null>(null);
   const def = panelTypeDef(sel)!;
   const plane = def.plane === 'any' ? freePlane : def.plane;
   const pick = (t: PanelTypeId) => { setSel(t); setEdge(null); };
-  // Seçili kenar bu düzlemde yoksa (tip / düzlem değişti) seçim düşer; hiç seçili değilse ilk bağlayıcılı kenar açılmaz — kullanıcı tıklar.
-  const edgeOk = edge && PLANE_EDGES[plane].includes(edge) ? edge : null;
-  const offered = PANEL_SURFACES.filter(s => surfaceRuleOf(s.key, cfg).allowed.includes(sel));
-  const n = typeEdgeCount(sel, cfg);
+  // Tıklanan kenara konacak bağlayıcı: seçilen, yoksa kütüphanedeki ilk.
+  const active = connectors.find(c => c.id === connId) ?? connectors[0];
+  const ruleOf = (e: PanelEdgeDir) => cfg.rules?.[sel]?.edges[e];
+  const hasConn = (e: PanelEdgeDir) => { const r = ruleOf(e); return !!r?.connectorId && connectors.some(c => c.id === r.connectorId); };
+  const cur = edge && PLANE_EDGES[plane].includes(edge) && hasConn(edge) ? edge : null;
+  // Kenara tık: boş kenar → bağlayıcı konur · bağlayıcılı kenar → seçilir · seçili kenar → bağlayıcı kalkar.
+  const onEdge = (e: PanelEdgeDir) => {
+    if (!hasConn(e)) { if (active) { void setEdgeRule(sel, e, { connectorId: active.id }); setEdge(e); } return; }
+    if (cur === e) { void setEdgeRule(sel, e, null); setEdge(null); } else setEdge(e);
+  };
+  const pickConnector = (id: string) => { setConnId(id); if (cur) void setEdgeRule(sel, cur, { connectorId: id }); };
+  const n = PLANE_EDGES[plane].filter(hasConn).length;
   return (
     <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" style={{ fontFamily: UI_FONT }}>
-      <QbSection title="Panel types" sub="what each panel is — connectors and edge banding read this">
-        <div className="flex flex-col gap-2" onClick={stop}>
+      <QbSection title="Panel types" sub="click a part of the cabinet, or pick from the list">
+        <div className="flex flex-col gap-1.5" onClick={stop}>
           <div className="rounded-[9px] ring-1 ring-[#e3ddd4] px-2 pt-1 pb-0.5" style={{ background: '#faf8f5' }}><CabinetMap sel={sel} onSel={pick} /></div>
-          <div className="flex flex-col gap-[5px]">
-            {PANEL_TYPE_GROUPS.map(g => (
-              <div key={g.key} className="flex items-start gap-2">
-                <span className="yago-label shrink-0 w-[70px] pt-[5px]">{g.label}</span>
-                <div className="flex-1 min-w-0 flex flex-wrap gap-1">
-                  {PANEL_TYPES.filter(t => t.group === g.key).map(t => {
-                    const k = typeEdgeCount(t.id, cfg);
-                    return (
-                      <button key={t.id} type="button" onClick={e => { stop(e); pick(t.id); }} title={`${t.label}${k ? ` — connectors on ${k} edge${k === 1 ? '' : 's'}` : ''}`}
-                        className={`${CHIP} ${t.id === sel ? CHIP_ON : CHIP_IDLE}`}>
-                        {t.short}{k > 0 && <span className={`w-[5px] h-[5px] rounded-full ${t.id === sel ? 'bg-orange-400' : 'bg-orange-500'}`} />}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
+          <TypeSelect value={sel} onChange={pick} cfg={cfg} />
         </div>
       </QbSection>
-      <QbSection title={def.label} sub={n ? `connectors on ${n} edge${n === 1 ? '' : 's'}` : 'click an edge to give it a connector'}
-        trailing={<span className="shrink-0 h-[20px] px-1.5 rounded-[5px] bg-white ring-1 ring-[#e3ddd4] text-[10px] font-bold tracking-[0.06em] text-stone-500 flex items-center" title="Short code shown on the Assembly rows">{def.code}</span>}>
+      <QbSection title={def.label} sub={n ? `connector on ${n} edge${n === 1 ? '' : 's'}` : 'no connector yet'}>
         <div className="flex flex-col gap-1.5" onClick={stop}>
           {def.plane === 'any' && <Segmented items={PLANE_SEG} active={freePlane} onPick={k => { setFreePlane(k as Exclude<PanelPlane, 'any'>); setEdge(null); }} height={24} />}
           <div className="rounded-[9px] ring-1 ring-[#e3ddd4]" style={{ background: '#faf8f5' }}>
-            <TypeEdgeDiagram type={sel} plane={plane} sel={edgeOk} onSel={setEdge} cfg={cfg} />
+            <TypeEdgeDiagram type={sel} plane={plane} cur={cur} onEdge={onEdge} cfg={cfg} connectors={connectors} />
           </div>
-          {edgeOk
-            ? <EdgeRuleStrip type={sel} plane={plane} edge={edgeOk} cfg={cfg} connectors={connectors} onOpenConnectors={() => setAccessoryCategory('connectors')} />
-            : <div className="yago-hint px-1">Click an edge of the panel to choose its connector. Edge names follow the body's face roles, so the same rule works wherever the panel is placed.</div>}
-          <div className="yago-hint px-1 flex flex-wrap items-center gap-x-1 gap-y-0.5">
-            <span>Offered on:</span>
-            {offered.length ? offered.map(s => <span key={s.key} className="font-semibold text-stone-500">{s.label}{surfaceRuleOf(s.key, cfg).def === sel ? ' (default)' : ''}</span>).reduce<React.ReactNode[]>((acc, x, i) => (i ? [...acc, <span key={`s${i}`}>·</span>, x] : [x]), [])
-              : <span>no face — set by hand on a panel row</span>}
-          </div>
+          {connectors.length ? (
+            <SelectBox label="Connector" value={(cur ? ruleOf(cur)?.connectorId : active?.id) ?? ''} options={connectors.map(c => [c.id, c.name] as [string, string])}
+              title={cur ? 'Connector on the selected edge' : 'Connector that is put on the edges you click'} onChange={pickConnector} />
+          ) : (
+            <div className="yago-hint px-1 flex items-center gap-1">
+              <span>No connectors in the library yet.</span>
+              <button type="button" onClick={e => { stop(e); setAccessoryCategory('connectors'); }} className="font-semibold text-orange-700 hover:underline">Create one</button>
+            </div>
+          )}
+          {cur ? <EdgeOptions type={sel} plane={plane} edge={cur} cfg={cfg} connectors={connectors} />
+            : <div className="yago-hint px-1">Click an edge to put the connector on it. It is placed wherever that edge of the panel butts against the face of another panel.</div>}
         </div>
       </QbSection>
-      <QbSection title="Default type by face" sub="what a new panel becomes, and which types are offered">
-        <div className="flex flex-col gap-1" onClick={stop}>
-          {PANEL_SURFACES.map(s => <SurfaceRow key={s.key} surface={s.key} cfg={cfg} open={openSurface === s.key}
-            onToggle={() => setOpenSurface(o => (o === s.key ? null : s.key))} />)}
+      {/* Yüz varsayılanları: seyrek değişen ayar → kapalı gelir */}
+      <div className={rowCardClass(facesOpen, false, false)}>
+        <div onClick={e => { stop(e); setFacesOpen(o => !o); }} className="min-h-[34px] pl-3 pr-1 flex items-center gap-2 cursor-pointer transition-colors duration-150 hover:bg-[#faf8f5]">
+          <span style={SECTION_LABEL}>Default type by face</span>
+          <span className="flex-1 min-w-0 truncate text-[10.5px] text-stone-400">which type a new panel gets, and which types are offered</span>
+          <RowChevron open={facesOpen} onClick={e => { stop(e); setFacesOpen(o => !o); }} title={facesOpen ? 'Close' : 'Open'} />
         </div>
-      </QbSection>
+        {facesOpen && (
+          <div className={`${CARD_BODY} flex flex-col gap-1`} style={CARD_BODY_STYLE} onClick={stop}>
+            {PANEL_SURFACES.map(s => <SurfaceRow key={s.key} surface={s.key} cfg={cfg} open={openSurface === s.key}
+              onToggle={() => setOpenSurface(o => (o === s.key ? null : s.key))} />)}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1587,7 +1608,7 @@ function ConnHoleRow({ hole, index, selected, limit, onSelect, onChange, onRemov
       <Mini label={hole.surface === 'bFace' ? 'Joint' : 'Centre'} title={acrossTip(hole.surface)}>{num(hole.across, v => onChange({ across: v }))}</Mini>
       <span className="w-px h-3.5 bg-[#e6e0d6] shrink-0" />
       <Mini label="Ø" title="Diameter (mm)">{num(hole.diameter, v => onChange({ diameter: Math.max(0.2, v) }), 0.2, 36)}</Mini>
-      <Mini label="D" title={`Depth from the surface (mm) — the material is ${fmt1(limit)} mm here`}>{num(hole.depth, v => onChange({ depth: Math.max(0.1, v) }), 0.1, 36)}</Mini>
+      <Mini label="D" title={`Depth from the surface (mm) — the material is ${fmt1(limit)} mm here`}>{num(hole.depth, v => onChange({ depth: Math.max(0.1, v) }), 0.1, 42)}</Mini>
       {hole.depth >= limit - 1e-6 && <span className="shrink-0 text-[9.5px] font-bold tracking-[0.05em] text-orange-600" title="Goes through the panel">THRU</span>}
       <span className="flex-1 min-w-0" />
       <RowTrash title="Remove this hole" onClick={onRemove} />
@@ -1754,6 +1775,11 @@ function ConnectorEditor({ draft, setDraft, onSave, onCancel, layers }: {
             <EditCell label="Panel A thickness" title="Sample thickness of the passing panel — preview only; real panels use their own thickness"><QbNum value={tA} min={3} w={44} onCommit={v => patch({ tA: v })} /><Unit /></EditCell>
             <EditCell label="Panel B thickness" title="Sample thickness of the butting panel — preview only; real panels use their own thickness"><QbNum value={tB} min={3} w={44} onCommit={v => patch({ tB: v })} /><Unit /></EditCell>
           </div>
+          <div className="flex flex-col gap-1">
+            <ListHead label="Spacing" count={0} hint="along a joint: distance from each end, then max gap or count" />
+            <LayoutCells value={{ ...DEFAULT_CONNECTOR_LAYOUT, ...(draft.layout ?? {}) }} ends={['start', 'end']}
+              onChange={p => patch({ layout: { ...DEFAULT_CONNECTOR_LAYOUT, ...(ref.current.draft.layout ?? {}), ...p } })} />
+          </div>
           {empty && <div className="yago-hint px-1">Panel B butts with its end against the face of panel A. Pick a surface on the preview (B face · B edge · A face), then add holes, drawn operations or a model to it.</div>}
           <div className="flex flex-col gap-1">
             <ListHead label="Holes" count={draft.holes.length} hint={mode === 'hole' ? 'click the highlighted surface · Esc' : draft.holes.length ? 'Delete removes the selected' : ''}>
@@ -1811,7 +1837,11 @@ function ConnectorsPanel({ draft, setDraft, keepModels }: { draft: Connector | n
     <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" style={{ fontFamily: UI_FONT }}>
       {draft ? <ConnectorEditor draft={draft} setDraft={setDraft} layers={accessoryLayers} onSave={() => void save()} onCancel={() => void cancel()} /> : (
         <QbSection title="Connectors" sub={connectors.length ? 'holes, drawn operations and a model on a two-panel joint' : undefined}
-          trailing={<CardAction compact icon={Plus} label="New" title="New connector" onClick={() => setDraft(newConnector(`Connector ${connectors.length + 1}`))} />}>
+          trailing={<div className="flex items-center gap-1">
+            <CardAction compact icon={FlaskConical} label="Sample" title="Add a ready-made cam connector to test with: Ø15 cam pocket on the panel face, Ø8 bolt bore in its edge, Ø5 hole in the other panel, with a cam + bolt model"
+              onClick={() => void addSampleConnector(connectors.some(c => c.name === 'Connector 1') ? `Connector ${connectors.length + 1}` : 'Connector 1')} />
+            <CardAction compact icon={Plus} label="New" title="New connector" onClick={() => setDraft(newConnector(`Connector ${connectors.length + 1}`))} />
+          </div>}>
           {!connectors.length ? <div className="yago-hint px-1 py-0.5">None yet — a connector describes what is machined on two joined panels (holes, pockets, grooves) and its 3D model. Panel types decide where it is used.</div> : (
             <div className="flex flex-col gap-1">
               {connectors.map(c => {

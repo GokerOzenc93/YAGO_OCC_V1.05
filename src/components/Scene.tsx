@@ -18,14 +18,14 @@ import {
   convertReplicadToThreeGeometry, type AxisLetter, type AxisDir, axisDirToVec, uniqueMeshPoints, resolveBaseVertices, composeVertexTargets,
   confirmPanelMoveRef, confirmPanelRotateRef, resetRefFacePick, axisIndexOf, getReplicadVertices, round1, swingPoints,
 } from './Geometry';
-import { placementTypeFor } from './ConnectorService';
+import { connectorPartInstances, placementTypeFor } from './ConnectorService';
 import {
   type PlinthPick, type PlinthRegion, confirmPlinthPick, plinthBoxOf, plinthBoxesOf, plinthCandidates, plinthLegSpots, plinthPickBox,
   plinthRowKey, plinthSetsOf, isPlinthRow, finishPlinthEdit, plinthRegionOf, prismGeometry, bodyFrontAxis, bodyFaces, setBodyFaceRole, bodyFacesByRole,
   plinthLegsOf,
 } from './PlinthService';
 import { FACE_ROLES, FACE_ROLE_LABEL, type FaceRole } from './LegLayout';
-import { type LegAssemblyPart, legAssembly, onAccessoryGeometry } from './AccessoryService';
+import { LAYER_DEFAULT_COLOR, type LegAssemblyPart, accessoryGeometryNow, legAssembly, onAccessoryGeometry } from './AccessoryService';
 import {
   confirmRefCavityExtrude, groupBoundsPanelPredicate, isInteriorPanel, repickObstacles, collectObstacles,
   gridForObstacles, boxesSurface, rayCavityCandidates, GROUP_PANEL_THICKNESS, confirmVolumePick,
@@ -2114,6 +2114,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
         {isSelected && S.backPickMode && <BackPickOverlay shape={shape} />}
         {isSelected && S.plinthPickMode && <PlinthPickOverlay shape={shape} />}
         {!draftIso && !draftPreview && <PlinthSets shape={shape} />}
+        {!draftIso && !draftPreview && <ConnectorParts shape={shape} xray={isXray} />}
         {S.faceExtrudeMode && S.faceExtrudeCavityGroupId && <CavityEditOverlay shape={shape} />}
         {S.faceExtrudeMode && S.faceExtrudePlinthId && <PlinthEditOverlay shape={shape} />}
         {!draftIso && !draftPreview && <VirtualFaceOverlay shape={shape} />}
@@ -2613,6 +2614,29 @@ export function useLegAssembly(legModelId: string | null | undefined, h: number)
   return useMemo(() => (leg ? legAssembly(leg, h) : null), [leg, h, tick]);
 }
 const IMPORTED_FOOT_COLORS: Record<string, string> = { base: FOOT_COLORS.plastic, stem: FOOT_COLORS.housing, top: FOOT_COLORS.plate };
+/** BAĞLAYICI MODELLERİ: gövdenin birleşim noktalarında (gövde-yerel), bağlayıcı editöründeki duruşuyla. Tıklanmaz; rengi katmanından. */
+function ConnectorParts({ shape, xray }: { shape: { id: string }; xray: boolean }) {
+  const { shapes, virtualFaces, panelGroups, connectors, panelTypeConfig, accessoryLayers } =
+    useStoreFields('shapes', 'virtualFaces', 'panelGroups', 'connectors', 'panelTypeConfig', 'accessoryLayers');
+  const [, setTick] = useState(0);
+  useEffect(() => onAccessoryGeometry(() => setTick(t => t + 1)), []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const items = useMemo(() => connectorPartInstances(shape.id), [shape.id, shapes, virtualFaces, panelGroups, connectors, panelTypeConfig]);
+  if (!items.length) return null;
+  return (
+    <>
+      {items.map(it => {
+        const g = accessoryGeometryNow(it.modelId);
+        return g ? (
+          <mesh key={it.key} geometry={g.geo} position={it.pos} quaternion={it.quat} raycast={noRaycast} castShadow>
+            <meshStandardMaterial color={accessoryLayers.find(l => l.id === it.layerId)?.color ?? LAYER_DEFAULT_COLOR} metalness={0.25} roughness={0.5}
+              transparent={xray} opacity={xray ? 0.5 : 1} />
+          </mesh>
+        ) : null;
+      })}
+    </>
+  );
+}
 export function ImportedFoot({ legModelId, h, d, active, xray, onClick, pickable = true }: {
   legModelId: string; h: number; d: number; active: boolean; xray: boolean; onClick: (e: any) => void; pickable?: boolean;
 }) {

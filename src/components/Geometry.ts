@@ -688,6 +688,21 @@ export const createHoleCylinder = async (start: Vec3, dir: Vec3, radius: number,
   const { makeCylinder } = await import('replicad');
   return makeCylinder(radius, length, start, dir);
 };
+/** Çokgen prizma kesici: düzlemsel kapalı çokgen (`pts`, gövde-yerel), yüzeyin DIŞ normali `nOut`; çokgen `lift` kadar dışarıdan başlar,
+ *  malzemeye doğru `len` kadar iner. Ardışık aynı noktalar atılır; 3'ten az köşe → null. */
+export const createPrismTool = async (pts: Vec3[], nOut: Vec3, lift: number, len: number) => {
+  await initReplicad();
+  const { draw, Plane } = await import('replicad');
+  const n = new THREE.Vector3(...nOut).normalize(), P = pts.map(p => new THREE.Vector3(...p));
+  const clean = P.filter((p, i) => p.distanceTo(P[(i + P.length - 1) % P.length]) > 1e-4);
+  if (clean.length < 3) return null;
+  const o = clean[0].clone().addScaledVector(n, lift);
+  const u = clean[1].clone().sub(clean[0]).projectOnPlane(n).normalize(), v = new THREE.Vector3().crossVectors(n, u);
+  const uv = clean.map(p => { const d = p.clone().sub(clean[0]); return [d.dot(u), d.dot(v)] as [number, number]; });
+  let pen = draw(uv[0]);
+  for (let i = 1; i < uv.length; i++) pen = pen.lineTo(uv[i]);
+  return pen.close().sketchOnPlane(new Plane([o.x, o.y, o.z], [u.x, u.y, u.z], [n.x, n.y, n.z])).extrude(-(len + lift));
+};
 /** DERİN kopya (yeni TShape). replicad `clone()` yüzeyseldir (aynı TShape'i paylaşır) ve OCC boolean'ı girdilerinin köşe / kenar
  *  toleransını YERİNDE büyütebilir: teğete yakın tek bir kesişim gövde katısının toleransını 0 → 7,4 mm yapıyordu (ölçüldü); o andan sonra
  *  gövdeyle ve ondan türeyen panellerle yapılan kesimler 7 mm içindeki her şeyi "çakışık" sayıp sessizce boş dönüyordu. Uzun ömürlü katı
