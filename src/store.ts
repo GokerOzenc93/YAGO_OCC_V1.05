@@ -455,19 +455,34 @@ export type PanelTypeId =
   | 'leftSide' | 'rightSide' | 'top' | 'bottom' | 'rearPanel' | 'back' | 'divider' | 'fixedShelf' | 'adjustableShelf'
   | 'topFrontRailH' | 'topFrontRailV' | 'topRearRailH' | 'topRearRailV'
   | 'bottomFrontRailH' | 'bottomFrontRailV' | 'bottomRearRailH' | 'bottomRearRailV'
-  | 'frontPlinth' | 'rearPlinth' | 'free';
-/** Panelin yerleştiği yüzey: gövde yüzü rolü ya da iç panel aracı (raf / dikme / arkalık). */
-export type PanelSurface = PanelEdgeDir | 'shelf' | 'divider' | 'back';
-/** Kenar boyunca dizilim: 'spacing' = uçlardan mesafe + azami aralık (adet otomatik) · 'count' = sabit adet, eşit dağıtılır. */
-export type EdgeLayoutMode = 'spacing' | 'count';
-export interface ConnectorLayout { mode: EdgeLayoutMode; start: number; end: number; maxSpacing: number; count: number }
+  | 'frontPlinth' | 'rearPlinth' | 'columnSide' | 'columnFront' | 'beamFront' | 'beamHoriz' | 'free';
+/** Panelin yerleştiği yüzey: gövde yüzü rolü, yüzün özel görevi (kolon / kiriş — LegLayout.FaceKind) ya da iç panel aracı (raf / dikme / arkalık). */
+export type PanelSurface = PanelEdgeDir | 'shelf' | 'divider' | 'back' | 'columnSide' | 'columnFront' | 'beamFront' | 'beamHoriz';
+/** Kenar boyunca dizilim: 'ends' = baştan + sondan birer tane, birleşim `midFrom` boyuna ulaşınca ortaya bir tane daha ·
+ *  'spacing' = uçlardan mesafe + azami aralık (adet otomatik) · 'count' = sabit adet, eşit dağıtılır. */
+export type EdgeLayoutMode = 'ends' | 'spacing' | 'count';
+export interface ConnectorLayout { mode: EdgeLayoutMode; start: number; end: number; maxSpacing: number; count: number; midFrom?: number }
 /** Kenar kuralı. Dizilim normalde BAĞLAYICININ kendi diziliminden gelir; `custom` → bu kenara özel (alttaki alanlar).
  *  `flipFace` → B yüzündeki işlemler panelin öteki geniş yüzüne (varsayılan: görünmeyen yüz — bkz. ConnectorService.hiddenFaceRole). */
 export interface EdgeConnectorRule extends ConnectorLayout { connectorId: string | null; custom?: boolean; flipFace?: boolean }
-/** Tip kuralı: kenar rolü (ön / arka / üst / alt / sol / sağ) → o kenar başka panele dayanıyorsa atılacak bağlayıcı. */
-export interface PanelTypeRule { edges: Partial<Record<PanelEdgeDir, EdgeConnectorRule>> }
+/** Tip kuralı: kenar rolü (ön / arka / üst / alt / sol / sağ) → o kenar başka panele dayanıyorsa atılacak bağlayıcılar. Bir kenarda birden çok
+ *  bağlayıcı olabilir (kam + kavela …), her biri kendi dizilimiyle. */
+export interface PanelTypeRule { edges: Partial<Record<PanelEdgeDir, EdgeConnectorRule[]>> }
 export interface PanelSurfaceRule { allowed: PanelTypeId[]; def: PanelTypeId }
 export interface PanelTypeConfig { rules: Partial<Record<PanelTypeId, PanelTypeRule>>; surfaces: Partial<Record<PanelSurface, PanelSurfaceRule>> }
+/** Kayıttan gelen ayar → güncel biçim: eski kayıtta kenar başına TEK kural vardı (nesne), artık liste. */
+export function normalizePanelTypeConfig(raw: { rules?: unknown; surfaces?: unknown } | null | undefined): PanelTypeConfig {
+  const rules: PanelTypeConfig['rules'] = {};
+  for (const [type, rule] of Object.entries((raw?.rules ?? {}) as Record<string, { edges?: Record<string, unknown> } | undefined>)) {
+    const edges: PanelTypeRule['edges'] = {};
+    for (const [edge, v] of Object.entries(rule?.edges ?? {})) {
+      const list = (Array.isArray(v) ? v : v ? [v] : []).filter((r): r is EdgeConnectorRule => !!r && typeof r === 'object' && !!(r as EdgeConnectorRule).connectorId);
+      if (list.length) edges[edge as PanelEdgeDir] = list;
+    }
+    rules[type as PanelTypeId] = { edges };
+  }
+  return { rules, surfaces: (raw?.surfaces ?? {}) as PanelTypeConfig['surfaces'] };
+}
 /** Temsili birleşim: B paneli UCUYLA A panelinin yüzüne dayanır. bFace = B'nin geniş yüzü · bEdge = B'nin ucu (kalınlığı) · aFace = A'nın temas yüzü. */
 export type ConnSurface = 'bFace' | 'bEdge' | 'aFace';
 /** Delik: `along` = birleşim çizgisi boyunca bağlayıcı noktasından · `across` = bFace'te birleşimden B'nin içine, bEdge / aFace'te B kalınlığının ortasından. */

@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
   type AccessoryLayer, type AccessoryModel, type AccessoryUnit, type CavityBox, type Connector, type HoleSpec, type LegModel, type LegModelPart,
-  type LegPartRole, type LegPreset, type PanelHole, type PanelTypeConfig, useAppStore,
+  type LegPartRole, type LegPreset, type PanelHole, type PanelTypeConfig, normalizePanelTypeConfig, useAppStore,
 } from '../store';
 import { type AxisDir, type Vec3, convertReplicadToThreeGeometry, genId, initReplicad, round1 } from './Geometry';
 import { type LegRule, standardLegRules, standardOf } from './LegLayout';
@@ -268,7 +268,7 @@ export async function loadAccessoryLibrary(): Promise<void> {
   useAppStore.getState().setAccessoryLibrary({ accessoryModels: meta.sort(by), legModels: legModels.sort(by), legPresets: legPresets.sort(by), accessoryLayers: layers.sort(by) });
   useAppStore.getState().setConnectors(connectors.sort(by));
   const cfg = settings.find(x => x.id === PANEL_TYPE_CONFIG_ID);
-  if (cfg) useAppStore.getState().setPanelTypeConfig({ rules: cfg.rules ?? {}, surfaces: cfg.surfaces ?? {} });
+  if (cfg) useAppStore.getState().setPanelTypeConfig(normalizePanelTypeConfig(cfg));
 }
 const SEEDED_KEY = 'yago.accessories.layersSeeded';
 function seededFlag(set = false): boolean {

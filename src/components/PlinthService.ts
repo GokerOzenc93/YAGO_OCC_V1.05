@@ -13,7 +13,7 @@ import {
 import { type FreeRegion, freeRegionInBox, legSpots } from './PanelGroupService';
 import { type HoleCutter, legHoleCutters, legModelById, legsFromPreset, resolveLegPreset } from './AccessoryService';
 import {
-  type EdgeRole, type FaceRole, type LegRule, type Pt, autoLegPoints, clampInsidePoly, cleanPoly, clipPolyToRect, edgeRoles, fromFacing, rectPoly,
+  type EdgeRole, type FaceKind, type FaceRole, type LegRule, type Pt, isFaceKind, autoLegPoints, clampInsidePoly, cleanPoly, clipPolyToRect, edgeRoles, fromFacing, rectPoly,
   roleOfNormal, signedArea, toFacing,
 } from './LegLayout';
 import * as THREE from 'three';
@@ -84,13 +84,16 @@ export function plinthVfIndex(s: PlinthSet, vfs = useAppStore.getState().virtual
 }
 
 /* ───────── GÖVDE YÜZ ROLLERİ (gövde parametresi `faceRoles`) ───────── */
-export interface FaceRoleOverride { descriptor: FaceDescriptor; role: FaceRole }
+/** `role` yoksa yön rolü otomatik kalır; `kind` = kolon / kiriş görevi (yön rolünden bağımsız). */
+export interface FaceRoleOverride { descriptor: FaceDescriptor; role?: FaceRole; kind?: FaceKind }
 export interface BodyFaceRoles { frontAxis?: PlinthFacing | null; overrides?: FaceRoleOverride[] }
 export interface BodyFace {
   gi: number; normal: Vec3; center: Vec3; area: number; axis: AxisDir | null;
   /** Yüzün düzlem-içi ölçüleri (etiket) ve köşe kutusu (kenar eşlemesi). */
   size: [number, number]; bounds: { min: Vec3; max: Vec3 };
   descriptor: FaceDescriptor; auto: FaceRole; role: FaceRole; overridden: boolean;
+  /** Özel görev (kolon yanı / kolon önü / kiriş önü / kiriş yatayı) — yalnız elle verilir. */
+  kind?: FaceKind;
 }
 export const FACE_ROLE_ORDER: FaceRole[] = ['front', 'rear', 'left', 'right', 'top', 'bottom'];
 export const bodyFaceRolesOf = (body: Shape | undefined | null): BodyFaceRoles => (body?.parameters?.faceRoles as BodyFaceRoles | undefined) ?? {};
@@ -153,6 +156,7 @@ export function bodyFaces(body: Shape | undefined | null, st = useAppStore.getSt
       out.push({
         gi, normal: [n.x, n.y, n.z], center: [g.center.x, g.center.y, g.center.z], area: g.totalArea, axis: axisOfNormal(n),
         size: [round1(span[inPlane[0]]), round1(span[inPlane[1]])], bounds, descriptor, auto, role: ov?.role ?? auto, overridden: !!ov,
+        ...(isFaceKind(ov?.kind) ? { kind: ov!.kind } : {}),
       });
     });
   } catch { /* yüz çözümü başarısız → rol yok (kenarlar normalden) */ }
@@ -169,14 +173,18 @@ export function setBodyFrontAxis(shapeId: string, facing: PlinthFacing | null): 
   const next: BodyFaceRoles = { ...fr, frontAxis: facing && facing !== 'y+' && facing !== 'y-' ? facing : null };
   st.updateShape(shapeId, { parameters: { ...body.parameters, faceRoles: next } } as Partial<Shape>);
 }
-/** Yüz rolü üstüne yazma (parametre): `role` null ya da otomatik role eşitse kayıt silinir (yüz otomatiğe döner). */
-export function setBodyFaceRole(shapeId: string, gi: number, role: FaceRole | null): void {
+/** Yüz rolü üstüne yazma (parametre). Yön rolü (ön / arka / …): otomatiğe eşitse ya da null ise kayıt silinir (yüz otomatiğe döner), özel
+ *  görev kalkar. Özel görev (kolon / kiriş): yüzün yön rolü olduğu gibi kalır, yalnız görev yazılır. */
+export function setBodyFaceRole(shapeId: string, gi: number, role: FaceRole | FaceKind | null): void {
   const st = useAppStore.getState();
   const body = shapeById(shapeId, st.shapes); if (!body) return;
   const face = bodyFaces(body, st).find(f => f.gi === gi); if (!face) return;
   const fr = bodyFaceRolesOf(body);
   const kept = (fr.overrides ?? []).filter(o => matchOverride(face.descriptor, [o]) === null);
-  const overrides = role && role !== face.auto ? [...kept, { descriptor: face.descriptor, role }] : kept;
+  const next: FaceRoleOverride | null = isFaceKind(role)
+    ? { descriptor: face.descriptor, kind: role, ...(face.role !== face.auto ? { role: face.role } : {}) }
+    : role && role !== face.auto ? { descriptor: face.descriptor, role } : null;
+  const overrides = next ? [...kept, next] : kept;
   st.updateShape(shapeId, { parameters: { ...body.parameters, faceRoles: { ...fr, overrides } } } as Partial<Shape>);
 }
 /** Rolü `role` olan tüm düz yüzler (eğikler dahil): normal, merkez, alan, eksen (eğikse null); alan azalan. */

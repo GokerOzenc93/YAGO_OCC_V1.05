@@ -48,7 +48,7 @@ import {
 } from './PanelGroupService';
 import { confirmBodyPanelPlacement } from './Scene';
 import {
-  bodyJoints, panelOrientation, panelTypeChoice, panelTypeCode, panelTypeLabel, panelTypeShort, setGroupPanelType, setVfPanelType, surfaceRuleOf,
+  bodyJoints, edgeRulesOf, panelOrientation, panelTypeChoice, panelTypeCode, panelTypeLabel, panelTypeShort, setGroupPanelType, setVfPanelType, surfaceRuleOf,
 } from './ConnectorService';
 import { useDraft as useSketch } from './Draft';
 import { beginFacePick, deleteSketch, editSketch, exitFace, sketchFeaturesOf } from './DraftView';
@@ -2315,13 +2315,14 @@ function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefin
           <span className="yago-label shrink-0">Edges</span>
           <div className="flex items-center gap-[3px]">
             {edges.map((e, i) => {
-              const rule = cfg.rules?.[c.current]?.edges[e.role], conn = rule?.connectorId ? connectors.find(x => x.id === rule.connectorId) : undefined;
-              const n = conn ? placed(e.role) : 0;
+              // Kenarın bağlayıcıları (birden çok olabilir): adlar + gerçekten atılan toplam adet.
+              const names = edgeRulesOf(c.current, e.role, cfg).map(r => connectors.find(x => x.id === r.connectorId)?.name).filter((x): x is string => !!x);
+              const has = names.length > 0, n = has ? placed(e.role) : 0, list = names.join(' + ');
               return (
-                <span key={i} title={`${EDGE_LABEL[e.role]} edge · ${fmt1(e.length)} mm${conn ? (n ? ` · ${n} × ${conn.name}` : ` · ${conn.name} — nothing placed: this edge does not butt against a panel face`) : ' · no connector'}`}
+                <span key={i} title={`${EDGE_LABEL[e.role]} edge · ${fmt1(e.length)} mm${has ? (n ? ` · ${n} × ${list}` : ` · ${list} — nothing placed: this edge does not butt against a panel face`) : ' · no connector'}`}
                   className={`h-[18px] px-[5px] rounded-[5px] text-[9.5px] font-semibold flex items-center gap-[3px] ring-1
-                    ${conn ? 'bg-[#fff4ec] text-[#c2410c] ring-[#f3c7a5]' : 'bg-white text-stone-500 ring-[#e3ddd4]'}`}>
-                  {EDGE_LABEL[e.role]}{conn && <span className="tabular-nums font-bold">{n}</span>}
+                    ${has ? 'bg-[#fff4ec] text-[#c2410c] ring-[#f3c7a5]' : 'bg-white text-stone-500 ring-[#e3ddd4]'}`}>
+                  {EDGE_LABEL[e.role]}{has && <span className="tabular-nums font-bold">{n}</span>}
                 </span>
               );
             })}

@@ -24,7 +24,7 @@ import {
   plinthRowKey, plinthSetsOf, isPlinthRow, finishPlinthEdit, plinthRegionOf, prismGeometry, bodyFrontAxis, bodyFaces, setBodyFaceRole, bodyFacesByRole,
   plinthLegsOf,
 } from './PlinthService';
-import { FACE_ROLES, FACE_ROLE_LABEL, type FaceRole } from './LegLayout';
+import { FACE_KINDS, FACE_KIND_LABEL, FACE_ROLES, FACE_ROLE_LABEL, type FaceKind, type FaceRole, faceRoleText } from './LegLayout';
 import { LAYER_DEFAULT_COLOR, type LegAssemblyPart, accessoryGeometryNow, legAssembly, onAccessoryGeometry } from './AccessoryService';
 import {
   confirmRefCavityExtrude, groupBoundsPanelPredicate, isInteriorPanel, repickObstacles, collectObstacles,
@@ -2658,8 +2658,12 @@ export function ImportedFoot({ legModelId, h, d, active, xray, onClick, pickable
     </group>
   );
 }
-const ROLE_CHIP: Record<string, string> = { front: '#c2410c', rear: '#44403c', left: '#2563eb', right: '#0f766e', top: '#78716c', bottom: '#78716c' };
-/** Kübün üzerinde roller: seçili gövdenin her düz yüzünde tıklanabilir rol seçimi (gövde parametresine yazılır; elle = dolu, otomatik = soluk). */
+const ROLE_CHIP: Record<string, string> = {
+  front: '#c2410c', rear: '#44403c', left: '#2563eb', right: '#0f766e', top: '#78716c', bottom: '#78716c',
+  columnSide: '#6d5fa3', columnFront: '#6d5fa3', beamFront: '#a16207', beamHoriz: '#a16207',
+};
+/** Kübün üzerinde roller: seçili gövdenin her düz yüzünde tıklanabilir rol seçimi (gövde parametresine yazılır; elle = dolu, otomatik = soluk).
+ *  Listenin sonunda kolon / kiriş görevleri (yüzün yön rolü değişmez; o yüze konan panelin tipi olur). */
 const BodyFaceRoleLabels: React.FC<{ shape: any; hovered: number | null }> = ({ shape, hovered }) => {
   const { doorGroups, setFaceRoleHover } = useStoreFields('doorGroups', 'setFaceRoleHover');
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2668,21 +2672,25 @@ const BodyFaceRoleLabels: React.FC<{ shape: any; hovered: number | null }> = ({ 
   return (
     <>
       {faces.map(f => {
-        const hot = hovered === f.gi;
+        const hot = hovered === f.gi, chip = ROLE_CHIP[f.kind ?? f.role];
+        const optStyle = { textTransform: 'none', color: '#1c1917', background: '#fff' } as const;
         return (
           <Html key={f.gi} position={[f.center[0] + f.normal[0] * 6, f.center[1] + f.normal[1] * 6, f.center[2] + f.normal[2] * 6]} center zIndexRange={[880, 900]}
             style={{ pointerEvents: 'none' }}>
-            <select value={f.role} title={`${FACE_ROLE_LABEL[f.role]} — click to change this face's role`} {...stopAll}
-              onChange={e => setBodyFaceRole(shape.id, f.gi, e.target.value as FaceRole)}
+            <select value={f.kind ?? f.role} title={`${faceRoleText(f)} — click to change this face's role`} {...stopAll}
+              onChange={e => setBodyFaceRole(shape.id, f.gi, e.target.value as FaceRole | FaceKind)}
               onMouseEnter={() => setFaceRoleHover({ shapeId: shape.id, gi: f.gi })} onMouseLeave={() => setFaceRoleHover(null)}
               style={{
+                // Kutu en uzun seçeneğe ("Beam horizontal") göre genişlemesin: genişlik görünen ada göre.
+                width: Math.round(faceRoleText(f).length * (hot ? 7.5 : 6.8) + 17), boxSizing: 'border-box',
                 pointerEvents: 'auto', cursor: 'pointer', appearance: 'none', WebkitAppearance: 'none', outline: 'none',
                 fontFamily: FONT, fontSize: hot ? 10 : 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', lineHeight: '14px', padding: '0 7px',
-                borderRadius: 4, whiteSpace: 'nowrap', border: `1px solid ${ROLE_CHIP[f.role]}`,
-                background: f.overridden || hot ? ROLE_CHIP[f.role] : 'rgba(255,252,247,0.92)', color: f.overridden || hot ? '#fff' : ROLE_CHIP[f.role],
+                borderRadius: 4, whiteSpace: 'nowrap', border: `1px solid ${chip}`,
+                background: f.overridden || hot ? chip : 'rgba(255,252,247,0.92)', color: f.overridden || hot ? '#fff' : chip,
                 boxShadow: hot ? '0 1px 4px rgba(40,30,20,0.35)' : '0 1px 3px rgba(40,30,20,0.22)', transition: 'font-size 0.1s',
               }}>
-              {FACE_ROLES.map(r => <option key={r} value={r} style={{ textTransform: 'none', color: '#1c1917', background: '#fff' }}>{FACE_ROLE_LABEL[r]}</option>)}
+              {FACE_ROLES.map(r => <option key={r} value={r} style={optStyle}>{FACE_ROLE_LABEL[r]}</option>)}
+              <optgroup label="Column / beam" style={optStyle}>{FACE_KINDS.map(k => <option key={k} value={k} style={optStyle}>{FACE_KIND_LABEL[k]}</option>)}</optgroup>
             </select>
           </Html>
         );

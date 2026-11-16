@@ -14,7 +14,7 @@ import {
   axisIndexOf, applyShapeChanges, rebuildBodySolid,
 } from './Geometry';
 import { PLINTH_FACINGS, PLINTH_FACING_LABEL, type PlinthFacing, bodyFaces, bodyFrontAxis, setBodyFaceRole, setBodyFrontAxis } from './PlinthService';
-import { FACE_ROLES, FACE_ROLE_LABEL, type FaceRole } from './LegLayout';
+import { FACE_KINDS, FACE_KIND_LABEL, FACE_ROLES, FACE_ROLE_LABEL, type FaceKind, type FaceRole, faceRoleText } from './LegLayout';
 import {
   useDraft, submitText, cancelCommand, commandActive, tabKey, setAids, setTyped, setPlanePick, selectEntity, eraseSelection, undo, redo, isCommandName,
 } from './Draft';
@@ -1655,9 +1655,13 @@ const ExprRow = ({ label, labelColor, expression, onExpr, result, children }: Ex
 );
 
 /* Yüz rolleri: gövdenin ön yönü (Auto = kapak yüzü, yoksa +Z) + her düz yüzün rolü (otomatik, satırdan üstüne yazılır → `faceRoles`).
-   Satıra gelince yüz vurgulanır; baza ayak mesafeleri bu rollerden okunur. */
+   Satıra gelince yüz vurgulanır; baza ayak mesafeleri bu rollerden okunur. Kolon / kiriş seçenekleri yüzün yön rolünü değiştirmez, yalnız o
+   yüze konan panelin tipini belirler (Column side / Column front / Beam front / Beam horizontal). */
 const P_SELECT = `yago-param-input shrink-0 h-[22px] px-1 text-[11px] font-medium text-stone-700 ${P_BARE} rounded-[6px] ${P_FX} cursor-pointer`;
-const ROLE_DOT: Record<FaceRole, string> = { front: '#c2410c', rear: '#44403c', left: '#2563eb', right: '#0f766e', top: '#a8a29e', bottom: '#a8a29e' };
+const ROLE_DOT: Record<FaceRole | FaceKind, string> = {
+  front: '#c2410c', rear: '#44403c', left: '#2563eb', right: '#0f766e', top: '#a8a29e', bottom: '#a8a29e',
+  columnSide: '#6d5fa3', columnFront: '#6d5fa3', beamFront: '#a16207', beamHoriz: '#a16207',
+};
 function FacesSection({ shape }: { shape: Shape }) {
   const { setFaceRoleHover, showFaceRoles, setShowFaceRoles, doorGroups } = useStoreFields('setFaceRoleHover', 'showFaceRoles', 'setShowFaceRoles', 'doorGroups');
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1688,13 +1692,14 @@ function FacesSection({ shape }: { shape: Shape }) {
           </div>
           {faces.map(f => (
             <div key={f.gi} className={P_ROW} onMouseEnter={() => hover(f.gi)} onMouseLeave={() => hover(null)}
-              title={`${axisLabel(f)} face · ${f.size[0]} × ${f.size[1]} mm · ${FACE_ROLE_LABEL[f.role]}`}>
+              title={`${axisLabel(f)} face · ${f.size[0]} × ${f.size[1]} mm · ${faceRoleText(f)}${f.kind ? ` (faces ${FACE_ROLE_LABEL[f.role].toLowerCase()})` : ''}`}>
               <span className={P_CODE} style={f.axis ? undefined : { color: '#b45309' }}>{axisLabel(f)}</span>
-              <span className="shrink-0 w-[8px] h-[8px] rounded-full" style={{ background: ROLE_DOT[f.role] }} />
+              <span className="shrink-0 w-[8px] h-[8px] rounded-full" style={{ background: ROLE_DOT[f.kind ?? f.role] }} />
               <span className={P_DESC}>{f.size[0]} × {f.size[1]} <span className="yago-unit">mm</span></span>
-              <select value={f.role} onChange={e => setBodyFaceRole(shape.id, f.gi, e.target.value as FaceRole)}
-                className={`${P_SELECT} w-[90px] ${f.overridden ? '!text-orange-700 font-semibold' : ''}`} style={{ fontFamily: UI_FONT }}>
+              <select value={f.kind ?? f.role} onChange={e => setBodyFaceRole(shape.id, f.gi, e.target.value as FaceRole | FaceKind)}
+                className={`${P_SELECT} w-[118px] ${f.overridden ? '!text-orange-700 font-semibold' : ''}`} style={{ fontFamily: UI_FONT }}>
                 {FACE_ROLES.map(r => <option key={r} value={r}>{FACE_ROLE_LABEL[r]}</option>)}
+                <optgroup label="Column / beam">{FACE_KINDS.map(k => <option key={k} value={k}>{FACE_KIND_LABEL[k]}</option>)}</optgroup>
               </select>
               {f.overridden && <DelBtn title="Reset this face" onClick={() => setBodyFaceRole(shape.id, f.gi, null)} />}
             </div>

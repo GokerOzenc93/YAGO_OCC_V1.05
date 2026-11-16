@@ -123,6 +123,14 @@ export function clampInsidePoly(q: Pt, poly: Pt[], R: number): Pt {
 export type FaceRole = 'front' | 'rear' | 'left' | 'right' | 'top' | 'bottom';
 export const FACE_ROLES: FaceRole[] = ['front', 'rear', 'left', 'right', 'top', 'bottom'];
 export const FACE_ROLE_LABEL: Record<FaceRole, string> = { front: 'Front', rear: 'Rear', left: 'Left', right: 'Right', top: 'Top', bottom: 'Bottom' };
+/** Yüzün ÖZEL GÖREVİ (yalnız elle seçilir): duvardaki kolonu / kirişi dönen yüz. Yön rolü (ön / arka / …) aynen kalır — ayak, kapak, arkalık,
+ *  hızlı gövde ve kenar adları onu okur; görev yalnız o yüze konan panelin TİPİNİ belirler (ConnectorService). */
+export type FaceKind = 'columnSide' | 'columnFront' | 'beamFront' | 'beamHoriz';
+export const FACE_KINDS: FaceKind[] = ['columnSide', 'columnFront', 'beamFront', 'beamHoriz'];
+export const FACE_KIND_LABEL: Record<FaceKind, string> = { columnSide: 'Column side', columnFront: 'Column front', beamFront: 'Beam front', beamHoriz: 'Beam horizontal' };
+export const isFaceKind = (v: unknown): v is FaceKind => FACE_KINDS.includes(v as FaceKind);
+/** Yüz seçiminde gösterilen ad: özel görev varsa o, yoksa yön rolü. */
+export const faceRoleText = (f: { role: FaceRole; kind?: FaceKind }): string => (f.kind ? FACE_KIND_LABEL[f.kind] : FACE_ROLE_LABEL[f.role]);
 /** Ön yön vektörü (gövde-yerel x,z) ve sağ = up × front (önde durup gövdeye bakanın sağı). toFacing ile aynı çerçeve. */
 export function facingVectors(facing: Facing): { front: Pt; right: Pt } {
   switch (facing) {

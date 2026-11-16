@@ -3,7 +3,7 @@
    2) Panelin kenar rolleri (ön / arka / üst / alt / sol / sağ) gövdenin yüz rollerinden okunur; bağlayıcı kuralı ve ileride kenar bandı
       aynı rolleri kullanır. 3) Kenar kuralı → kenar boyunca bağlayıcı noktaları.
    4) Bağlayıcı = delikler + çizilmiş operasyonlar (pocket / line) + modeller; hepsi TEMSİLİ BİRLEŞİM çerçevesinde (B paneli ucuyla A'nın
-      yüzüne dayanır). Bu sürümde tanımlar gerçek panellere İŞLENMEZ; kayıt AccessoryService veritabanında (IndexedDB). */
+      yüzüne dayanır). 5) Birleşimler: kurallar gerçek panellere işlenir. Kayıt AccessoryService veritabanında (IndexedDB). */
 import * as THREE from 'three';
 import {
   type CavityBox, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector, type ConnectorLayout,
@@ -13,7 +13,7 @@ import {
 import { type Vec3, createHoleCylinder, createPrismTool, effectiveBodyGeometry, footprintGeometry, genId, localBboxOf, panelHasRotation, round1 } from './Geometry';
 import { type HoleCutter, PANEL_TYPE_CONFIG_ID, holeCutterOf, importAccessoryFile, libraryDelete, libraryPut } from './AccessoryService';
 import { isDoorPanel } from './DoorService';
-import { roleOfNormal } from './LegLayout';
+import { isFaceKind, roleOfNormal } from './LegLayout';
 import { bodyFaces, bodyFrontAxis } from './PlinthService';
 import { geoAxes, panelFrameOf } from './PanelSchematics';
 
@@ -24,7 +24,7 @@ type St = ReturnType<typeof useAppStore.getState>;
 export type PanelPlane = 'side' | 'horizontal' | 'frontal' | 'any';
 /** Yüzeydeki yeri: otomatik tip seçimi bununla ayırır (üst yüzde öndeki dar şerit = ön kayıt gibi). */
 type PanelZone = 'full' | 'front' | 'rear' | 'top' | 'bottom';
-type PanelTypeGroup = 'carcass' | 'interior' | 'traverse' | 'plinth' | 'free';
+type PanelTypeGroup = 'carcass' | 'interior' | 'traverse' | 'plinth' | 'boxing' | 'free';
 export interface PanelTypeDef { id: PanelTypeId; label: string; short: string; code: string; group: PanelTypeGroup; plane: PanelPlane; zone?: PanelZone }
 
 export const PANEL_TYPES: PanelTypeDef[] = [
@@ -47,12 +47,17 @@ export const PANEL_TYPES: PanelTypeDef[] = [
   { id: 'bottomRearRailV', label: 'Bottom rear traverse · vertical', short: 'Bottom rear V', code: 'BRV', group: 'traverse', plane: 'frontal', zone: 'bottom' },
   { id: 'frontPlinth', label: 'Front plinth', short: 'Front plinth', code: 'FPL', group: 'plinth', plane: 'frontal', zone: 'bottom' },
   { id: 'rearPlinth', label: 'Rear plinth', short: 'Rear plinth', code: 'RPL', group: 'plinth', plane: 'frontal', zone: 'bottom' },
+  // Duvardaki kolonu / kirişi dönen paneller: gövde yüzüne "Column … / Beam …" görevi verilince o yüzün paneli bu tipi alır.
+  { id: 'columnSide', label: 'Column side panel', short: 'Column side', code: 'CS', group: 'boxing', plane: 'side' },
+  { id: 'columnFront', label: 'Column front panel', short: 'Column front', code: 'CF', group: 'boxing', plane: 'frontal' },
+  { id: 'beamFront', label: 'Beam front panel', short: 'Beam front', code: 'BF', group: 'boxing', plane: 'frontal' },
+  { id: 'beamHoriz', label: 'Beam horizontal panel', short: 'Beam horizontal', code: 'BH', group: 'boxing', plane: 'horizontal' },
   { id: 'free', label: 'Free panel', short: 'Free', code: 'FR', group: 'free', plane: 'any' },
 ];
 const TYPE_BY_ID = new Map(PANEL_TYPES.map(t => [t.id, t]));
 export const PANEL_TYPE_GROUPS: Array<{ key: PanelTypeGroup; label: string }> = [
   { key: 'carcass', label: 'Carcass' }, { key: 'interior', label: 'Interior' }, { key: 'traverse', label: 'Traverses' }, { key: 'plinth', label: 'Plinth' },
-  { key: 'free', label: 'Other' },
+  { key: 'boxing', label: 'Column / beam' }, { key: 'free', label: 'Other' },
 ];
 export const panelTypeDef = (id: PanelTypeId | null | undefined): PanelTypeDef | undefined => (id ? TYPE_BY_ID.get(id) : undefined);
 export const panelTypeLabel = (id: PanelTypeId | null | undefined): string => panelTypeDef(id)?.label ?? 'Panel';
@@ -79,6 +84,8 @@ export const PANEL_SURFACES: Array<{ key: PanelSurface; label: string; plane: Ex
   { key: 'left', label: 'Left face', plane: 'side' }, { key: 'right', label: 'Right face', plane: 'side' },
   { key: 'top', label: 'Top face', plane: 'horizontal' }, { key: 'bottom', label: 'Bottom face', plane: 'horizontal' },
   { key: 'front', label: 'Front face', plane: 'frontal' }, { key: 'rear', label: 'Rear face', plane: 'frontal' },
+  { key: 'columnSide', label: 'Column side', plane: 'side' }, { key: 'columnFront', label: 'Column front', plane: 'frontal' },
+  { key: 'beamFront', label: 'Beam front', plane: 'frontal' }, { key: 'beamHoriz', label: 'Beam horizontal', plane: 'horizontal' },
   { key: 'shelf', label: 'Shelf tool', plane: 'horizontal', tool: true }, { key: 'divider', label: 'Divider tool', plane: 'side', tool: true },
   { key: 'back', label: 'Back tool', plane: 'frontal', tool: true },
 ];
@@ -91,6 +98,10 @@ const DEFAULT_SURFACES: Record<PanelSurface, PanelSurfaceRule> = {
   bottom: { allowed: ['bottom', 'bottomFrontRailH', 'bottomRearRailH', 'free'], def: 'bottom' },
   front: { allowed: ['frontPlinth', 'topFrontRailV', 'bottomFrontRailV', 'free'], def: 'frontPlinth' },
   rear: { allowed: ['rearPanel', 'rearPlinth', 'topRearRailV', 'bottomRearRailV', 'free'], def: 'rearPanel' },
+  columnSide: { allowed: ['columnSide', 'free'], def: 'columnSide' },
+  columnFront: { allowed: ['columnFront', 'free'], def: 'columnFront' },
+  beamFront: { allowed: ['beamFront', 'free'], def: 'beamFront' },
+  beamHoriz: { allowed: ['beamHoriz', 'free'], def: 'beamHoriz' },
   shelf: { allowed: ['fixedShelf', 'adjustableShelf'], def: 'fixedShelf' },
   divider: { allowed: ['divider'], def: 'divider' },
   back: { allowed: ['back'], def: 'back' },
@@ -116,18 +127,22 @@ function roleOfDir(body: Shape, d: Vec3, st: St = useAppStore.getState()): Panel
   for (const f of bodyFaces(body, st)) if (dot3(f.normal, d) > 0.9 && (!best || f.area > best.area)) best = { role: f.role, area: f.area };
   return best?.role ?? roleOfNormal({ x: d[0], y: d[1], z: d[2] }, bodyFrontAxis(body, st).facing);
 }
-/** Panelin yüzeyi: iç panelde araç (raf / dikme / arkalık), gövde panelinde üstünde durduğu gövde yüzünün rolü. Kapak / baza seti → null. */
+/** Panelin yüzeyi: iç panelde araç (raf / dikme / arkalık), gövde panelinde üstünde durduğu gövde yüzünün özel görevi (kolon / kiriş),
+ *  yoksa yön rolü. Kapak / baza seti → null. */
 function surfaceOfVf(vf: VirtualFace, st: St = useAppStore.getState()): PanelSurface | null {
   if (vf.doorGroupId || vf.plinthId) return null;
   if (vf.backGroupId) return 'back';
   if (vf.groupId) return st.panelGroups.find(g => g.id === vf.groupId)?.kind === 'divider' ? 'divider' : 'shelf';
   const body = shapeById(vf.shapeId, st.shapes); if (!body) return null;
   // VF'nin düzlemindeki gövde yüzü (üst üste panelde `stackDepth` kadar içeride); yoksa normalden.
-  let best: { role: PanelEdgeDir; d: number } | null = null;
+  let best: { role: PanelSurface; d: number } | null = null;
   for (const f of bodyFaces(body, st)) {
     if (dot3(f.normal, vf.normal) < 0.95) continue;
     const d = Math.abs(dot3([vf.center[0] - f.center[0], vf.center[1] - f.center[1], vf.center[2] - f.center[2]], f.normal) + (vf.stackDepth ?? 0));
-    if (!best || d < best.d - 0.5) best = { role: f.role, d };
+    // Aynı düzlemde birden çok yüz (kolonun önü + asıl arka yüz hizalıysa): panelin merkezini kapsayan kazanır.
+    const inside = [0, 1, 2].every(a => Math.abs(f.normal[a]) > 0.5 || (vf.center[a] >= f.bounds.min[a] - 2 && vf.center[a] <= f.bounds.max[a] + 2));
+    const score = d + (inside ? 0 : 1);
+    if (!best || score < best.d - 0.5) best = { role: f.kind ?? f.role, d: score };
   }
   return best && best.d < 3 ? best.role : roleOfDir(body, vf.normal, st);
 }
@@ -170,7 +185,8 @@ function quickBodyType(vf: VirtualFace): PanelTypeId | null {
 /** KONUMDAN otomatik tip (elle seçim yok sayılır). Yerleşmemiş (önizleme) VF'de de çalışır. */
 function autoPanelType(vf: VirtualFace, st: St = useAppStore.getState()): PanelTypeId | null {
   const surface = surfaceOfVf(vf, st); if (!surface) return null;
-  if (vf.quickBody) { const q = quickBodyType(vf); if (q) return q; }
+  // Yüze elle kolon / kiriş görevi verilmişse o kazanır (hızlı gövde parçasında da).
+  if (vf.quickBody && !isFaceKind(surface)) { const q = quickBodyType(vf); if (q) return q; }
   const rule = surfaceRuleOf(surface, st.panelTypeConfig);
   if (vf.groupId || vf.backGroupId) return rule.def;
   return pickTypeForZone(rule, zoneOfVf(vf, surface, st));
@@ -236,15 +252,30 @@ export function panelOrientation(panel: Shape | undefined | null, st: St = useAp
 }
 
 // ═════════════════════════════════════════════════ 4. TİP KURALLARI (kenar → bağlayıcı) ═════════════════════════════════════════════════
-const DEFAULT_EDGE_RULE: EdgeConnectorRule = { connectorId: null, mode: 'spacing', start: 50, end: 50, maxSpacing: 400, count: 2 };
-export const DEFAULT_CONNECTOR_LAYOUT: ConnectorLayout = { mode: 'spacing', start: 50, end: 50, maxSpacing: 400, count: 2 };
+/** Eksik alanlar için (dizilimsiz eski bağlayıcı): eski davranış — uç mesafeleri + azami aralık. */
+export const DEFAULT_CONNECTOR_LAYOUT: ConnectorLayout = { mode: 'spacing', start: 50, end: 50, maxSpacing: 400, count: 2, midFrom: 600 };
+/** YENİ bağlayıcının dizilimi: baştan + sondan birer tane, birleşim 600 mm'ye ulaşınca ortaya bir tane daha. */
+export const NEW_CONNECTOR_LAYOUT: ConnectorLayout = { ...DEFAULT_CONNECTOR_LAYOUT, mode: 'ends' };
+/** Bir kenarda en çok kaç ayrı bağlayıcı tanımlanır. */
+export const MAX_EDGE_RULES = 4;
 const typeRuleOf = (type: PanelTypeId, cfg: PanelTypeConfig = useAppStore.getState().panelTypeConfig): PanelTypeRule => cfg.rules?.[type] ?? { edges: {} };
-export const edgeRuleOf = (type: PanelTypeId, edge: PanelEdgeDir, cfg?: PanelTypeConfig): EdgeConnectorRule => ({ ...DEFAULT_EDGE_RULE, ...(typeRuleOf(type, cfg).edges[edge] ?? {}) });
-/** Kenar boyunca bağlayıcı noktaları (kenarın başından mm). Kenar uç mesafelerine sığmıyorsa tek bağlayıcı ortada. */
-export function edgeConnectorPositions(rule: Pick<EdgeConnectorRule, 'mode' | 'start' | 'end' | 'maxSpacing' | 'count'>, length: number): number[] {
+/** Kenarın kuralları (bağlayıcısı olanlar). Eski kayıt biçimi (tek nesne) de okunur. */
+const rulesIn = (edges: PanelTypeRule['edges'] | undefined, edge: PanelEdgeDir): EdgeConnectorRule[] => {
+  const v = edges?.[edge] as EdgeConnectorRule[] | EdgeConnectorRule | undefined;
+  return (Array.isArray(v) ? v : v ? [v] : []).filter(r => !!r?.connectorId);
+};
+export const edgeRulesOf = (type: PanelTypeId, edge: PanelEdgeDir, cfg?: PanelTypeConfig): EdgeConnectorRule[] => rulesIn(typeRuleOf(type, cfg).edges, edge);
+const ruleHasConnector = (rule: PanelTypeRule | undefined): boolean => !!rule && (Object.keys(rule.edges ?? {}) as PanelEdgeDir[]).some(e => rulesIn(rule.edges, e).length > 0);
+/** Kenar boyunca bağlayıcı noktaları (kenarın başından mm). Kenar uç mesafelerine sığmıyorsa tek bağlayıcı ortada.
+ *  'ends': baştan `start`, sondan `end`; birleşim `midFrom` boyuna ulaşınca TAM ORTAYA bir tane daha. */
+export function edgeConnectorPositions(rule: ConnectorLayout, length: number): number[] {
   if (!(length > 0)) return [];
   const a = Math.max(0, rule.start), b = length - Math.max(0, rule.end), span = b - a;
   if (span < 1) return [round1(length / 2)];
+  if (rule.mode === 'ends') {
+    const mid = length / 2, from = rule.midFrom ?? DEFAULT_CONNECTOR_LAYOUT.midFrom!;
+    return from > 0 && length >= from - 1e-6 && mid - a > 1 && b - mid > 1 ? [round1(a), round1(mid), round1(b)] : [round1(a), round1(b)];
+  }
   const n = rule.mode === 'count' ? Math.max(1, Math.round(rule.count)) : Math.max(2, Math.ceil(span / Math.max(1, rule.maxSpacing) - 1e-9) + 1);
   if (n === 1) return [round1(length / 2)];
   return Array.from({ length: n }, (_, i) => round1(a + (span * i) / (n - 1)));
@@ -254,18 +285,31 @@ async function savePanelTypeConfig(cfg: PanelTypeConfig): Promise<void> {
   refreshConnectorBodies();
   await libraryPut('settings', { id: PANEL_TYPE_CONFIG_ID, ...cfg });
 }
-/** Kenar kuralını yazar; `patch` null → kenardan bağlayıcı kalkar. */
-export function setEdgeRule(type: PanelTypeId, edge: PanelEdgeDir, patch: Partial<EdgeConnectorRule> | null): Promise<void> {
+/** Kenarın bağlayıcı listesini yazar (en çok MAX_EDGE_RULES); boş liste → kenardan bağlayıcı kalkar. */
+export function setEdgeRules(type: PanelTypeId, edge: PanelEdgeDir, rules: EdgeConnectorRule[]): Promise<void> {
   const cfg = useAppStore.getState().panelTypeConfig, edges = { ...typeRuleOf(type, cfg).edges };
-  if (patch) edges[edge] = { ...edgeRuleOf(type, edge, cfg), ...patch }; else delete edges[edge];
+  const list = rules.filter(r => !!r.connectorId).slice(0, MAX_EDGE_RULES);
+  if (list.length) edges[edge] = list; else delete edges[edge];
   return savePanelTypeConfig({ ...cfg, rules: { ...cfg.rules, [type]: { edges } } });
+}
+/** Kenara eklenecek yeni kural: dizilim bağlayıcınınkinden. Aynı kenarda aynı yere düşen kural varsa uç mesafeleri 32 mm içeri kayar ve
+ *  'Ends' kipinde orta bağlayıcı kapalı gelir (iki bağlayıcı üst üste gelmesin; değerler sonra elle / sürükleyerek düzeltilir). */
+export function newEdgeRule(conn: Connector, existing: EdgeConnectorRule[], connectors: Connector[]): EdgeConnectorRule {
+  const base = { ...DEFAULT_CONNECTOR_LAYOUT, ...(conn.layout ?? {}) };
+  const used = existing.map(r => ruleLayout(r, connectors.find(c => c.id === r.connectorId)));
+  let start = base.start, end = base.end, moved = false;
+  while (used.some(u => Math.abs(u.start - start) < 16 || Math.abs(u.end - end) < 16) && start < 400) { start += 32; end += 32; moved = true; }
+  return { ...base, connectorId: conn.id, ...(moved ? { start, end, custom: true, ...(base.mode === 'ends' ? { midFrom: 0 } : {}) } : {}) };
 }
 export function setSurfaceRule(surface: PanelSurface, rule: PanelSurfaceRule): Promise<void> {
   const cfg = useAppStore.getState().panelTypeConfig;
   return savePanelTypeConfig({ ...cfg, surfaces: { ...cfg.surfaces, [surface]: rule } });
 }
 /** Tipi kullanan kenar kuralı sayısı (liste rozeti). */
-export const typeEdgeCount = (type: PanelTypeId, cfg?: PanelTypeConfig): number => Object.values(typeRuleOf(type, cfg).edges).filter(r => r?.connectorId).length;
+export const typeEdgeCount = (type: PanelTypeId, cfg?: PanelTypeConfig): number => {
+  const edges = typeRuleOf(type, cfg).edges;
+  return (Object.keys(edges) as PanelEdgeDir[]).filter(e => rulesIn(edges, e).length > 0).length;
+};
 
 // ═════════════════════════════════════════════════ 5. BAĞLAYICI ═════════════════════════════════════════════════
 /* TEMSİLİ BİRLEŞİM çerçevesi (mm): x = A'nın yüzünden B'nin içine · y = B'nin kalınlığı boyunca (0 = ortası) · z = birleşim çizgisi
@@ -302,7 +346,7 @@ export function connSurfaceExtent(surface: ConnSurface, tB: number): { x0: numbe
 export const connSurfaceDepth = (surface: ConnSurface, tA: number, tB: number): number => (surface === 'bFace' ? tB : surface === 'bEdge' ? CONN_REP.bLen : tA);
 
 export const newConnector = (name = 'Connector'): Connector =>
-  ({ id: genId('conn'), name, holes: [], ops: [], parts: [], tA: CONN_DEFAULT_T, tB: CONN_DEFAULT_T, layout: { ...DEFAULT_CONNECTOR_LAYOUT }, createdAt: Date.now() });
+  ({ id: genId('conn'), name, holes: [], ops: [], parts: [], tA: CONN_DEFAULT_T, tB: CONN_DEFAULT_T, layout: { ...NEW_CONNECTOR_LAYOUT }, createdAt: Date.now() });
 export const newConnHole = (init: Partial<ConnHole> = {}): ConnHole => ({ id: genId('ch'), surface: 'bFace', along: 0, across: 0, diameter: 8, depth: 12, ...init });
 export const newConnOp = (surface: ConnSurface, type: ConnOpType = 'pocket', init: Partial<ConnOp> = {}): ConnOp =>
   ({ id: genId('cop'), surface, type, depth: 5, width: 6, shapes: [], ...init });
@@ -336,15 +380,19 @@ export async function deleteConnector(id: string): Promise<void> {
   const cfg = st.panelTypeConfig, rules: PanelTypeConfig['rules'] = {};
   let touched = false;
   for (const [type, rule] of Object.entries(cfg.rules ?? {}) as Array<[PanelTypeId, PanelTypeRule]>) {
-    const edges = { ...rule.edges };
-    for (const e of Object.keys(edges) as PanelEdgeDir[]) if (edges[e]?.connectorId === id) { delete edges[e]; touched = true; }
+    const edges: PanelTypeRule['edges'] = {};
+    for (const e of Object.keys(rule.edges ?? {}) as PanelEdgeDir[]) {
+      const all = rulesIn(rule.edges, e), kept = all.filter(r => r.connectorId !== id);
+      if (kept.length !== all.length) touched = true;
+      if (kept.length) edges[e] = kept;
+    }
     rules[type] = { edges };
   }
   if (touched) await savePanelTypeConfig({ ...cfg, rules });
 }
 /** Bağlayıcıyı kullanan kenar sayısı (liste rozeti). */
 export const connectorUseCount = (id: string, cfg: PanelTypeConfig = useAppStore.getState().panelTypeConfig): number =>
-  Object.values(cfg.rules ?? {}).reduce((n, r) => n + Object.values(r?.edges ?? {}).filter(e => e?.connectorId === id).length, 0);
+  Object.values(cfg.rules ?? {}).reduce((n, r) => n + (Object.keys(r?.edges ?? {}) as PanelEdgeDir[]).filter(e => rulesIn(r!.edges, e).some(x => x.connectorId === id)).length, 0);
 
 // ═════════════════════════════════════════════════ 6. BİRLEŞİMLER: bağlayıcının gerçek panellere atılması ═════════════════════════════════════════════════
 /* BİRLEŞİM = B panelinin UCU (kalınlık yüzü) A panelinin geniş yüzüne dayanıyor. B'nin tipinde o kenar için bağlayıcı tanımlıysa temas
@@ -397,14 +445,14 @@ function hiddenFaceRole(type: PanelTypeId, plane: Exclude<PanelPlane, 'any'>, bo
 }
 /** Kenar kuralının geçerli dizilimi: kenara özel değilse bağlayıcının kendi dizilimi. */
 export function ruleLayout(rule: EdgeConnectorRule, conn: Connector | undefined): ConnectorLayout {
-  const { mode, start, end, maxSpacing, count } = rule.custom ? rule : { ...DEFAULT_CONNECTOR_LAYOUT, ...(conn?.layout ?? {}) };
-  return { mode, start, end, maxSpacing, count };
+  const { mode, start, end, maxSpacing, count, midFrom } = { ...DEFAULT_CONNECTOR_LAYOUT, ...(rule.custom ? rule : conn?.layout ?? {}) };
+  return { mode, start, end, maxSpacing, count, midFrom };
 }
 const _jointCache = new Map<string, { sig: string; joints: PanelJoint[] }>();
 /** Gövdenin tüm birleşimleri (kural + temas). Sonuç panel geometrileri / tipler / kütüphane değişene kadar saklanır. */
 export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): PanelJoint[] {
   const cfg = st.panelTypeConfig;
-  if (!st.connectors.length || !Object.values(cfg.rules ?? {}).some(r => Object.values(r?.edges ?? {}).some(e => e?.connectorId))) return [];
+  if (!st.connectors.length || !Object.values(cfg.rules ?? {}).some(ruleHasConnector)) return [];
   const body = shapeById(bodyId, st.shapes); if (!body) return [];
   const slabs = st.shapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === bodyId && !isDoorPanel(s) && !s.parameters?.curved && !panelHasRotation(s))
     .map(p => {
@@ -423,21 +471,23 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
   const joints: PanelJoint[] = [];
   for (const B of slabs) {
     const edges = B.type ? cfg.rules?.[B.type]?.edges : undefined;
-    if (!B.type || !edges || !Object.values(edges).some(e => e?.connectorId)) continue;
+    if (!B.type || !edges || !ruleHasConnector({ edges })) continue;
     const plane = PLANE_OF_ROLE[roleOfDir(body, unit(B.thin, 1), st)];
     const faceRoles: [PanelEdgeDir, PanelEdgeDir] = [roleOfDir(body, unit(B.thin, 1), st), roleOfDir(body, unit(B.thin, -1), st)];
     for (const i of [0, 1, 2]) if (i !== B.thin) for (const s of [1, -1]) {
-      const role = roleOfDir(body, unit(i, s), st), rule = edges[role];
-      const conn = rule?.connectorId ? st.connectors.find(c => c.id === rule.connectorId) : undefined;
-      if (!rule || !conn) continue;
+      const role = roleOfDir(body, unit(i, s), st);
+      // Kenarın bağlayıcıları (birden çok olabilir); sıra numarası birleşim anahtarına girer.
+      const list = rulesIn(edges, role).map((rule, ri) => ({ rule, ri, conn: st.connectors.find(c => c.id === rule.connectorId) })).filter(x => !!x.conn);
+      if (!list.length) continue;
       const end = B.info.planes[i][s > 0 ? 1 : 0]; if (end.n < 3) continue;
       const c = s > 0 ? B.info.box.max.getComponent(i) : B.info.box.min.getComponent(i), a = [0, 1, 2].find(k => k !== i && k !== B.thin)!;
       const tB = end.max[B.thin] - end.min[B.thin];
       // Dizilim yönü: kenarın bitiş ucunun rolüne bakan eksen yönü (derinlikte önden arkaya …).
       const endRole = EDGE_ENDS[plane][role]?.[1];
       const aSign = roleOfDir(body, unit(a, 1), st) === endRole ? 1 : roleOfDir(body, unit(a, -1), st) === endRole ? -1 : 1;
+      // Kolon / kiriş panelinde görünmeyen yüz = kolona / kirişe bakan yüz (panelin oturduğu gövde yüzünün dış yönü).
       const want = hiddenFaceRole(B.type, plane, body, B.info.box, B.thin, st);
-      const tSign = (faceRoles[0] === want ? 1 : faceRoles[1] === want ? -1 : 1) * (rule.flipFace ? -1 : 1);
+      const hidden = TYPE_BY_ID.get(B.type)?.group === 'boxing' ? (B.vf.normal[B.thin] >= 0 ? 1 : -1) : faceRoles[0] === want ? 1 : faceRoles[1] === want ? -1 : 1;
       for (const A of slabs) {
         if (A === B || A.thin !== i) continue;
         const faceAt = s > 0 ? A.info.box.min.getComponent(i) : A.info.box.max.getComponent(i);
@@ -448,9 +498,9 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
         const o: Vec3 = [0, 0, 0];
         o[i] = c; o[B.thin] = (end.min[B.thin] + end.max[B.thin]) / 2; o[a] = aSign > 0 ? aOv[0] : aOv[1];
         const length = round1(aOv[1] - aOv[0]);
-        joints.push({
-          key: `${B.p.id}|${role}|${A.p.id}`, bId: B.p.id, aId: A.p.id, connector: conn, o, along: unit(a, aSign), nIn: unit(i, -s), t: unit(B.thin, tSign),
-          length, tB: round1(tB), tA: round1(A.info.size[i]), positions: edgeConnectorPositions(ruleLayout(rule, conn), length),
+        for (const { rule, ri, conn } of list) joints.push({
+          key: `${B.p.id}|${role}|${A.p.id}|${ri}`, bId: B.p.id, aId: A.p.id, connector: conn!, o, along: unit(a, aSign), nIn: unit(i, -s),
+          t: unit(B.thin, hidden * (rule.flipFace ? -1 : 1)), length, tB: round1(tB), tA: round1(A.info.size[i]), positions: edgeConnectorPositions(ruleLayout(rule, conn), length),
         });
       }
     }
