@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   type LucideIcon, Spline, Layers, SwatchBook, Radius, Plus, Container, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Hash, ChevronRight, Send, Box,
-  Square, SlidersHorizontal, ListTree, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check, Footprints, Wrench,
+  Square, SlidersHorizontal, ListTree, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check, Footprints, Wrench, Link2, Tags,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { createClient } from '@supabase/supabase-js';
@@ -157,6 +157,17 @@ const RailTool: React.FC<Omit<RailSpec, 'key'> & { passive: boolean }> = ({ labe
   );
 };
 
+/** Escape'i o an kendi "iptal"i olarak kullanan düzenleyiciler (delik kipi, çizim alanı …): küme doluyken Escape kenar çubuğunu kapatmaz. */
+const escapeOwners = new Set<string>();
+/** Koşul sürdükçe Escape bu bileşenindir. */
+export function useEscapeOwner(key: string, active: boolean): void {
+  useEffect(() => {
+    if (!active) return;
+    escapeOwners.add(key);
+    return () => { escapeOwners.delete(key); };
+  }, [key, active]);
+}
+
 export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }> = ({ activeTab, hasShape }) => {
   const s = useStoreFields('accessoryCategory', 'setAccessoryCategory', 'raycastMode', 'setRaycastMode', 'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'doorPickMode',
     'setDoorPickMode', 'backPickMode', 'setBackPickMode', 'plinthPickMode', 'setPlinthPickMode', 'quickBodyMode', 'setQuickBodyMode', 'vertexEditMode', 'setVertexEditMode',
@@ -204,6 +215,8 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
   // Aksesuar: kategori raydan seçilir (panelde ayrıca tip seçimi yok); kütüphane gövdeden bağımsız → şekil seçili olmasa da etkin.
   const accessories: RailSpec[] = [
     { key: 'acc-legs', label: 'Legs', icon: Footprints, title: 'Leg models and leg sets', active: s.accessoryCategory === 'legs', onClick: () => s.setAccessoryCategory('legs') },
+    { key: 'acc-connectors', label: 'Connect', icon: Link2, title: 'Connectors — holes, drawn operations and a 3D model on a two-panel joint', active: s.accessoryCategory === 'connectors', onClick: () => s.setAccessoryCategory('connectors') },
+    { key: 'acc-types', label: 'Types', icon: Tags, title: 'Panel types — what each panel is, which edges get a connector, and the default type per face', active: s.accessoryCategory === 'panelTypes', onClick: () => s.setAccessoryCategory('panelTypes') },
     { key: 'acc-layers', label: 'Layers', icon: SwatchBook, title: 'Accessory layers — shared by every accessory part (name + colour)', active: s.accessoryCategory === 'layers', onClick: () => s.setAccessoryCategory('layers') },
   ];
   // Yalnız ETKİN sekmenin araçları çizilir (pasif / soluk grup yok).
@@ -1230,7 +1243,7 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyCon
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       const st = useAppStore.getState();
-      if (st.faceExtrudeMode || st.panelMoveMode || st.panelRotateMode) return;
+      if (st.faceExtrudeMode || st.panelMoveMode || st.panelRotateMode || escapeOwners.size) return;
       setIsOpen(false); setIsPinned(false);
     };
     window.addEventListener('keydown', onKey);

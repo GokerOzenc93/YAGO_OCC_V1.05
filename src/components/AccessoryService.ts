@@ -6,8 +6,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
-  type AccessoryLayer, type AccessoryModel, type AccessoryUnit, type CavityBox, type HoleSpec, type LegModel, type LegModelPart, type LegPartRole,
-  type LegPreset, type PanelHole, useAppStore,
+  type AccessoryLayer, type AccessoryModel, type AccessoryUnit, type CavityBox, type Connector, type HoleSpec, type LegModel, type LegModelPart,
+  type LegPartRole, type LegPreset, type PanelHole, type PanelTypeConfig, useAppStore,
 } from '../store';
 import { type AxisDir, type Vec3, convertReplicadToThreeGeometry, genId, initReplicad, round1 } from './Geometry';
 import { type LegRule, standardLegRules, standardOf } from './LegLayout';
@@ -198,8 +198,8 @@ function dwgNote(rep: DwgReport, unit: AccessoryUnit): string {
 }
 
 /* ───────────────────────────── Kalıcılık (IndexedDB) ───────────────────────────── */
-const DB_NAME = 'yago-accessories', DB_VERSION = 2;   // v2: `layers` deposu
-const STORES = ['models', 'legModels', 'legPresets', 'layers'] as const;
+const DB_NAME = 'yago-accessories', DB_VERSION = 3;   // v2: `layers` · v3: `connectors` + `settings` (panel tipi kuralları)
+const STORES = ['models', 'legModels', 'legPresets', 'layers', 'connectors', 'settings'] as const;
 type StoreName = typeof STORES[number];
 type ModelRecord = AccessoryModel & { bytes: ArrayBuffer };
 let dbPromise: Promise<IDBDatabase | null> | null = null;
@@ -232,6 +232,12 @@ async function idbDelete(store: StoreName, id: string): Promise<void> {
   await new Promise<void>(resolve => { const tx = db.transaction(store, 'readwrite'); tx.objectStore(store).delete(id); tx.oncomplete = () => resolve(); tx.onerror = () => resolve(); });
 }
 
+/** Kütüphane kaydı yaz / sil (ConnectorService: bağlayıcılar + panel tipi ayarı aynı veritabanını kullanır). */
+export const libraryPut = (store: 'connectors' | 'settings', value: unknown): Promise<void> => idbPut(store, value);
+export const libraryDelete = (store: 'connectors' | 'settings', id: string): Promise<void> => idbDelete(store, id);
+/** `settings` deposundaki panel tipi kaydının kimliği. */
+export const PANEL_TYPE_CONFIG_ID = 'panelTypes';
+
 /** Çözülmüş (hazır) geometriler — eşzamanlı okuma için. */
 const readyGeo = new Map<string, { geo: THREE.BufferGeometry; size: Vec3 }>();
 /** Ham bayt dizileri (IDB'den ya da içe aktarımdan) — geometri çözümü için bellek kopyası. */
@@ -245,8 +251,9 @@ export function onAccessoryGeometry(l: () => void): () => void { listeners.add(l
 
 /** Kütüphaneyi IDB'den store'a yükler (uygulama açılışı). */
 export async function loadAccessoryLibrary(): Promise<void> {
-  const [models, legModels, legPresets, layersStored] = await Promise.all([
+  const [models, legModels, legPresets, layersStored, connectors, settings] = await Promise.all([
     idbGetAll<ModelRecord>('models'), idbGetAll<LegModel>('legModels'), idbGetAll<LegPreset>('legPresets'), idbGetAll<AccessoryLayer>('layers'),
+    idbGetAll<Connector>('connectors'), idbGetAll<PanelTypeConfig & { id: string }>('settings'),
   ]);
   for (const m of models) bytesCache.set(m.id, m.bytes);
   const meta: AccessoryModel[] = models.map(m => { const rest = { ...m } as Partial<ModelRecord>; delete rest.bytes; return rest as AccessoryModel; });
@@ -259,6 +266,9 @@ export async function loadAccessoryLibrary(): Promise<void> {
     seededFlag(true);
   }
   useAppStore.getState().setAccessoryLibrary({ accessoryModels: meta.sort(by), legModels: legModels.sort(by), legPresets: legPresets.sort(by), accessoryLayers: layers.sort(by) });
+  useAppStore.getState().setConnectors(connectors.sort(by));
+  const cfg = settings.find(x => x.id === PANEL_TYPE_CONFIG_ID);
+  if (cfg) useAppStore.getState().setPanelTypeConfig({ rules: cfg.rules ?? {}, surfaces: cfg.surfaces ?? {} });
 }
 const SEEDED_KEY = 'yago.accessories.layersSeeded';
 function seededFlag(set = false): boolean {
@@ -322,6 +332,10 @@ export async function deleteAccessoryModel(id: string): Promise<void> {
   st.removeAccessoryModel(id);
   // Parçayı kullanan ayak modellerinden düşer.
   for (const lm of st.legModels) if (lm.parts.some(p => p.modelId === id)) await saveLegModel({ ...lm, parts: lm.parts.filter(p => p.modelId !== id) });
+  for (const c of st.connectors) if (c.parts.some(p => p.modelId === id)) {
+    const next = { ...c, parts: c.parts.filter(p => p.modelId !== id) };
+    st.upsertConnector(next); await idbPut('connectors', next);
+  }
   bytesCache.delete(id); dropGeo(id);
   await idbDelete('models', id);
   notify();
@@ -382,7 +396,7 @@ export function legPartDims(p: Pick<LegModelPart, 'dims' | 'scale' | 'role'>, si
 /** Hiçbir ayak modelinde (ve `keep` içinde) kullanılmayan içe aktarılmış dosyaları siler (vazgeçilen / değiştirilen yuvalar). */
 export async function pruneUnusedAccessoryModels(keep: string[] = []): Promise<void> {
   const st = useAppStore.getState();
-  const used = new Set([...keep, ...st.legModels.flatMap(l => l.parts.map(p => p.modelId))]);
+  const used = new Set([...keep, ...st.legModels.flatMap(l => l.parts.map(p => p.modelId)), ...st.connectors.flatMap(c => c.parts.map(p => p.modelId))]);
   for (const m of st.accessoryModels) if (!used.has(m.id)) await deleteAccessoryModel(m.id);
 }
 export const newLegPreset = (name = 'Leg set'): LegPreset =>
@@ -525,11 +539,16 @@ export async function deleteAccessoryLayer(id: string): Promise<void> {
   const st = useAppStore.getState();
   st.removeAccessoryLayer(id);
   for (const lm of st.legModels) if (lm.parts.some(p => p.layerId === id)) await saveLegModel({ ...lm, parts: lm.parts.map(p => (p.layerId === id ? { ...p, layerId: null } : p)) });
+  for (const c of st.connectors) if (c.parts.some(p => p.layerId === id)) {
+    const next = { ...c, parts: c.parts.map(p => (p.layerId === id ? { ...p, layerId: null } : p)) };
+    st.upsertConnector(next); await idbPut('connectors', next);
+  }
   await idbDelete('layers', id);
 }
 /** Katmanı kullanan parça sayısı (liste rozeti). */
-export const layerUseCount = (id: string, legModels = useAppStore.getState().legModels): number =>
-  legModels.reduce((n, lm) => n + lm.parts.filter(p => p.layerId === id).length, 0);
+export const layerUseCount = (id: string, legModels = useAppStore.getState().legModels, connectors = useAppStore.getState().connectors): number =>
+  legModels.reduce((n, lm) => n + lm.parts.filter(p => p.layerId === id).length, 0)
+  + connectors.reduce((n, c) => n + c.parts.filter(p => p.layerId === id).length, 0);
 
 /* ───────────────────────────── Delikler ─────────────────────────────
    HoleSpec parçanın ölçeksiz model uzayında; montaj yeri `legLayout`'tan. Kesici ağzı HOLE_MOUTH geri alınır (panel yüzüyle

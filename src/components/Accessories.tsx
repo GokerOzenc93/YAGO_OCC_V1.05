@@ -1,16 +1,19 @@
-/* AKSESUAR SEKMESİ — kategori soldaki raydan (Legs · Layers); Assembly / Parameters ile aynı parçalar.
+/* AKSESUAR SEKMESİ — kategori soldaki raydan (Legs · Connectors · Types · Layers); Assembly / Parameters ile aynı parçalar.
+   Panel tipleri ve bağlayıcılar dosyanın ikinci yarısında (çekirdek: ConnectorService).
    Ayak modeli: 3 yuva (Top · Middle · Bottom), her parça nihai ölçü + taşıma + Stretch + katman; delikler önizlemede parça yüzüne
    tıklanarak eklenir (yön = yüz normali, parçaya bağlı). Ayak seti ("kaset") = model + köşe düzeni + mesafeler + yükseklik; yerleşim
    otomatik (gövde yüz rolleri). Katmanlar kütüphane geneli (ad + renk). Kütüphane IndexedDB'de. */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { Canvas, useThree } from '@react-three/fiber';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { ContactShadows, GizmoHelper, Grid, Html, Line, OrbitControls, useGizmoContext } from '@react-three/drei';
-import { Plus, Trash2, Upload, Pencil, RotateCcw, Drill } from 'lucide-react';
+import { Plus, Trash2, Upload, Pencil, RotateCcw, Drill, Check, Crosshair, Magnet, Maximize2, Minus, MousePointer2, PenLine, Spline, Square, BoxSelect, Circle as CircleIcon } from 'lucide-react';
 import {
-  type AccessoryLayer, type AccessoryUnit, type HoleSpec, type LegModel, type LegModelPart, type LegPartRole, type LegPreset, useStoreFields,
+  type AccessoryLayer, type AccessoryUnit, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector,
+  type EdgeConnectorRule, type EdgeLayoutMode, type HoleSpec, type LegModel, type LegModelPart, type LegPartRole, type LegPreset, type PanelEdgeDir, type PanelSurface,
+  type PanelTypeConfig, type PanelTypeId, useStoreFields,
 } from '../store';
-import { UI_FONT } from './Ui';
+import { UI_FONT, useEscapeOwner } from './Ui';
 import { type AxisDir, type Vec3, round1 } from './Geometry';
 import {
   ACCESSORY_ACCEPT, HOLE_AXES, HOLE_DEFAULTS, LAYER_DEFAULT_COLOR, type LegAssemblyPart, type LegHoleAt, type SnapPoint, accessoryGeometryNow, assemblyFootprint, axisVecOf,
@@ -20,8 +23,14 @@ import {
 } from './AccessoryService';
 import {
   ApplyBtn, CARD_BODY, CARD_BODY_STYLE, CardAction, ExitBtn, FIELD_INPUT, LegLayoutCells, LegLayoutDiagram, QB_CELL_ROW, QbNum, QbSection, QbSelect,
-  QbSwitch, ROW_SEL_BAR, ROW_SEL_HEAD, ReadCell, ReadValue, RowCells, RowChevron, SECTION_LABEL, SelectBox, rectLegPoints, rowCardClass,
+  QbSwitch, ROW_SEL_BAR, ROW_SEL_HEAD, ReadCell, ReadValue, RowCells, RowChevron, SECTION_LABEL, type SegItem, Segmented, SelectBox, rectLegPoints, rowCardClass,
 } from './Assembly';
+import {
+  CONN_REP, CONN_SURFACES, EDGE_ENDS, EDGE_LABEL, PANEL_SURFACES, PANEL_TYPES, PANEL_TYPE_GROUPS, PLANE_EDGES, PLANE_LABEL, type PanelPlane, candidateTypesFor, cloneConnector,
+  connOpSummary, connShapeClosed, connShapePoints, connSurfaceCoords, connSurfaceDepth, connSurfaceExtent, connSurfacePoint, connThickness, connectorUseCount, deleteConnector,
+  edgeConnectorPositions, edgeRuleOf, newConnHole, newConnOp, newConnPart, newConnector, panelTypeDef, panelTypeLabel, panelTypeShort, saveConnector, setEdgeRule, setSurfaceRule,
+  surfaceLabel, surfaceRuleOf, typeEdgeCount,
+} from './ConnectorService';
 import { standardLegRules } from './LegLayout';
 import { syncPlinthSetsUsingPreset } from './PlinthService';
 import { fmt1, stop } from './PanelSchematics';
@@ -150,7 +159,7 @@ const UP = new THREE.Vector3(0, 1, 0);
 const quatToDir = (dir: Vec3) => new THREE.Quaternion().setFromUnitVectors(UP, new THREE.Vector3(...dir).normalize());
 const circlePts = (r: number, n = 48): [number, number, number][] => Array.from({ length: n + 1 }, (_, i) => { const a = (i / n) * Math.PI * 2; return [Math.cos(a) * r, 0, Math.sin(a) * r]; });
 /** DELİK İŞARETİ (CAD delik özelliği gibi): ağızda halka + yönde yarı saydam silindir + eksen çizgisi; seçili turuncu, tık satırı seçer. */
-function HoleGlyph({ at, selected, onClick }: { at: LegHoleAt; selected: boolean; onClick: () => void }) {
+function HoleGlyph({ at, selected, onClick }: { at: Pick<LegHoleAt, 'center' | 'dir' | 'radius' | 'depth'>; selected: boolean; onClick: () => void }) {
   const gl = useThree(s => s.gl);
   const q = useMemo(() => quatToDir(at.dir), [at.dir]);
   const ring = useMemo(() => circlePts(at.radius), [at.radius]);
@@ -568,6 +577,7 @@ function LegModelEditor({ draft, setDraft, onSave, onCancel, layers }: {
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useEscapeOwner('leg-hole', holeMode);
   const parts = useDraftAssembly(draft, testH);
   const holes = draft.holes ?? [];
   const last = holes[holes.length - 1];
@@ -696,17 +706,1130 @@ function LayerRow({ layer, uses }: { layer: AccessoryLayer; uses: number }) {
   );
 }
 function LayersPanel() {
-  const { accessoryLayers, legModels } = useStoreFields('accessoryLayers', 'legModels');
+  const { accessoryLayers, legModels, connectors } = useStoreFields('accessoryLayers', 'legModels', 'connectors');
   return (
     <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" style={{ fontFamily: UI_FONT }}>
       <QbSection title="Layers" sub="shared by every accessory part"
         trailing={<CardAction compact icon={Plus} label="New" title="New layer" onClick={() => void saveAccessoryLayer(newAccessoryLayer(`Layer ${accessoryLayers.length + 1}`))} />}>
         {!accessoryLayers.length ? <Empty /> : (
           <div className="flex flex-col gap-1">
-            {accessoryLayers.map(l => <LayerRow key={l.id} layer={l} uses={layerUseCount(l.id, legModels)} />)}
+            {accessoryLayers.map(l => <LayerRow key={l.id} layer={l} uses={layerUseCount(l.id, legModels, connectors)} />)}
           </div>
         )}
       </QbSection>
+    </div>
+  );
+}
+
+/* ═════════════════════════════════ PANEL TİPLERİ ═════════════════════════════════
+   Üstte temsili dolap (ön görünüş + yan kesit; parçaya tıkla → tipi) ve tip çipleri. Seçili tipin kenar şeması: kenara tıkla → o kenarın
+   bağlayıcısı + dizilimi (kenar başka panele dayanıyorsa uygulanır). Altta yüzey başına sunulan tipler ve varsayılan (koyu çip).
+   Her değişiklik anında kaydedilir (kütüphane ayarı). */
+const PT = { stroke: '#a69d91', fill: '#f0ebe3', back: '#f7f4ef', ghost: '#cfc7bc', sel: '#ea580c', selFill: '#fdeadb', ink: '#57534e', mute: '#a39b91' } as const;
+const MAP_W = 600, MAP_H = 720, MAP_D = 560;
+/** Temsili dolap parçası: `view` ön görünüş (x, y) ya da yan kesit (z, y; ön sağda). `solo` yalnız seçiliyken çizilir ve `hides` parçasının
+ *  yerini alır (kayıt ↔ tam panel, arka panel ↔ arkalık). */
+type MapPart = { type: PanelTypeId; view: 'front' | 'side'; r: [number, number, number, number]; solo?: boolean; hides?: PanelTypeId };
+const MAP_PARTS: MapPart[] = [
+  { type: 'back', view: 'front', r: [18, 118, 582, 702] },
+  { type: 'rearPanel', view: 'front', r: [18, 118, 582, 702], solo: true, hides: 'back' },
+  { type: 'leftSide', view: 'front', r: [0, 0, 18, 720] }, { type: 'rightSide', view: 'front', r: [582, 0, 600, 720] },
+  { type: 'top', view: 'front', r: [18, 702, 582, 720] }, { type: 'bottom', view: 'front', r: [18, 100, 582, 118] },
+  { type: 'frontPlinth', view: 'front', r: [18, 0, 582, 100] },
+  { type: 'divider', view: 'front', r: [291, 118, 309, 702] },
+  { type: 'fixedShelf', view: 'front', r: [18, 420, 291, 438] }, { type: 'adjustableShelf', view: 'front', r: [309, 300, 582, 318] },
+  { type: 'topFrontRailH', view: 'front', r: [18, 702, 582, 720], solo: true, hides: 'top' },
+  { type: 'topFrontRailV', view: 'front', r: [18, 630, 582, 720], solo: true, hides: 'top' },
+  { type: 'bottomFrontRailH', view: 'front', r: [18, 100, 582, 118], solo: true, hides: 'bottom' },
+  { type: 'bottomFrontRailV', view: 'front', r: [18, 100, 582, 190], solo: true, hides: 'bottom' },
+  { type: 'top', view: 'side', r: [0, 702, 560, 720] }, { type: 'bottom', view: 'side', r: [0, 100, 560, 118] },
+  { type: 'back', view: 'side', r: [10, 108, 18, 712] },
+  { type: 'rearPanel', view: 'side', r: [0, 118, 18, 702], solo: true, hides: 'back' },
+  { type: 'frontPlinth', view: 'side', r: [542, 0, 560, 100] }, { type: 'rearPlinth', view: 'side', r: [50, 0, 68, 100] },
+  { type: 'fixedShelf', view: 'side', r: [18, 420, 560, 438] }, { type: 'adjustableShelf', view: 'side', r: [18, 300, 540, 318] },
+  { type: 'topFrontRailH', view: 'side', r: [450, 702, 560, 720], solo: true, hides: 'top' },
+  { type: 'topRearRailH', view: 'side', r: [0, 702, 110, 720], solo: true, hides: 'top' },
+  { type: 'topFrontRailV', view: 'side', r: [542, 630, 560, 720], solo: true, hides: 'top' },
+  { type: 'topRearRailV', view: 'side', r: [18, 630, 36, 720], solo: true, hides: 'top' },
+  { type: 'bottomFrontRailH', view: 'side', r: [450, 100, 560, 118], solo: true, hides: 'bottom' },
+  { type: 'bottomRearRailH', view: 'side', r: [0, 100, 110, 118], solo: true, hides: 'bottom' },
+  { type: 'bottomFrontRailV', view: 'side', r: [542, 100, 560, 190], solo: true, hides: 'bottom' },
+  { type: 'bottomRearRailV', view: 'side', r: [18, 100, 36, 190], solo: true, hides: 'bottom' },
+];
+/** TEMSİLİ DOLAP: ön görünüş + yan kesit. Seçili tip turuncu; yerini aldığı parça kesik çizgili hayalet; parçaya tık tipi seçer. */
+function CabinetMap({ sel, onSel }: { sel: PanelTypeId; onSel: (t: PanelTypeId) => void }) {
+  const [hover, setHover] = useState<PanelTypeId | null>(null);
+  const K = 0.25, top = 12, gap = 64, fw = MAP_W * K, sw = MAP_D * K, h = MAP_H * K, vw = fw + gap + sw;
+  const hidden = new Set(MAP_PARTS.filter(p => p.solo && p.type === sel && p.hides).map(p => `${p.view}:${p.hides}`));
+  const rectOf = (p: MapPart) => {
+    const ox = p.view === 'front' ? 0 : fw + gap, [a, y0, b, y1] = p.r;
+    let x = ox + a * K, w = (b - a) * K, y = top + (MAP_H - y1) * K, hh = (y1 - y0) * K;
+    if (w < 2.6) { x -= (2.6 - w) / 2; w = 2.6; }
+    if (hh < 2.6) { y -= (2.6 - hh) / 2; hh = 2.6; }
+    return { x, y, w, h: hh };
+  };
+  const caption = (x: number, text: string, anchor: 'start' | 'middle' | 'end' = 'middle', y = top + h + 13, weight = 600) => (
+    <text x={x} y={y} textAnchor={anchor} fontSize={7.5} fontWeight={weight} fill={PT.mute} style={{ letterSpacing: '0.09em', fontFamily: UI_FONT }}>{text}</text>
+  );
+  return (
+    <svg viewBox={`-10 0 ${vw + 20} ${top + h + 28}`} className="block w-full" style={{ maxHeight: 236 }}>
+      {/* Zemin çizgisi + kesitte uzak yan panel */}
+      <line x1={-6} x2={vw + 6} y1={top + h + 0.6} y2={top + h + 0.6} stroke={PT.ghost} strokeWidth={0.8} />
+      <rect x={fw + gap} y={top} width={sw} height={h} fill="#fbf9f6" stroke={PT.ghost} strokeWidth={0.7} strokeDasharray="2.5 2" />
+      {MAP_PARTS.map((p, i) => {
+        const on = p.type === sel, ghost = hidden.has(`${p.view}:${p.type}`);
+        if (p.solo && !on) return null;
+        const r = rectOf(p), hv = hover === p.type && !on;
+        const bg = p.type === 'back' && p.view === 'front';
+        return (
+          <g key={i} onClick={e => { stop(e); onSel(p.type); }} onMouseEnter={() => setHover(p.type)} onMouseLeave={() => setHover(null)} style={{ cursor: 'pointer' }}>
+            <title>{panelTypeLabel(p.type)}</title>
+            <rect x={r.x} y={r.y} width={r.w} height={r.h} rx={0.6}
+              fill={ghost ? 'none' : on ? PT.selFill : hv ? '#e7e0d5' : bg ? PT.back : PT.fill}
+              stroke={on ? PT.sel : ghost ? PT.ghost : hv ? '#7d756b' : PT.stroke} strokeWidth={on ? 1.3 : 0.8} strokeDasharray={ghost ? '2.5 2' : undefined}
+              style={{ transition: 'fill 0.12s, stroke 0.12s' }} />
+            {/* ince parçada geniş tıklama alanı */}
+            {(r.w < 8 || r.h < 8) && <rect x={r.x - 3} y={r.y - 3} width={r.w + 6} height={r.h + 6} fill="transparent" />}
+          </g>
+        );
+      })}
+      {/* hareketli raf: pim noktaları */}
+      {[0, 1].map(k => { const r = rectOf(MAP_PARTS.find(p => p.type === 'adjustableShelf' && p.view === 'front')!); return <circle key={k} cx={k ? r.x + r.w - 2.2 : r.x + 2.2} cy={r.y + r.h + 2.2} r={1} fill={sel === 'adjustableShelf' ? PT.sel : PT.stroke} />; })}
+      {caption(fw / 2, 'FRONT VIEW')}{caption(fw + gap + sw / 2, 'SIDE SECTION')}
+      {caption(fw + gap, 'REAR', 'start', top - 4, 500)}{caption(fw + gap + sw, 'FRONT', 'end', top - 4, 500)}
+    </svg>
+  );
+}
+/** Tipin örnek ölçüsü (mm): şemanın oranı ve "örnek kenarda kaç bağlayıcı" hesabı için. [yatay, düşey] — tipin doğal bakışında. */
+function sampleSizeOf(type: PanelTypeId, plane: Exclude<PanelPlane, 'any'>): [number, number] {
+  const def = panelTypeDef(type);
+  if (plane === 'side') return [MAP_D, type === 'divider' ? 584 : MAP_H];
+  if (plane === 'horizontal') return [564, def?.group === 'traverse' ? 100 : def?.group === 'interior' ? 540 : MAP_D];
+  return [564, def?.group === 'traverse' ? 80 : def?.group === 'plinth' ? 100 : 602];
+}
+type EdgeGeom = { role: PanelEdgeDir; x1: number; y1: number; x2: number; y2: number; nx: number; ny: number; length: number; fromStart: boolean };
+/** KENAR ŞEMASI: panel doğal bakışında; dört kenar rolüyle etiketli ve tıklanır. Bağlayıcılı kenar turuncu, noktalar örnek kenardaki yerleşim. */
+function TypeEdgeDiagram({ type, plane, sel, onSel, cfg }: {
+  type: PanelTypeId; plane: Exclude<PanelPlane, 'any'>; sel: PanelEdgeDir | null; onSel: (e: PanelEdgeDir | null) => void; cfg: PanelTypeConfig;
+}) {
+  const [hover, setHover] = useState<PanelEdgeDir | null>(null);
+  const VW = 480, VH = 236, [mw, mh] = sampleSizeOf(type, plane);
+  const k = Math.min(280 / mw, 132 / mh), w = mw * k, h = Math.max(mh * k, 30), x0 = (VW - w) / 2, y0 = (VH - h) / 2 + 2;
+  const [eTop, eBottom, eLeft, eRight] = PLANE_EDGES[plane];
+  const ends = EDGE_ENDS[plane];
+  // Dizilimin başlangıç ucu şemada nerede: yatay kenarda sol mu, düşey kenarda alt mı.
+  const edges: EdgeGeom[] = [
+    { role: eTop, x1: x0, y1: y0, x2: x0 + w, y2: y0, nx: 0, ny: -1, length: mw, fromStart: ends[eTop]?.[0] === eLeft },
+    { role: eBottom, x1: x0, y1: y0 + h, x2: x0 + w, y2: y0 + h, nx: 0, ny: 1, length: mw, fromStart: ends[eBottom]?.[0] === eLeft },
+    { role: eLeft, x1: x0, y1: y0 + h, x2: x0, y2: y0, nx: -1, ny: 0, length: mh, fromStart: ends[eLeft]?.[0] === eBottom },
+    { role: eRight, x1: x0 + w, y1: y0 + h, x2: x0 + w, y2: y0, nx: 1, ny: 0, length: mh, fromStart: ends[eRight]?.[0] === eBottom },
+  ];
+  return (
+    <svg viewBox={`0 0 ${VW} ${VH}`} className="block w-full select-none" onClick={() => onSel(null)} style={{ fontFamily: UI_FONT }}>
+      <rect x={x0} y={y0} width={w} height={h} rx={1.5} fill={PT.fill} stroke={PT.stroke} strokeWidth={1} />
+      <text x={VW / 2} y={y0 + h / 2 - (h > 44 ? 3 : -3.5)} textAnchor="middle" fontSize={11.5} fontWeight={600} fill={PT.ink}>{panelTypeShort(type)}</text>
+      {h > 44 && <text x={VW / 2} y={y0 + h / 2 + 11} textAnchor="middle" fontSize={9} fill={PT.mute} style={{ fontVariantNumeric: 'tabular-nums' }}>sample {mw} × {mh}</text>}
+      <text x={8} y={14} fontSize={8} fontWeight={600} fill={PT.mute} style={{ letterSpacing: '0.09em' }}>{PLANE_LABEL[plane].toUpperCase()}</text>
+      {edges.map(e => {
+        const rule = cfg.rules?.[type]?.edges[e.role], has = !!rule?.connectorId, on = sel === e.role, hv = hover === e.role && !on;
+        const pts = has ? edgeConnectorPositions(rule!, e.length) : [];
+        const horiz = e.ny !== 0, mx = (e.x1 + e.x2) / 2, my = (e.y1 + e.y2) / 2;
+        const label = `${EDGE_LABEL[e.role].toUpperCase()}${has ? ` · ${pts.length}` : ''}`, lw = label.length * 5.6 + 16;
+        const lx = mx + e.nx * (lw / 2 + 12), ly = my + e.ny * 20;
+        const at = (d: number) => { const t = (e.fromStart ? d : e.length - d) / e.length; return { x: e.x1 + (e.x2 - e.x1) * t, y: e.y1 + (e.y2 - e.y1) * t }; };
+        return (
+          <g key={e.role} onClick={ev => { stop(ev); onSel(on ? null : e.role); }} onMouseEnter={() => setHover(e.role)} onMouseLeave={() => setHover(null)} style={{ cursor: 'pointer' }}>
+            <title>{`${EDGE_LABEL[e.role]} edge — ${has ? `${pts.length} connector${pts.length === 1 ? '' : 's'} on the sample` : 'no connector'} · click to edit`}</title>
+            <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} stroke="transparent" strokeWidth={20} />
+            {(has || on || hv) && <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} stroke={has || on ? PT.sel : '#7d756b'} strokeWidth={on ? 3.4 : has ? 2.4 : 1.8} strokeLinecap="round"
+              strokeDasharray={on && !has ? '4 3' : undefined} />}
+            {pts.map((d, i) => { const p = at(d); return <circle key={i} cx={p.x} cy={p.y} r={on ? 4.2 : 3.4} fill="#fff" stroke={PT.sel} strokeWidth={1.5} />; })}
+            <rect x={lx - lw / 2} y={ly - 9} width={lw} height={18} rx={9} fill={on ? '#292524' : hv ? '#ece7e0' : has ? '#fff4ec' : '#fff'}
+              stroke={on ? '#292524' : has ? '#f3c7a5' : '#e3ddd4'} strokeWidth={0.9} style={{ transition: 'fill 0.12s' }} />
+            <text x={lx} y={ly + 3.2} textAnchor="middle" fontSize={8.6} fontWeight={700} fill={on ? '#fff' : has ? '#c2410c' : PT.ink} style={{ letterSpacing: '0.07em' }}>{label}</text>
+            {/* dizilimin başlangıç ucu: küçük "0" */}
+            {on && (() => { const p = at(0); return <text x={p.x + (horiz ? 0 : e.nx * -9)} y={p.y + (horiz ? e.ny * -7 + 3 : 3)} textAnchor="middle" fontSize={8} fontWeight={700} fill={PT.sel}>0</text>; })()}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+const LAYOUT_SEG: SegItem[] = [
+  { key: 'spacing', label: 'Spacing', title: 'Distance from both ends + maximum spacing — the count is worked out from the edge length' },
+  { key: 'count', label: 'Count', title: 'Fixed number of connectors, spread evenly between the two end distances' },
+];
+/** Seçili kenarın kuralı: bağlayıcı · dizilim kipi · uç mesafeleri · azami aralık / adet. Bağlayıcı "None" → kenar boş, öteki kutular pasif. */
+function EdgeRuleStrip({ type, plane, edge, cfg, connectors, onOpenConnectors }: {
+  type: PanelTypeId; plane: Exclude<PanelPlane, 'any'>; edge: PanelEdgeDir; cfg: PanelTypeConfig; connectors: Connector[]; onOpenConnectors: () => void;
+}) {
+  const rule = edgeRuleOf(type, edge, cfg), has = !!rule.connectorId && connectors.some(c => c.id === rule.connectorId);
+  const [a, b] = EDGE_ENDS[plane][edge] ?? ['left', 'right'];
+  const [eTop, eBottom] = PLANE_EDGES[plane], [mw, mh] = sampleSizeOf(type, plane);
+  const length = edge === eTop || edge === eBottom ? mw : mh;
+  const pts = has ? edgeConnectorPositions(rule, length) : [];
+  const set = (patch: Partial<EdgeConnectorRule>) => void setEdgeRule(type, edge, patch);
+  const opts: Array<[string, string]> = [['', connectors.length ? 'None' : 'No connectors yet'], ...connectors.map(c => [c.id, c.name] as [string, string])];
+  return (
+    <div className="flex flex-col gap-1" onClick={stop}>
+      <div className="flex items-center gap-1">
+        <span className="shrink-0 h-[28px] px-2 rounded-[7px] bg-[#292524] text-white text-[10px] font-bold tracking-[0.07em] flex items-center">{EDGE_LABEL[edge].toUpperCase()} EDGE</span>
+        <SelectBox label="Connector" className="flex-1" value={has ? rule.connectorId! : ''} options={opts}
+          title="Connector placed along this edge wherever the edge butts against another panel" onChange={v => (v ? set({ connectorId: v }) : void setEdgeRule(type, edge, null))} />
+        <div className="shrink-0 w-[132px]" style={{ opacity: has ? 1 : 0.45, pointerEvents: has ? 'auto' : 'none' }}>
+          <Segmented items={LAYOUT_SEG} active={rule.mode} onPick={m => set({ mode: m as EdgeLayoutMode })} height={24} />
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
+        <EditCell label={`From ${a}`} title={`Distance of the first connector from the ${a} end of the edge (mm)`}><QbNum value={rule.start} min={0} w={38} passive={!has} onCommit={v => set({ start: v })} /><Unit /></EditCell>
+        <EditCell label={`From ${b}`} title={`Distance of the last connector from the ${b} end of the edge (mm)`}><QbNum value={rule.end} min={0} w={38} passive={!has} onCommit={v => set({ end: v })} /><Unit /></EditCell>
+        {rule.mode === 'count'
+          ? <EditCell label="Count" title="Number of connectors on the edge (1 = centred)"><QbNum value={rule.count} min={1} max={40} w={44} passive={!has} onCommit={v => set({ count: Math.round(v) })} /></EditCell>
+          : <EditCell label="Max gap" title="Largest allowed distance between two connectors — more are added as the edge gets longer (mm)"><QbNum value={rule.maxSpacing} min={10} w={38} passive={!has} onCommit={v => set({ maxSpacing: v })} /><Unit /></EditCell>}
+      </div>
+      <div className="yago-hint px-1 flex items-center gap-1 min-w-0">
+        {has ? <span className="truncate">On the {length} mm sample edge: {pts.length} connector{pts.length === 1 ? '' : 's'} at {pts.map(p => fmt1(p)).join(' · ')} mm from the {a}</span>
+          : connectors.length ? <span className="truncate">Choose a connector to put it on this edge — it is used wherever the edge butts against another panel</span>
+          : <><span className="truncate">No connectors in the library yet.</span>
+            <button type="button" onClick={e => { stop(e); onOpenConnectors(); }} className="shrink-0 font-semibold text-orange-700 hover:underline">Create one</button></>}
+      </div>
+    </div>
+  );
+}
+const Unit = () => <span className="yago-unit shrink-0 pr-1">mm</span>;
+const CHIP = 'h-[22px] px-2 rounded-full text-[10.5px] font-semibold whitespace-nowrap transition-colors duration-150 flex items-center gap-1';
+const CHIP_ON = 'bg-[#292524] text-white ring-1 ring-[#292524]', CHIP_IDLE = 'bg-white text-stone-600 ring-1 ring-[#e3ddd4] hover:ring-[#bfb7ab] hover:text-stone-900 hover:bg-[#faf8f5]';
+const CHIP_OFF = 'bg-transparent text-stone-400 border border-dashed border-[#d6cfc3] hover:text-stone-700 hover:border-[#bfb7ab]';
+/** Yüzey satırı: sunulan tipler çip olarak (koyu = varsayılan; çipe tık → varsayılan olur). Açınca yüzeye konabilecek tüm tipler aç / kapa. */
+function SurfaceRow({ surface, cfg, open, onToggle }: { surface: PanelSurface; cfg: PanelTypeConfig; open: boolean; onToggle: () => void }) {
+  const rule = surfaceRuleOf(surface, cfg), cands = candidateTypesFor(surface);
+  const toggleAllowed = (t: PanelTypeId) => {
+    const on = rule.allowed.includes(t);
+    if (on && rule.allowed.length === 1) return;   // en az bir tip kalır
+    const allowed = on ? rule.allowed.filter(x => x !== t) : cands.filter(x => x === t || rule.allowed.includes(x));
+    void setSurfaceRule(surface, { allowed, def: allowed.includes(rule.def) ? rule.def : allowed[0] });
+  };
+  return (
+    <div className={rowCardClass(open, false, false)}>
+      <div onClick={e => { stop(e); onToggle(); }} className={`relative min-h-[34px] py-[5px] pl-2.5 pr-1 flex items-center gap-2 cursor-pointer transition-colors duration-150 hover:bg-[#faf8f5] ${open ? ROW_SEL_HEAD : ''}`}>
+        {open && <span className={ROW_SEL_BAR} />}
+        <span className="yago-label shrink-0 w-[88px]">{surfaceLabel(surface)}</span>
+        <div className="flex-1 min-w-0 flex flex-wrap gap-1">
+          {rule.allowed.map(t => (
+            <button key={t} type="button" onClick={e => { stop(e); if (t !== rule.def) void setSurfaceRule(surface, { ...rule, def: t }); }}
+              title={t === rule.def ? `${panelTypeLabel(t)} — the type a new panel gets on this ${surfaceLabel(surface).toLowerCase()}` : `${panelTypeLabel(t)} — offered here · click to make it the default`}
+              className={`${CHIP} ${t === rule.def ? CHIP_ON : CHIP_IDLE}`}>{panelTypeShort(t)}</button>
+          ))}
+        </div>
+        <RowChevron open={open} onClick={e => { stop(e); onToggle(); }} title={open ? 'Close' : 'Choose which types are offered on this face'} />
+      </div>
+      {open && (
+        <div className={CARD_BODY} style={CARD_BODY_STYLE} onClick={stop}>
+          <div className="yago-hint pb-1.5">Types offered when a panel is placed here — only these appear in the panel's type list. The dark one above is the default.</div>
+          <div className="flex flex-wrap gap-1">
+            {cands.map(t => {
+              const on = rule.allowed.includes(t);
+              return (
+                <button key={t} type="button" onClick={e => { stop(e); toggleAllowed(t); }}
+                  title={`${panelTypeLabel(t)} — ${on ? 'offered · click to remove' : 'not offered · click to add'}`}
+                  className={`${CHIP} ${on ? (t === rule.def ? CHIP_ON : CHIP_IDLE) : CHIP_OFF}`}>
+                  {on && <Check size={10} strokeWidth={2.6} className="-ml-0.5" />}{panelTypeShort(t)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+const PLANE_SEG: SegItem[] = [
+  { key: 'side', label: 'Side', title: 'Free panel standing like a side / divider' }, { key: 'horizontal', label: 'Horizontal', title: 'Free panel lying like a top / shelf' },
+  { key: 'frontal', label: 'Frontal', title: 'Free panel standing like a back / plinth' },
+];
+function PanelTypesPanel() {
+  const { panelTypeConfig: cfg, connectors, setAccessoryCategory } = useStoreFields('panelTypeConfig', 'connectors', 'setAccessoryCategory');
+  const [sel, setSel] = useState<PanelTypeId>('leftSide');
+  const [edge, setEdge] = useState<PanelEdgeDir | null>(null);
+  const [freePlane, setFreePlane] = useState<Exclude<PanelPlane, 'any'>>('side');
+  const [openSurface, setOpenSurface] = useState<PanelSurface | null>(null);
+  const def = panelTypeDef(sel)!;
+  const plane = def.plane === 'any' ? freePlane : def.plane;
+  const pick = (t: PanelTypeId) => { setSel(t); setEdge(null); };
+  // Seçili kenar bu düzlemde yoksa (tip / düzlem değişti) seçim düşer; hiç seçili değilse ilk bağlayıcılı kenar açılmaz — kullanıcı tıklar.
+  const edgeOk = edge && PLANE_EDGES[plane].includes(edge) ? edge : null;
+  const offered = PANEL_SURFACES.filter(s => surfaceRuleOf(s.key, cfg).allowed.includes(sel));
+  const n = typeEdgeCount(sel, cfg);
+  return (
+    <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" style={{ fontFamily: UI_FONT }}>
+      <QbSection title="Panel types" sub="what each panel is — connectors and edge banding read this">
+        <div className="flex flex-col gap-2" onClick={stop}>
+          <div className="rounded-[9px] ring-1 ring-[#e3ddd4] px-2 pt-1 pb-0.5" style={{ background: '#faf8f5' }}><CabinetMap sel={sel} onSel={pick} /></div>
+          <div className="flex flex-col gap-[5px]">
+            {PANEL_TYPE_GROUPS.map(g => (
+              <div key={g.key} className="flex items-start gap-2">
+                <span className="yago-label shrink-0 w-[70px] pt-[5px]">{g.label}</span>
+                <div className="flex-1 min-w-0 flex flex-wrap gap-1">
+                  {PANEL_TYPES.filter(t => t.group === g.key).map(t => {
+                    const k = typeEdgeCount(t.id, cfg);
+                    return (
+                      <button key={t.id} type="button" onClick={e => { stop(e); pick(t.id); }} title={`${t.label}${k ? ` — connectors on ${k} edge${k === 1 ? '' : 's'}` : ''}`}
+                        className={`${CHIP} ${t.id === sel ? CHIP_ON : CHIP_IDLE}`}>
+                        {t.short}{k > 0 && <span className={`w-[5px] h-[5px] rounded-full ${t.id === sel ? 'bg-orange-400' : 'bg-orange-500'}`} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </QbSection>
+      <QbSection title={def.label} sub={n ? `connectors on ${n} edge${n === 1 ? '' : 's'}` : 'click an edge to give it a connector'}
+        trailing={<span className="shrink-0 h-[20px] px-1.5 rounded-[5px] bg-white ring-1 ring-[#e3ddd4] text-[10px] font-bold tracking-[0.06em] text-stone-500 flex items-center" title="Short code shown on the Assembly rows">{def.code}</span>}>
+        <div className="flex flex-col gap-1.5" onClick={stop}>
+          {def.plane === 'any' && <Segmented items={PLANE_SEG} active={freePlane} onPick={k => { setFreePlane(k as Exclude<PanelPlane, 'any'>); setEdge(null); }} height={24} />}
+          <div className="rounded-[9px] ring-1 ring-[#e3ddd4]" style={{ background: '#faf8f5' }}>
+            <TypeEdgeDiagram type={sel} plane={plane} sel={edgeOk} onSel={setEdge} cfg={cfg} />
+          </div>
+          {edgeOk
+            ? <EdgeRuleStrip type={sel} plane={plane} edge={edgeOk} cfg={cfg} connectors={connectors} onOpenConnectors={() => setAccessoryCategory('connectors')} />
+            : <div className="yago-hint px-1">Click an edge of the panel to choose its connector. Edge names follow the body's face roles, so the same rule works wherever the panel is placed.</div>}
+          <div className="yago-hint px-1 flex flex-wrap items-center gap-x-1 gap-y-0.5">
+            <span>Offered on:</span>
+            {offered.length ? offered.map(s => <span key={s.key} className="font-semibold text-stone-500">{s.label}{surfaceRuleOf(s.key, cfg).def === sel ? ' (default)' : ''}</span>).reduce<React.ReactNode[]>((acc, x, i) => (i ? [...acc, <span key={`s${i}`}>·</span>, x] : [x]), [])
+              : <span>no face — set by hand on a panel row</span>}
+          </div>
+        </div>
+      </QbSection>
+      <QbSection title="Default type by face" sub="what a new panel becomes, and which types are offered">
+        <div className="flex flex-col gap-1" onClick={stop}>
+          {PANEL_SURFACES.map(s => <SurfaceRow key={s.key} surface={s.key} cfg={cfg} open={openSurface === s.key}
+            onToggle={() => setOpenSurface(o => (o === s.key ? null : s.key))} />)}
+        </div>
+      </QbSection>
+    </div>
+  );
+}
+
+/* ═════════════════════════════════ BAĞLAYICILAR ═════════════════════════════════
+   Bağlayıcı = delikler + çizilmiş operasyonlar (pocket / line) + modeller; hepsi TEMSİLİ BİRLEŞİMDE tanımlanır: B paneli ucuyla A panelinin
+   yüzüne dayanır. Üç yüzey: B'nin geniş yüzü · B'nin ucu (kalınlığı) · A'nın temas yüzü. Etkin yüzey üstten seçilir (kamera ona döner,
+   öteki panel saydamlaşır); delik / model yüzeye tıklanarak konur, değerler satırdan düzeltilir. Operasyon düz görünümde 2B araçlarla çizilir. */
+const JOINT = { a: '#efe4cf', b: '#e3d3b6', edge: '#9f9486' } as const;
+const JOINT_TARGET = new THREE.Vector3(CONN_REP.bLen * 0.36, 6, 0);
+const JOINT_VIEW: Record<ConnSurface, [number, number, number]> = { bFace: [0.6, 0.62, 0.7], aFace: [0.82, 0.4, 0.62], bEdge: [-0.8, 0.42, 0.62] };
+const JOINT_R = 118;
+type ConnMode = 'none' | 'hole' | 'place';
+/** Işına yanıt: varsayılan / hiç (kipine göre açılıp kapanan nesnelerde `undefined` verilemez). */
+const MESH_RAY = THREE.Mesh.prototype.raycast, NO_RAY = () => null;
+type SurfHover = { along: number; across: number; snapAlong: boolean; snapAcross: boolean };
+/** Kamera etkin yüzeye döner (yön yumuşak geçer, uzaklık korunur); ilk açılışta doğrudan oturur. */
+function JointCamera({ surface }: { surface: ConnSurface }) {
+  const camera = useThree(s => s.camera) as THREE.PerspectiveCamera;
+  const controls = useThree(s => s.controls) as unknown as { target: THREE.Vector3; update: () => void } | null;
+  const goal = useRef<THREE.Vector3 | null>(null), first = useRef(true);
+  useEffect(() => {
+    const off = new THREE.Vector3(...JOINT_VIEW[surface]).normalize().multiplyScalar(JOINT_R * 5.3);
+    if (first.current) {
+      camera.position.copy(JOINT_TARGET).add(off); camera.near = 1; camera.far = 8000; camera.updateProjectionMatrix();
+      if (controls) { controls.target.copy(JOINT_TARGET); controls.update(); first.current = false; } else camera.lookAt(JOINT_TARGET);
+    } else goal.current = off;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [surface, !!controls]);
+  useFrame(() => {
+    const g = goal.current; if (!g) return;
+    const cur = camera.position.clone().sub(JOINT_TARGET), len = cur.length() + (g.length() - cur.length()) * 0.2;
+    cur.lerp(g, 0.2).setLength(len);
+    if (cur.distanceTo(g) < 1) { cur.copy(g); goal.current = null; }
+    camera.position.copy(JOINT_TARGET).add(cur); controls?.update();
+  });
+  return null;
+}
+/** Temsili panel: ahşap tonunda kutu + kenar çizgileri + harf (A / B). Saydam (hayalet) panel ışına yanıt vermez. */
+function JointPanel({ min, max, color, ghost, letter, sub, labelAt }: { min: Vec3; max: Vec3; color: string; ghost: boolean; letter: string; sub: string; labelAt: Vec3 }) {
+  const size: Vec3 = [max[0] - min[0], max[1] - min[1], max[2] - min[2]], center: Vec3 = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
+  const edges = useMemo(() => new THREE.EdgesGeometry(new THREE.BoxGeometry(size[0], size[1], size[2])), [size[0], size[1], size[2]]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => edges.dispose(), [edges]);
+  return (
+    <group>
+      <group position={center}>
+        <mesh raycast={() => null} castShadow={!ghost} receiveShadow={!ghost} renderOrder={ghost ? 3 : 0}>
+          <boxGeometry args={size} />
+          <meshStandardMaterial key={ghost ? 'g' : 's'} color={color} roughness={0.86} transparent={ghost} opacity={ghost ? 0.13 : 1} depthWrite={!ghost} />
+        </mesh>
+        <lineSegments geometry={edges} raycast={() => null}><lineBasicMaterial color={JOINT.edge} transparent opacity={ghost ? 0.4 : 0.95} /></lineSegments>
+      </group>
+      <Html position={labelAt} center zIndexRange={[20, 30]} style={{ pointerEvents: 'none' }}>
+        <div style={{ fontFamily: UI_FONT, display: 'flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap', opacity: ghost ? 0.45 : 1 }}>
+          <span style={{ width: 16, height: 16, borderRadius: 8, background: '#292524', color: '#fff', fontSize: 9.5, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{letter}</span>
+          <span style={{ fontSize: 9.5, fontWeight: 600, color: '#6b645b', textShadow: '0 0 2px #fff, 0 0 2px #fff' }}>{sub}</span>
+        </div>
+      </Html>
+    </group>
+  );
+}
+/** Yüzey koordinatını sınıra kıstırır ve yakalar: 0 çizgisine (bağlayıcı noktası / kalınlık ortası) ve var olan deliklerin hizasına (≤ 2,5 mm). */
+function snapOnSurface(surface: ConnSurface, along: number, across: number, tB: number, refs: Array<{ along: number; across: number }>): SurfHover {
+  const ext = connSurfaceExtent(surface, tB), clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
+  let x = clamp(along, ext.x0, ext.x1), y = clamp(across, ext.y0, ext.y1), sx = false, sy = false;
+  const near = (v: number, targets: number[]) => targets.find(t => Math.abs(v - t) <= 2.5);
+  const tx = near(x, [0, ...refs.map(r => r.along)]); if (tx !== undefined) { x = tx; sx = true; }
+  const ty = near(y, [...(surface === 'bFace' ? [] : [0]), ...refs.map(r => r.across)]); if (ty !== undefined) { y = ty; sy = true; }
+  return { along: x, across: y, snapAlong: sx, snapAcross: sy };
+}
+/** Etkin yüzey: hafif turuncu ton + (araç kipinde) tıklama düzlemi. Düzlem yüzeyin 0,05 mm üstünde; iki yönden ışına yanıt verir. */
+function SurfacePlane({ surface, tB, active, interactive, onMove, onLeave, onClick }: {
+  surface: ConnSurface; tB: number; active: boolean; interactive: boolean; onMove: (p: Vec3) => void; onLeave: () => void; onClick: () => void;
+}) {
+  const gl = useThree(s => s.gl);
+  const ext = connSurfaceExtent(surface, tB), wAlong = ext.x1 - ext.x0, wAcross = ext.y1 - ext.y0, cAcross = (ext.y0 + ext.y1) / 2;
+  const place: { pos: Vec3; rot: Vec3; args: [number, number] } = surface === 'bFace'
+    ? { pos: [cAcross, tB / 2 + 0.05, 0], rot: [-Math.PI / 2, 0, 0], args: [wAcross, wAlong] }
+    : surface === 'bEdge' ? { pos: [-0.05, cAcross, 0], rot: [0, -Math.PI / 2, 0], args: [wAlong, wAcross] }
+      : { pos: [0.05, cAcross, 0], rot: [0, Math.PI / 2, 0], args: [wAlong, wAcross] };
+  if (!active) return null;
+  return (
+    <mesh position={place.pos} rotation={place.rot} renderOrder={6} raycast={interactive ? MESH_RAY : NO_RAY}
+      onPointerMove={e => { e.stopPropagation(); onMove([e.point.x, e.point.y, e.point.z]); gl.domElement.style.cursor = 'crosshair'; }}
+      onPointerOut={() => { onLeave(); gl.domElement.style.cursor = ''; }}
+      onClick={e => { e.stopPropagation(); onClick(); }}>
+      <planeGeometry args={place.args} />
+      <meshBasicMaterial color={SEL} transparent opacity={interactive ? 0.16 : 0.09} side={THREE.DoubleSide} depthWrite={false} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-2} />
+    </mesh>
+  );
+}
+/** Yüzey 2B (along, across) → sahne dönüşümü: çizim nesneleri ve pocket dolgusu bununla yüzeye serilir (0,12 mm üstünde). */
+function surfaceMatrix(surface: ConnSurface, tB: number): THREE.Matrix4 {
+  const m = new THREE.Matrix4();
+  // along = −z (bkz. ConnectorService çerçevesi); üçüncü eksen sağ el kuralıyla
+  if (surface === 'bFace') m.makeBasis(new THREE.Vector3(0, 0, -1), new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, -1, 0)).setPosition(0, tB / 2 + 0.12, 0);
+  else m.makeBasis(new THREE.Vector3(0, 0, -1), new THREE.Vector3(0, 1, 0), new THREE.Vector3(1, 0, 0)).setPosition(surface === 'bEdge' ? -0.12 : 0.12, 0, 0);
+  return m;
+}
+/** Operasyon sahnede: çizgileri + pocket'ta kapalı çevrelerin yarı saydam dolgusu; line tipinde takım genişliği bant olarak. */
+function OpGlyph({ op, tB, selected, faint, onClick }: { op: ConnOp; tB: number; selected: boolean; faint: boolean; onClick: () => void }) {
+  const pose = useMemo(() => {
+    const m = surfaceMatrix(op.surface, tB);
+    return { p: new THREE.Vector3().setFromMatrixPosition(m), q: new THREE.Quaternion().setFromRotationMatrix(m) };
+  }, [op.surface, tB]);
+  const color = selected ? SEL : '#3f3a35';
+  const fills = useMemo(() => (op.type !== 'pocket' ? [] : op.shapes.filter(connShapeClosed).map(s => {
+    const pts = connShapePoints(s), sh = new THREE.Shape(pts.map(p => new THREE.Vector2(p.x, p.y)));
+    return new THREE.ShapeGeometry(sh);
+  })), [op.type, op.shapes]);
+  useEffect(() => () => fills.forEach(g => g.dispose()), [fills]);
+  return (
+    <group position={pose.p} quaternion={pose.q} onClick={e => { e.stopPropagation(); onClick(); }}>
+      {fills.map((g, i) => (
+        <mesh key={`f${i}`} geometry={g} renderOrder={7}>
+          <meshBasicMaterial color={color} transparent opacity={faint ? 0.1 : selected ? 0.32 : 0.2} side={THREE.DoubleSide} depthWrite={false} />
+        </mesh>
+      ))}
+      {op.shapes.map((s, i) => {
+        const pts = connShapePoints(s).map(p => [p.x, p.y, 0] as [number, number, number]);
+        if (pts.length < 2) return null;
+        return (
+          <group key={i}>
+            {op.type === 'line' && op.width > 0 && <Line points={pts} color={color} lineWidth={op.width} worldUnits transparent opacity={faint ? 0.1 : 0.22} depthWrite={false} renderOrder={7} />}
+            <Line points={pts} color={color} lineWidth={selected ? 2 : 1.4} transparent opacity={faint ? 0.4 : 1} depthTest={false} renderOrder={12} />
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+/** Model (aksesuar dosyası): tabanı yüzey noktasında, +Y'si yüzeyden dışarı (flip → içeri), `inset` kadar gömülü, `spin` normal etrafında. */
+function ConnPartMesh({ part, tB, color, selected, pickable, onClick }: { part: ConnPart; tB: number; color: string; selected: boolean; pickable: boolean; onClick: () => void }) {
+  const gl = useThree(s => s.gl);
+  const [, setTick] = useState(0);
+  useEffect(() => onAccessoryGeometry(() => setTick(t => t + 1)), []);
+  const g = accessoryGeometryNow(part.modelId);
+  const { p, q } = useMemo(() => {
+    const at = connSurfacePoint(part.surface, part.along, part.across, tB), n = new THREE.Vector3(...at.normal);
+    const quat = new THREE.Quaternion().setFromUnitVectors(UP, n.clone().multiplyScalar(part.flip ? -1 : 1));
+    quat.multiply(new THREE.Quaternion().setFromAxisAngle(UP, (part.spin * Math.PI) / 180));
+    return { p: new THREE.Vector3(...at.pos).addScaledVector(n, -part.inset), q: quat };
+  }, [part.surface, part.along, part.across, part.inset, part.spin, part.flip, tB]);
+  if (!g) return null;
+  return (
+    <mesh geometry={g.geo} position={p} quaternion={q} castShadow raycast={pickable ? MESH_RAY : NO_RAY}
+      onClick={e => { e.stopPropagation(); onClick(); }}
+      onPointerOver={e => { e.stopPropagation(); gl.domElement.style.cursor = 'pointer'; }} onPointerOut={() => { gl.domElement.style.cursor = ''; }}>
+      <meshStandardMaterial color={color} roughness={0.5} metalness={0.15} emissive={selected ? SEL : '#000000'} emissiveIntensity={selected ? 0.3 : 0} />
+    </mesh>
+  );
+}
+/** İmlecin altındaki yüzey noktası: halka + artı + koordinat etiketi; hizaya yakalanınca o eksen çizgisi uzar. */
+function SurfaceHover({ surface, at, tB, radius, acrossLabel }: { surface: ConnSurface; at: SurfHover; tB: number; radius: number; acrossLabel: string }) {
+  const sp = connSurfacePoint(surface, at.along, at.across, tB);
+  const q = useMemo(() => quatToDir(sp.normal), [sp.normal[0], sp.normal[1], sp.normal[2]]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const ring = useMemo(() => circlePts(radius), [radius]);
+  const arm = (snap: boolean) => (snap ? 60 : radius * 1.7);
+  // Yerel eksenler (yukarı = normal): bFace'te yerel x = across, z = along; öteki yüzeylerde yerel z = along, x ⟂ (across)
+  return (
+    <group position={sp.pos} quaternion={q}>
+      <Line points={ring} color={SEL} lineWidth={1.5} depthTest={false} renderOrder={13} />
+      <Line points={[[-arm(at.snapAlong), 0, 0], [arm(at.snapAlong), 0, 0]]} color={SEL} lineWidth={0.8} depthTest={false} renderOrder={13} transparent opacity={at.snapAlong ? 0.9 : 0.7} />
+      <Line points={[[0, 0, -arm(at.snapAcross)], [0, 0, arm(at.snapAcross)]]} color={SEL} lineWidth={0.8} depthTest={false} renderOrder={13} transparent opacity={at.snapAcross ? 0.9 : 0.7} />
+      <Html center zIndexRange={[30, 40]} style={{ pointerEvents: 'none', transform: 'translate(0, -26px)' }}>
+        <span style={{ fontFamily: UI_FONT, fontSize: 10, fontWeight: 600, color: '#fff', background: '#292524', borderRadius: 5, padding: '2px 6px', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+          along {fmt1(at.along)} · {acrossLabel.toLowerCase()} {fmt1(at.across)}
+        </span>
+      </Html>
+    </group>
+  );
+}
+function JointScene({ conn, tA, tB, active, mode, holeRadius, sel, onSel, onAddHole, onPlace, layers }: {
+  conn: Connector; tA: number; tB: number; active: ConnSurface; mode: ConnMode; holeRadius: number; sel: string | null; onSel: (id: string | null) => void;
+  onAddHole: (along: number, across: number) => void; onPlace: (along: number, across: number) => void; layers: AccessoryLayer[];
+}) {
+  const [hover, setHover] = useState<SurfHover | null>(null);
+  const hoverRef = useRef<SurfHover | null>(null); hoverRef.current = hover;
+  useEffect(() => { setHover(null); }, [mode, active]);
+  const tool = mode !== 'none', w = CONN_REP.width / 2;
+  const refs = useMemo(() => conn.holes.filter(h => h.surface === active).map(h => ({ along: h.along, across: h.across })), [conn.holes, active]);
+  const move = (p: Vec3) => { const c = connSurfaceCoords(active, p); setHover(snapOnSurface(active, c.along, c.across, tB, refs)); };
+  const click = () => { const h = hoverRef.current; if (!h) return; if (mode === 'hole') onAddHole(h.along, h.across); else if (mode === 'place') onPlace(h.along, h.across); };
+  const acrossLabel = CONN_SURFACES.find(s => s.v === active)!.across;
+  return (
+    <>
+      <JointPanel letter="A" sub="passes" min={[-tA, -CONN_REP.aHeight / 2, -w]} max={[0, CONN_REP.aHeight / 2, w]} color={JOINT.a} ghost={active === 'bEdge'}
+        labelAt={[-tA / 2, CONN_REP.aHeight / 2 + 12, 0]} />
+      <JointPanel letter="B" sub="butts" min={[0, -tB / 2, -w]} max={[CONN_REP.bLen, tB / 2, w]} color={JOINT.b} ghost={active === 'aFace'}
+        labelAt={[CONN_REP.bLen + 14, 0, 0]} />
+      {/* Birleşim çizgisi + bağlayıcı noktası (0) */}
+      <Line points={[[0, 0, -w - 14], [0, 0, w + 14]]} color={SEL} lineWidth={1} dashed dashSize={4} gapSize={3} depthTest={false} renderOrder={9} transparent opacity={0.75} />
+      <mesh renderOrder={11} raycast={() => null}><sphereGeometry args={[2.1, 16, 12]} /><meshBasicMaterial color={SEL} depthTest={false} /></mesh>
+      <Html position={[0, 0, -w - 20]} center zIndexRange={[20, 30]} style={{ pointerEvents: 'none' }}>
+        <span title="Positive direction along the joint" style={{ fontFamily: UI_FONT, fontSize: 9, fontWeight: 700, color: SEL, whiteSpace: 'nowrap', textShadow: '0 0 2px #fff, 0 0 2px #fff' }}>along +</span>
+      </Html>
+      {(['bFace', 'bEdge', 'aFace'] as ConnSurface[]).map(s => (
+        <SurfacePlane key={s} surface={s} tB={tB} active={s === active} interactive={tool} onMove={move} onLeave={() => setHover(null)} onClick={click} />
+      ))}
+      {conn.holes.map(h => {
+        const sp = connSurfacePoint(h.surface, h.along, h.across, tB);
+        const at = { center: sp.pos, dir: [-sp.normal[0], -sp.normal[1], -sp.normal[2]] as Vec3, radius: h.diameter / 2, depth: Math.min(h.depth, connSurfaceDepth(h.surface, tA, tB)) };
+        return <HoleGlyph key={h.id} at={at} selected={sel === h.id} onClick={() => { if (!tool) onSel(h.id); }} />;
+      })}
+      {conn.ops.map(op => <OpGlyph key={op.id} op={op} tB={tB} selected={sel === op.id} faint={false} onClick={() => { if (!tool) onSel(op.id); }} />)}
+      {conn.parts.map(p => <ConnPartMesh key={p.id} part={p} tB={tB} color={layers.find(l => l.id === p.layerId)?.color ?? LAYER_DEFAULT_COLOR} selected={sel === p.id} pickable={!tool}
+        onClick={() => onSel(p.id)} />)}
+      {tool && hover && <SurfaceHover surface={active} at={hover} tB={tB} radius={mode === 'hole' ? holeRadius : 5} acrossLabel={acrossLabel} />}
+    </>
+  );
+}
+/** Bağlayıcı sahnesi: sol üstte yüzey seçimi, sağ üstte Hole kipi; sol sürükle döndür · sağ sürükle kaydır · tekerlek yaklaş. */
+function JointPreview({ conn, tA, tB, active, onActive, mode, onMode, holeRadius, sel, onSel, onAddHole, onPlace, layers }: {
+  conn: Connector; tA: number; tB: number; active: ConnSurface; onActive: (s: ConnSurface) => void; mode: ConnMode; onMode: (m: ConnMode) => void; holeRadius: number;
+  sel: string | null; onSel: (id: string | null) => void; onAddHole: (along: number, across: number) => void; onPlace: (along: number, across: number) => void; layers: AccessoryLayer[];
+}) {
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = box.current; if (!el) return;
+    const onWheel = (e: WheelEvent) => e.preventDefault();
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+  const R = JOINT_R;
+  return (
+    <div ref={box} onContextMenu={e => e.preventDefault()} className="relative w-full rounded-[9px] overflow-hidden ring-1 ring-[#e3ddd4]"
+      style={{ height: PREVIEW_H, background: 'linear-gradient(180deg,#fbfaf7 0%,#f2eee7 100%)', overscrollBehavior: 'contain' }}>
+      <Canvas flat dpr={[1, 2]} shadows camera={{ position: [R * 2.6, R * 2.6, R * 3], fov: 26, near: 1, far: 8000 }} gl={{ antialias: true, alpha: true }} style={{ touchAction: 'none' }}
+        onPointerMissed={() => { if (mode === 'none') onSel(null); }}>
+        <JointCamera surface={active} />
+        <hemisphereLight args={['#ffffff', '#efe6d6', 1.9]} />
+        <directionalLight position={[R * 1.4, R * 2.4, R * 1.1]} intensity={0.9} castShadow shadow-mapSize={[1024, 1024]}
+          shadow-camera-left={-R * 2} shadow-camera-right={R * 2} shadow-camera-top={R * 2} shadow-camera-bottom={-R * 2} shadow-camera-near={0.5} shadow-camera-far={R * 8} shadow-bias={-0.0004} />
+        <directionalLight position={[-R * 2, R * 1.1, -R * 1.6]} intensity={0.5} />
+        <directionalLight position={[-R * 1.2, R * 0.8, R * 2.2]} intensity={0.35} />
+        <JointScene conn={conn} tA={tA} tB={tB} active={active} mode={mode} holeRadius={holeRadius} sel={sel} onSel={onSel} onAddHole={onAddHole} onPlace={onPlace} layers={layers} />
+        <OrbitControls makeDefault enablePan screenSpacePanning panSpeed={0.9} enableDamping dampingFactor={0.12} minDistance={R * 1.2} maxDistance={R * 12}
+          mouseButtons={{ LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN }} />
+      </Canvas>
+      {/* Sol üst: etkin yüzey (delik / model / operasyon buraya eklenir; kamera ona döner) */}
+      <div className="absolute left-2 top-2 flex items-center gap-1" style={{ fontFamily: UI_FONT }}>
+        {CONN_SURFACES.map(s => (
+          <button key={s.v} type="button" title={`${s.label} — ${s.hint}`} onClick={e => { stop(e); onActive(s.v); }} className={PREVIEW_TOOL(active === s.v)}>{s.short}</button>
+        ))}
+      </div>
+      <div className="absolute right-2 top-2 flex items-center gap-1" style={{ fontFamily: UI_FONT }}>
+        <button type="button" title={mode === 'hole' ? 'Hole mode — click the highlighted surface; Esc to leave' : 'Add holes by clicking the highlighted surface'}
+          onClick={e => { stop(e); onMode(mode === 'hole' ? 'none' : 'hole'); }} className={PREVIEW_TOOL(mode === 'hole')}>
+          <Drill size={12} strokeWidth={2.1} />{mode === 'hole' ? 'Click the surface' : 'Hole'}
+        </button>
+      </div>
+      {mode === 'place' && (
+        <div className="absolute left-1/2 -translate-x-1/2 top-10 h-[22px] px-2.5 rounded-full bg-[#292524] text-white text-[10.5px] font-semibold flex items-center" style={{ fontFamily: UI_FONT }}>
+          Click the highlighted surface to place the model · Esc
+        </div>
+      )}
+      <div className="absolute left-2.5 bottom-2 flex items-center gap-1.5" style={HUD}>
+        <span className="font-semibold text-stone-500">A {fmt1(tA)}</span><span>·</span><span className="font-semibold text-stone-500">B {fmt1(tB)}</span><span>·</span>
+        <span>{conn.holes.length} hole{conn.holes.length === 1 ? '' : 's'}</span><span>·</span>
+        <span>{conn.ops.length} operation{conn.ops.length === 1 ? '' : 's'}</span><span>·</span><span>{conn.parts.length} model{conn.parts.length === 1 ? '' : 's'}</span>
+      </div>
+    </div>
+  );
+}
+
+/* ───────── 2B ÇİZİM ALANI (operasyon) ─────────
+   Seçilen yüzeyin düz görünümü: x = birleşim boyunca (along), y = across (yukarı). Araçlar: Select · Line · Polyline · Rectangle · Circle.
+   Yakalama: uç · orta · merkez · yüzey köşeleri · delik merkezleri · 0 noktası, yoksa 0,5 mm ızgara; Shift = dik. Değer kutusu: "x,y" mutlak,
+   "@dx,dy" göreli, tek sayı = boy / yarıçap (dikdörtgende "en,boy"), "c" = polyline'ı kapat. Tekerlek yaklaştırır, sağ sürükle kaydırır. */
+type SkTool = 'select' | 'line' | 'pline' | 'rect' | 'circle';
+type P2 = { x: number; y: number };
+type SnapMark = 'end' | 'mid' | 'center' | 'origin' | null;
+const SK_TOOLS: Array<{ key: SkTool; label: string; Icon: typeof Minus; title: string }> = [
+  { key: 'select', label: 'Select', Icon: MousePointer2, title: 'Select a shape (Delete removes it)' },
+  { key: 'line', label: 'Line', Icon: Minus, title: 'Line: two points' },
+  { key: 'pline', label: 'Poly', Icon: Spline, title: 'Polyline: click points · click the first point or type c to close · Enter / right-click to finish open' },
+  { key: 'rect', label: 'Rect', Icon: Square, title: 'Rectangle: two opposite corners (or type width,height after the first corner)' },
+  { key: 'circle', label: 'Circle', Icon: CircleIcon, title: 'Circle: centre, then a point on it (or type the radius)' },
+];
+const dist2 = (a: P2, b: P2) => Math.hypot(a.x - b.x, a.y - b.y);
+const half = (v: number) => Math.round(v * 2) / 2;
+/** Nesnenin yakalama noktaları. */
+function shapeSnapPoints(s: ConnShape): Array<{ p: P2; kind: Exclude<SnapMark, null> }> {
+  if (s.t === 'line') return [{ p: s.a, kind: 'end' }, { p: s.b, kind: 'end' }, { p: { x: (s.a.x + s.b.x) / 2, y: (s.a.y + s.b.y) / 2 }, kind: 'mid' }];
+  if (s.t === 'circle') return [{ p: s.c, kind: 'center' }, ...[[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dy]) => ({ p: { x: s.c.x + dx * s.r, y: s.c.y + dy * s.r }, kind: 'end' as const }))];
+  const out: Array<{ p: P2; kind: Exclude<SnapMark, null> }> = s.v.map(p => ({ p, kind: 'end' as const }));
+  const n = s.v.length, segs = s.closed ? n : n - 1;
+  for (let i = 0; i < segs; i++) { const a = s.v[i], b = s.v[(i + 1) % n]; out.push({ p: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, kind: 'mid' }); }
+  return out;
+}
+/** Noktanın nesneye uzaklığı (mm) — seçim için. */
+function distToShape(s: ConnShape, q: P2): number {
+  if (s.t === 'circle') return Math.abs(dist2(s.c, q) - s.r);
+  const pts = connShapePoints(s);
+  let best = Infinity;
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const a = pts[i], b = pts[i + 1], dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+    const t = l2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((q.x - a.x) * dx + (q.y - a.y) * dy) / l2));
+    best = Math.min(best, Math.hypot(q.x - (a.x + dx * t), q.y - (a.y + dy * t)));
+  }
+  return best;
+}
+function SketchPad({ op, conn, tB, onShapes, onDone }: { op: ConnOp; conn: Connector; tB: number; onShapes: (shapes: ConnShape[]) => void; onDone: () => void }) {
+  const box = useRef<HTMLDivElement>(null), input = useRef<HTMLInputElement>(null);
+  const [size, setSize] = useState({ w: 480, h: PREVIEW_H });
+  const ext = useMemo(() => connSurfaceExtent(op.surface, tB), [op.surface, tB]);
+  const fitView = (s = size) => {
+    const k = Math.min((s.w - 70) / (ext.x1 - ext.x0), (s.h - 110) / (ext.y1 - ext.y0));
+    return { cx: (ext.x0 + ext.x1) / 2, cy: (ext.y0 + ext.y1) / 2, k: Math.max(0.4, Math.min(14, k)) };
+  };
+  const [view, setView] = useState(() => fitView());
+  const [tool, setTool] = useState<SkTool>('line');
+  const [pts, setPts] = useState<P2[]>([]);
+  const [cursor, setCursor] = useState<{ p: P2; mark: SnapMark } | null>(null);
+  const [selIdx, setSelIdx] = useState<number | null>(null);
+  const [typed, setTyped] = useState('');
+  const [snapOn, setSnapOn] = useState(true);
+  const st = useRef({ view, size, pts, tool, cursor, selIdx, shapes: op.shapes });
+  st.current = { view, size, pts, tool, cursor, selIdx, shapes: op.shapes };
+  const pan = useRef<{ x: number; y: number; cx: number; cy: number; moved: boolean } | null>(null);
+  // Boyut ölçülür; yüzey değişince / ilk ölçümde görünüm yüzeye oturur.
+  useLayoutEffect(() => {
+    const el = box.current; if (!el) return;
+    const read = () => { const r = el.getBoundingClientRect(); if (r.width > 10) setSize(s => (Math.abs(s.w - r.width) > 0.5 ? { w: r.width, h: PREVIEW_H } : s)); };
+    read();
+    const ro = new ResizeObserver(read); ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  useEffect(() => { setView(fitView(size)); }, [op.surface, tB, size.w]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setPts([]); setSelIdx(null); setTyped(''); }, [op.id, tool]);
+  // B yüzünde birleşim ÜSTTE, across aşağı doğru artar (3B görünüşte de birleşim uzakta); öteki yüzeylerde across yukarı.
+  const ySign = op.surface === 'bFace' ? 1 : -1;
+  const S = (p: P2) => ({ x: size.w / 2 + (p.x - view.cx) * view.k, y: size.h / 2 + ySign * (p.y - view.cy) * view.k });
+  const toModel = (sx: number, sy: number, v = st.current.view, s = st.current.size): P2 => ({ x: v.cx + (sx - s.w / 2) / v.k, y: v.cy + ySign * (sy - s.h / 2) / v.k });
+  // Yakalama adayları: bu operasyonun ve yüzeydeki öteki operasyonların nesneleri, delik merkezleri, yüzey köşeleri / kenar ortaları, 0.
+  const snapPts = useMemo(() => {
+    const out: Array<{ p: P2; kind: Exclude<SnapMark, null> }> = [{ p: { x: 0, y: 0 }, kind: 'origin' }];
+    for (const o of conn.ops) if (o.surface === op.surface) for (const s of o.shapes) out.push(...shapeSnapPoints(s));
+    for (const h of conn.holes) if (h.surface === op.surface) out.push({ p: { x: h.along, y: h.across }, kind: 'center' });
+    const { x0, x1, y0, y1 } = ext, mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+    for (const [x, y] of [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]) out.push({ p: { x, y }, kind: 'end' });
+    for (const [x, y] of [[mx, y0], [mx, y1], [x0, my], [x1, my]]) out.push({ p: { x, y }, kind: 'mid' });
+    return out;
+  }, [conn.ops, conn.holes, op.surface, ext]);
+  const resolve = (raw: P2, shift: boolean): { p: P2; mark: SnapMark } => {
+    const { view: v, pts: cur } = st.current, last = cur[cur.length - 1];
+    if (snapOn) {
+      let best: { p: P2; kind: Exclude<SnapMark, null> } | null = null, bd = 9 / v.k;
+      for (const c of snapPts) { const d = dist2(c.p, raw); if (d < bd) { bd = d; best = c; } }
+      if (best) return { p: best.p, mark: best.kind };
+    }
+    let p = { x: half(raw.x), y: half(raw.y) };
+    if (shift && last) p = Math.abs(raw.x - last.x) >= Math.abs(raw.y - last.y) ? { x: p.x, y: last.y } : { x: last.x, y: p.y };
+    return { p, mark: null };
+  };
+  const add = (s: ConnShape) => onShapes([...st.current.shapes, s]);
+  const finishPline = (closed: boolean) => {
+    const cur = st.current.pts;
+    if (cur.length >= (closed ? 3 : 2)) add({ t: 'pline', v: cur, closed: closed || undefined });
+    setPts([]);
+  };
+  /** Bir nokta girildi (tık ya da yazılan değer). */
+  const feed = (p: P2) => {
+    const { tool: t, pts: cur } = st.current;
+    if (t === 'select') return;
+    if (!cur.length) { setPts([p]); return; }
+    const a = cur[0];
+    if (t === 'line') { if (dist2(a, p) > 1e-6) add({ t: 'line', a, b: p }); setPts([]); }
+    else if (t === 'rect') { if (Math.abs(p.x - a.x) > 1e-6 && Math.abs(p.y - a.y) > 1e-6) add({ t: 'pline', closed: true, v: [a, { x: p.x, y: a.y }, p, { x: a.x, y: p.y }] }); setPts([]); }
+    else if (t === 'circle') { const r = dist2(a, p); if (r > 1e-6) add({ t: 'circle', c: a, r: round1(r) }); setPts([]); }
+    else if (cur.length >= 2 && dist2(a, p) < 1e-6) finishPline(true);
+    else if (dist2(cur[cur.length - 1], p) > 1e-6) setPts([...cur, p]);
+  };
+  /** Değer kutusu: "x,y" · "@dx,dy" · tek sayı (boy / yarıçap) · "c". */
+  const applyTyped = () => {
+    const text = typed.trim().toLowerCase(); setTyped('');
+    const { tool: t, pts: cur, cursor: c } = st.current, last = cur[cur.length - 1];
+    if (!text) { if (t === 'pline' && cur.length) finishPline(false); return; }
+    if (text === 'c') { if (t === 'pline') finishPline(true); return; }
+    const rel = text.startsWith('@'), nums = text.replace('@', '').split(/[,;\s]+/).filter(Boolean).map(v => parseFloat(v.replace(',', '.')));
+    if (nums.some(v => !Number.isFinite(v))) return;
+    if (nums.length >= 2) {
+      const relative = rel || (t === 'rect' && !!last);
+      feed(relative && last ? { x: last.x + nums[0], y: last.y + nums[1] } : { x: nums[0], y: nums[1] });
+    } else if (nums.length === 1 && last) {
+      if (t === 'circle') { feed({ x: last.x + nums[0], y: last.y }); return; }
+      const d = c ? { x: c.p.x - last.x, y: c.p.y - last.y } : { x: 1, y: 0 }, l = Math.hypot(d.x, d.y) || 1;
+      feed({ x: round1(last.x + (d.x / l) * nums[0]), y: round1(last.y + (d.y / l) * nums[0]) });
+    }
+  };
+  const typedRef = useRef(applyTyped); typedRef.current = applyTyped;
+  const ySignRef = useRef(ySign); ySignRef.current = ySign;
+  const local = (e: { clientX: number; clientY: number }) => { const r = box.current!.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  const onMove = (e: React.PointerEvent) => {
+    const l = local(e);
+    if (pan.current) {
+      const dx = l.x - pan.current.x, dy = l.y - pan.current.y;
+      if (Math.hypot(dx, dy) > 3) pan.current.moved = true;
+      setView(v => ({ ...v, cx: pan.current!.cx - dx / v.k, cy: pan.current!.cy - ySign * dy / v.k }));
+      return;
+    }
+    setCursor(resolve(toModel(l.x, l.y), e.shiftKey));
+  };
+  const onDown = (e: React.PointerEvent) => {
+    const l = local(e);
+    if (e.button === 2 || e.button === 1) { pan.current = { x: l.x, y: l.y, cx: view.cx, cy: view.cy, moved: false }; (e.currentTarget as Element).setPointerCapture(e.pointerId); return; }
+    if (e.button !== 0) return;
+    const hit = resolve(toModel(l.x, l.y), e.shiftKey);
+    if (tool === 'select') {
+      const raw = toModel(l.x, l.y);
+      let best: number | null = null, bd = 7 / view.k;
+      op.shapes.forEach((s, i) => { const d = distToShape(s, raw); if (d < bd) { bd = d; best = i; } });
+      setSelIdx(best);
+    } else feed(hit.p);
+  };
+  const onUp = (e: React.PointerEvent) => {
+    const p = pan.current; if (!p) return;
+    pan.current = null;
+    // Sürüklemeden sağ tık: polyline'ı bitirir / başlanmış nesneyi iptal eder
+    if (!p.moved && e.button === 2) { if (tool === 'pline' && pts.length >= 2) finishPline(false); else setPts([]); }
+  };
+  // Tekerlek: imlecin altındaki nokta sabit kalarak yaklaş (kenar çubuğu kaymaz)
+  useEffect(() => {
+    const el = box.current; if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const r = el.getBoundingClientRect(), sx = e.clientX - r.left, sy = e.clientY - r.top, { view: v, size: s } = st.current;
+      const k = Math.max(0.3, Math.min(60, v.k * (e.deltaY < 0 ? 1.15 : 1 / 1.15))), m = toModel(sx, sy, v, s);
+      setView({ k, cx: m.x - (sx - s.w / 2) / k, cy: m.y - ySignRef.current * (sy - s.h / 2) / k });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const removeSel = () => { const i = st.current.selIdx; if (i == null) return; onShapes(st.current.shapes.filter((_, k) => k !== i)); setSelIdx(null); };
+  const escape = () => { if (st.current.pts.length) setPts([]); else if (st.current.tool !== 'select') setTool('select'); else onDone(); };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = document.activeElement as HTMLElement | null, inOwn = el === input.current, tag = (el?.tagName ?? '').toLowerCase();
+      if (!inOwn && (tag === 'input' || tag === 'select' || tag === 'textarea')) return;
+      if (e.key === 'Escape') { e.preventDefault(); escape(); }
+      else if ((e.key === 'Delete' || (e.key === 'Backspace' && !(inOwn && input.current!.value))) && st.current.selIdx != null) { e.preventDefault(); removeSel(); }
+      // Odak kutuda değilken: değer karakteri kutuya gider, Enter kutudaki değeri uygular (ya da polyline'ı bitirir)
+      else if (!inOwn && !e.ctrlKey && !e.metaKey && /^[0-9@.,\-c]$/i.test(e.key)) input.current?.focus({ preventScroll: true });
+      else if (!inOwn && e.key === 'Enter') { e.preventDefault(); typedRef.current(); }
+    };
+    window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // ── çizim ──
+  const path = (s: ConnShape) => { const p = connShapePoints(s).map(S); return p.map((q, i) => `${i ? 'L' : 'M'}${q.x.toFixed(1)} ${q.y.toFixed(1)}`).join(' ') + (connShapeClosed(s) ? ' Z' : ''); };
+  const ca = S({ x: ext.x0, y: ext.y0 }), cb = S({ x: ext.x1, y: ext.y1 }), o = S({ x: 0, y: 0 });
+  const r0 = { x: Math.min(ca.x, cb.x), y: Math.min(ca.y, cb.y) }, r1 = { x: Math.max(ca.x, cb.x), y: Math.max(ca.y, cb.y) };   // ekranda sol-üst / sağ-alt
+  const grid = useMemo(() => {
+    const step = view.k * 10 >= 9 ? 10 : 50, xs: number[] = [], ys: number[] = [];
+    for (let x = Math.ceil(ext.x0 / step) * step; x <= ext.x1 + 1e-6; x += step) xs.push(x);
+    for (let y = Math.ceil(ext.y0 / step) * step; y <= ext.y1 + 1e-6; y += step) ys.push(y);
+    return { xs, ys };
+  }, [view.k, ext]);
+  const last = pts[pts.length - 1], cur = cursor?.p;
+  const rubber = (() => {
+    if (!last || !cur) return null;
+    const a = S(pts[0]), b = S(cur), common = { fill: 'none', stroke: SEL, strokeWidth: 1.3, strokeDasharray: '5 3' } as const;
+    if (tool === 'rect') return <rect x={Math.min(a.x, b.x)} y={Math.min(a.y, b.y)} width={Math.abs(b.x - a.x)} height={Math.abs(b.y - a.y)} {...common} />;
+    if (tool === 'circle') return <circle cx={a.x} cy={a.y} r={dist2(pts[0], cur) * view.k} {...common} />;
+    const l = S(last);
+    return <><polyline points={[...pts.map(S), b].map(q => `${q.x},${q.y}`).join(' ')} {...common} strokeDasharray={undefined} opacity={tool === 'pline' ? 1 : 0} /><line x1={l.x} y1={l.y} x2={b.x} y2={b.y} {...common} /></>;
+  })();
+  const readout = !last || !cur ? null : tool === 'rect' ? `${fmt1(Math.abs(cur.x - pts[0].x))} × ${fmt1(Math.abs(cur.y - pts[0].y))}`
+    : tool === 'circle' ? `R ${fmt1(dist2(pts[0], cur))}` : `${fmt1(dist2(last, cur))} mm`;
+  const placeholder = tool === 'select' ? 'select a shape' : !last ? 'x,y' : tool === 'rect' ? 'width,height' : tool === 'circle' ? 'radius' : tool === 'pline' ? 'length · @dx,dy · c' : 'length · @dx,dy';
+  const sc = cur ? S(cur) : null;
+  const strip = op.surface === 'aFace' ? { a: S({ x: ext.x0, y: tB / 2 }), b: S({ x: ext.x1, y: -tB / 2 }) } : null;   // aFace'te y yukarı: a sol-üst
+  const surfaceName = CONN_SURFACES.find(s => s.v === op.surface)!;
+  return (
+    <div ref={box} onContextMenu={e => e.preventDefault()} className="relative w-full rounded-[9px] overflow-hidden ring-1 ring-[#e3ddd4] select-none"
+      style={{ height: PREVIEW_H, background: '#faf8f5', overscrollBehavior: 'contain', cursor: tool === 'select' ? 'default' : 'crosshair', touchAction: 'none' }}
+      onPointerMove={onMove} onPointerDown={onDown} onPointerUp={onUp} onPointerLeave={() => setCursor(null)}
+      onClick={() => input.current?.focus({ preventScroll: true })}>
+      <svg width={size.w} height={size.h} className="absolute inset-0 block" style={{ fontFamily: UI_FONT }}>
+        <defs>
+          <clipPath id={`sk-clip-${op.id}`}><rect x={r0.x} y={r0.y} width={r1.x - r0.x} height={r1.y - r0.y} /></clipPath>
+          <pattern id={`sk-hatch-${op.id}`} width={6} height={6} patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1={0} y1={0} x2={0} y2={6} stroke="#d9cfbf" strokeWidth={1.2} /></pattern>
+        </defs>
+        <rect x={r0.x} y={r0.y} width={r1.x - r0.x} height={r1.y - r0.y} fill="#f0ebe3" stroke={PT.stroke} strokeWidth={1} />
+        <g clipPath={`url(#sk-clip-${op.id})`}>
+          {grid.xs.map(x => <line key={`x${x}`} x1={S({ x, y: 0 }).x} x2={S({ x, y: 0 }).x} y1={r0.y} y2={r1.y} stroke={x % 50 === 0 ? '#ddd5c9' : '#e8e2d8'} strokeWidth={0.7} />)}
+          {grid.ys.map(y => <line key={`y${y}`} y1={S({ x: 0, y }).y} y2={S({ x: 0, y }).y} x1={r0.x} x2={r1.x} stroke={y % 50 === 0 ? '#ddd5c9' : '#e8e2d8'} strokeWidth={0.7} />)}
+          {strip && <rect x={strip.a.x} y={strip.a.y} width={strip.b.x - strip.a.x} height={strip.b.y - strip.a.y} fill={`url(#sk-hatch-${op.id})`} stroke="#c9bda9" strokeWidth={0.8} strokeDasharray="4 3" />}
+        </g>
+        {/* Birleşim: B yüzünde alt kenar (A paneli oradadır); öteki yüzeylerde B kalınlığının ortası */}
+        {op.surface === 'bFace'
+          ? <><line x1={r0.x} x2={r1.x} y1={o.y} y2={o.y} stroke="#292524" strokeWidth={2.4} />
+            <text x={r1.x} y={r0.y - 7} textAnchor="end" fontSize={8} fontWeight={700} fill={PT.ink} style={{ letterSpacing: '0.08em' }}>JOINT · PANEL A</text></>
+          : <line x1={r0.x} x2={r1.x} y1={o.y} y2={o.y} stroke={PT.ghost} strokeWidth={0.8} strokeDasharray="6 3 1 3" />}
+        {strip && <text x={strip.a.x + 4} y={strip.a.y - 4} fontSize={8} fontWeight={700} fill="#a8997f" style={{ letterSpacing: '0.08em' }}>PANEL B LANDS HERE</text>}
+        <line x1={o.x} x2={o.x} y1={r0.y} y2={r1.y} stroke={PT.ghost} strokeWidth={0.8} strokeDasharray="6 3 1 3" />
+        {/* Öteki operasyonlar + delikler (soluk) */}
+        {conn.ops.filter(x => x.id !== op.id && x.surface === op.surface).map(x => x.shapes.map((s, i) => <path key={`${x.id}-${i}`} d={path(s)} fill="none" stroke="#b8b0a4" strokeWidth={1} />))}
+        {conn.holes.filter(h => h.surface === op.surface).map(h => { const c = S({ x: h.along, y: h.across }); return <circle key={h.id} cx={c.x} cy={c.y} r={Math.max(2, (h.diameter / 2) * view.k)} fill="#fff" stroke="#b8b0a4" strokeWidth={1} strokeDasharray="3 2" />; })}
+        {/* Bu operasyon */}
+        {op.shapes.map((s, i) => {
+          const on = selIdx === i, closed = connShapeClosed(s);
+          return <g key={i}>
+            {op.type === 'line' && op.width > 0 && <path d={path(s)} fill="none" stroke={on ? SEL : '#3f3a35'} strokeOpacity={0.16} strokeWidth={Math.max(1.5, op.width * view.k)} strokeLinecap="round" strokeLinejoin="round" />}
+            <path d={path(s)} fill={op.type === 'pocket' && closed ? (on ? 'rgba(234,88,12,0.18)' : 'rgba(41,37,36,0.12)') : 'none'} stroke={on ? SEL : '#292524'} strokeWidth={on ? 2 : 1.5}
+              strokeDasharray={op.type === 'pocket' && !closed ? '5 3' : undefined} strokeLinejoin="round" />
+          </g>;
+        })}
+        {rubber}
+        {pts.map((p, i) => { const q = S(p); return <rect key={i} x={q.x - 2.5} y={q.y - 2.5} width={5} height={5} fill="#fff" stroke={SEL} strokeWidth={1.2} />; })}
+        {/* 0 noktası */}
+        <circle cx={o.x} cy={o.y} r={3} fill={SEL} /><text x={o.x + 6} y={o.y - 5} fontSize={8.5} fontWeight={700} fill={SEL}>0</text>
+        <text x={r1.x} y={r1.y + 13} textAnchor="end" fontSize={8} fontWeight={600} fill={PT.mute} style={{ letterSpacing: '0.08em' }}>ALONG THE JOINT →</text>
+        <text x={r0.x} y={r1.y + 13} fontSize={8} fontWeight={600} fill={PT.mute} style={{ letterSpacing: '0.08em' }}>{ySign > 0 ? '↓' : '↑'} {surfaceName.across.toUpperCase()}</text>
+        {sc && tool !== 'select' && <g pointerEvents="none">
+          <line x1={sc.x - 9} x2={sc.x + 9} y1={sc.y} y2={sc.y} stroke={SEL} strokeWidth={1} /><line x1={sc.x} x2={sc.x} y1={sc.y - 9} y2={sc.y + 9} stroke={SEL} strokeWidth={1} />
+          {cursor?.mark === 'end' && <rect x={sc.x - 4.5} y={sc.y - 4.5} width={9} height={9} fill="none" stroke={SEL} strokeWidth={1.6} />}
+          {cursor?.mark === 'mid' && <path d={`M${sc.x} ${sc.y - 5.5} L${sc.x + 5.5} ${sc.y + 4.5} L${sc.x - 5.5} ${sc.y + 4.5} Z`} fill="none" stroke={SEL} strokeWidth={1.6} />}
+          {(cursor?.mark === 'center' || cursor?.mark === 'origin') && <circle cx={sc.x} cy={sc.y} r={5} fill="none" stroke={SEL} strokeWidth={1.6} />}
+          {readout && <g><rect x={sc.x + 12} y={sc.y + 10} width={readout.length * 5.8 + 12} height={17} rx={5} fill="#292524" />
+            <text x={sc.x + 18} y={sc.y + 22} fontSize={10} fontWeight={600} fill="#fff" style={{ fontVariantNumeric: 'tabular-nums' }}>{readout}</text></g>}
+        </g>}
+      </svg>
+      <div className="absolute left-2 top-2 flex items-center gap-1" style={{ fontFamily: UI_FONT }} onPointerDown={stop} onPointerUp={stop}>
+        {SK_TOOLS.map(t => (
+          <button key={t.key} type="button" title={t.title} onClick={e => { stop(e); setTool(t.key); }} className={PREVIEW_TOOL(tool === t.key)}><t.Icon size={12} strokeWidth={2.1} />{t.label}</button>
+        ))}
+      </div>
+      <div className="absolute right-2 top-2 flex items-center gap-1" style={{ fontFamily: UI_FONT }} onPointerDown={stop} onPointerUp={stop}>
+        <button type="button" title={snapOn ? 'Snap on: ends · middles · centres · corners · hole centres · 0 (off = 0.5 mm grid only)' : 'Snap off — 0.5 mm grid only'}
+          onClick={e => { stop(e); setSnapOn(v => !v); }} className={PREVIEW_TOOL(snapOn)}><Magnet size={12} strokeWidth={2.1} />Snap</button>
+        <button type="button" title="Fit the surface in the view" onClick={e => { stop(e); setView(fitView()); }} className={PREVIEW_TOOL(false)}><Maximize2 size={12} strokeWidth={2.1} /></button>
+        <button type="button" title="Finish drawing and go back to the 3D view" onClick={e => { stop(e); onDone(); }}
+          className="h-[24px] px-2.5 flex items-center gap-1.5 rounded-[6px] text-[10.5px] font-semibold bg-orange-600 text-white hover:bg-orange-700 transition-colors"><Check size={12} strokeWidth={2.4} />Done</button>
+      </div>
+      <div className="absolute left-2 bottom-2 flex items-center gap-1.5" style={{ fontFamily: UI_FONT }} onPointerDown={stop} onPointerUp={stop}>
+        <div className="yago-cell h-[24px] w-[150px] px-2 flex items-center">
+          <input ref={input} type="text" value={typed} placeholder={placeholder} spellCheck={false} onChange={e => setTyped(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); applyTyped(); } }}
+            className="yago-field yago-field-text" style={{ ...TEXT_INPUT, fontSize: 11.5 }} title="Type a value and press Enter: x,y (absolute) · @dx,dy (relative) · a single number = length / radius · c = close the polyline" />
+        </div>
+        <span style={HUD}>{cur ? `X ${fmt1(cur.x)} · Y ${fmt1(cur.y)}` : 'X — · Y —'}</span>
+      </div>
+      <div className="absolute right-2.5 bottom-2 flex items-center gap-1.5" style={HUD}>
+        <span className="font-semibold text-stone-500">{op.type === 'pocket' ? 'Pocket' : 'Line'}</span><span>·</span><span>{surfaceName.short}</span><span>·</span><span>{connOpSummary(op)}</span>
+        {selIdx != null && <button type="button" onPointerDown={stop} onClick={e => { stop(e); removeSel(); }} title="Delete the selected shape (Delete)"
+          className="pointer-events-auto ml-1 h-[20px] px-1.5 rounded-[5px] bg-white ring-1 ring-[#e3ddd4] text-[10px] font-semibold text-red-600 hover:bg-red-50 flex items-center gap-1"><Trash2 size={10} strokeWidth={2} />Delete</button>}
+      </div>
+    </div>
+  );
+}
+
+/* ───────── Satırlar ───────── */
+const SURF_OPTS = CONN_SURFACES.map(s => ({ v: s.v, label: s.short }));
+const OP_TYPE_OPTS: Array<{ v: ConnOpType; label: string }> = [{ v: 'pocket', label: 'Pocket' }, { v: 'line', label: 'Line' }];
+const ROW_SHELL = (selected: boolean) => `relative h-[30px] pl-2 pr-1 flex items-center gap-[5px] rounded-[8px] ring-1 cursor-pointer transition-colors duration-150
+  ${selected ? 'bg-[#fbf9f6] ring-[#d4cdc3]' : 'bg-white ring-[#e6e1d9] hover:ring-[#cfc7bc]'}`;
+const RowIndex = ({ n, selected }: { n: number; selected: boolean }) => <span className={`shrink-0 w-[14px] text-[11px] font-semibold tabular-nums ${selected ? 'text-stone-700' : 'text-stone-400'}`}>{n}</span>;
+const RowTrash = ({ title, onClick }: { title: string; onClick: () => void }) => (
+  <button type="button" title={title} onClick={e => { stop(e); onClick(); }}
+    className="shrink-0 w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-colors"><Trash2 size={12} strokeWidth={2} /></button>
+);
+const ALONG_TIP = 'Along the joint line, from the connector point (mm)';
+const acrossTip = (s: ConnSurface) => (s === 'bFace' ? 'Distance from the joint into panel B (mm)' : "Offset from the centre of panel B's thickness (mm)");
+/** Delik: # · yüzey · along · across · Ø · derinlik · sil. Derinlik malzemeyi aşıyorsa "thru". */
+function ConnHoleRow({ hole, index, selected, limit, onSelect, onChange, onRemove }: {
+  hole: ConnHole; index: number; selected: boolean; limit: number; onSelect: () => void; onChange: (patch: Partial<ConnHole>) => void; onRemove: () => void;
+}) {
+  const num = (v: number, on: (v: number) => void, min = -100000, w = 48) => <QbNum value={v} min={min} w={w} onCommit={on} />;
+  return (
+    <div onClick={e => { stop(e); onSelect(); }} className={ROW_SHELL(selected)}>
+      {selected && <span className={ROW_SEL_BAR} />}
+      <RowIndex n={index + 1} selected={selected} />
+      <span onClick={stop} title="Surface the hole is drilled from"><QbSelect value={hole.surface} options={SURF_OPTS} w={54} onChange={v => onChange({ surface: v })} /></span>
+      <Mini label="Along" title={ALONG_TIP}>{num(hole.along, v => onChange({ along: v }))}</Mini>
+      <Mini label={hole.surface === 'bFace' ? 'Joint' : 'Centre'} title={acrossTip(hole.surface)}>{num(hole.across, v => onChange({ across: v }))}</Mini>
+      <span className="w-px h-3.5 bg-[#e6e0d6] shrink-0" />
+      <Mini label="Ø" title="Diameter (mm)">{num(hole.diameter, v => onChange({ diameter: Math.max(0.2, v) }), 0.2, 36)}</Mini>
+      <Mini label="D" title={`Depth from the surface (mm) — the material is ${fmt1(limit)} mm here`}>{num(hole.depth, v => onChange({ depth: Math.max(0.1, v) }), 0.1, 36)}</Mini>
+      {hole.depth >= limit - 1e-6 && <span className="shrink-0 text-[9.5px] font-bold tracking-[0.05em] text-orange-600" title="Goes through the panel">THRU</span>}
+      <span className="flex-1 min-w-0" />
+      <RowTrash title="Remove this hole" onClick={onRemove} />
+    </div>
+  );
+}
+/** Operasyon: # · tip · yüzey · derinlik · (line) takım Ø · özet · çiz · sil. */
+function ConnOpRow({ op, index, selected, drawing, onSelect, onChange, onDraw, onRemove }: {
+  op: ConnOp; index: number; selected: boolean; drawing: boolean; onSelect: () => void; onChange: (patch: Partial<ConnOp>) => void; onDraw: () => void; onRemove: () => void;
+}) {
+  return (
+    <div onClick={e => { stop(e); onSelect(); }} className={ROW_SHELL(selected || drawing)}>
+      {(selected || drawing) && <span className={ROW_SEL_BAR} />}
+      <RowIndex n={index + 1} selected={selected || drawing} />
+      <span onClick={stop} title="Pocket = the inside of closed shapes is cleared to the depth · Line = the tool follows the drawn lines at the depth">
+        <QbSelect value={op.type} options={OP_TYPE_OPTS} w={52} onChange={v => onChange({ type: v })} /></span>
+      <span onClick={stop} title="Surface the operation is machined on"><QbSelect value={op.surface} options={SURF_OPTS} w={54} onChange={v => onChange({ surface: v })} /></span>
+      <Mini label="Depth" title="Machining depth from the surface (mm)"><QbNum value={op.depth} min={0.1} w={36} onCommit={v => onChange({ depth: v })} /></Mini>
+      {op.type === 'line' && <Mini label="Tool Ø" title="Cutter diameter — the width of the groove along the line (mm)"><QbNum value={op.width} min={0} w={32} onCommit={v => onChange({ width: v })} /></Mini>}
+      <span className="flex-1 min-w-0 truncate text-[10.5px] text-stone-400 text-right">{connOpSummary(op)}</span>
+      <button type="button" title={drawing ? 'Drawing — click to go back to the 3D view' : 'Draw / edit the shapes of this operation'} onClick={e => { stop(e); onDraw(); }}
+        className={`shrink-0 h-[22px] px-1.5 rounded-md flex items-center gap-1 text-[10.5px] font-semibold transition-colors ${drawing ? 'bg-orange-600 text-white' : 'text-stone-500 hover:bg-[#ece7e0] hover:text-stone-900'}`}>
+        <PenLine size={11} strokeWidth={2} />{drawing ? 'Drawing' : 'Draw'}</button>
+      <RowTrash title="Remove this operation" onClick={onRemove} />
+    </div>
+  );
+}
+/** Model: başlık (katman rengi · ad · yüzey · yerleştir · sil) + iki sıra değer (along · across · gömme / dönüş · çevir · katman). */
+function ConnPartRow({ part, selected, placing, layers, onSelect, onChange, onPlace, onRemove }: {
+  part: ConnPart; selected: boolean; placing: boolean; layers: AccessoryLayer[]; onSelect: () => void; onChange: (patch: Partial<ConnPart>) => void; onPlace: () => void; onRemove: () => void;
+}) {
+  const { accessoryModels } = useStoreFields('accessoryModels');
+  const m = accessoryModels.find(x => x.id === part.modelId), layer = layers.find(l => l.id === part.layerId);
+  const num = (v: number, on: (v: number) => void, min = -100000) => <QbNum value={v} min={min} w={46} onCommit={on} />;
+  return (
+    <div className={rowCardClass(selected, false, false)} onClick={e => { stop(e); onSelect(); }}>
+      <div className={`relative h-[32px] pl-2.5 pr-1 flex items-center gap-2 cursor-pointer ${selected ? ROW_SEL_HEAD : ''}`}>
+        {selected && <span className={ROW_SEL_BAR} />}
+        <Swatch color={layer?.color ?? LAYER_DEFAULT_COLOR} size={8} />
+        <span className="flex-1 min-w-0 truncate text-[11.5px] font-medium text-stone-700" title={m ? (m.source ? `${m.source} → STL` : m.fileName) : 'Model missing'}>{m?.name ?? 'Missing model'}</span>
+        {m && <span className={`shrink-0 ${MUTED}`}>{fmt1(m.size[0])} × {fmt1(m.size[1])} × {fmt1(m.size[2])}</span>}
+        <span onClick={stop} title="Surface the model sits on"><QbSelect value={part.surface} options={SURF_OPTS} w={54} onChange={v => onChange({ surface: v })} /></span>
+        <button type="button" title={placing ? 'Click the highlighted surface in the preview · Esc' : 'Place by clicking the surface in the preview'} onClick={e => { stop(e); onPlace(); }}
+          className={`shrink-0 h-[22px] px-1.5 rounded-md flex items-center gap-1 text-[10.5px] font-semibold transition-colors ${placing ? 'bg-orange-600 text-white' : 'text-stone-500 hover:bg-[#ece7e0] hover:text-stone-900'}`}>
+          <Crosshair size={11} strokeWidth={2} />Place</button>
+        <RowTrash title="Remove this model" onClick={onRemove} />
+      </div>
+      {selected && (
+        <div className={CARD_BODY} style={CARD_BODY_STYLE} onClick={stop}>
+          <div className="grid grid-cols-12 gap-x-1" style={QB_CELL_ROW}>
+            <EditCell className="col-span-4" label="Along" title={ALONG_TIP}>{num(part.along, v => onChange({ along: v }))}</EditCell>
+            <EditCell className="col-span-4" label={part.surface === 'bFace' ? 'From joint' : 'From centre'} title={acrossTip(part.surface)}>{num(part.across, v => onChange({ across: v }))}</EditCell>
+            <EditCell className="col-span-4" label="Sink" title="How far the model's base sits below the surface (mm) — e.g. the hole depth for a cam that sits in its hole">{num(part.inset, v => onChange({ inset: v }))}</EditCell>
+            <EditCell className="col-span-3" label="Spin °" title="Rotation about the surface normal (degrees)">{num(part.spin, v => onChange({ spin: v }))}</EditCell>
+            <EditCell className="col-span-3" label="Flip" title="Off: the model's up axis points out of the surface · On: into the material"><QbSwitch on={!!part.flip} onToggle={() => onChange({ flip: !part.flip })} /></EditCell>
+            <EditCell className="col-span-6" label="Layer" title="Layer of this model — colour in the preview (Accessories › Layers)"><LayerSelect value={part.layerId} layers={layers} onChange={id => onChange({ layerId: id })} /></EditCell>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+const ListHead = ({ label, count, hint, children }: { label: string; count: number; hint?: string; children?: React.ReactNode }) => (
+  <div className="flex items-center gap-1.5 px-0.5 pt-1">
+    <span style={SECTION_LABEL}>{label}</span>
+    {count > 0 && <span className="text-[10px] font-semibold tabular-nums text-stone-400">{count}</span>}
+    <span className="min-w-0 truncate text-[10px] text-stone-400">{hint}</span>
+    <div className="flex-1" />
+    {children}
+  </div>
+);
+
+/** Bağlayıcı düzenleyici: üst blok (ad + sahne / çizim alanı) yapışık; altında örnek kalınlıklar, delikler, operasyonlar, modeller. */
+function ConnectorEditor({ draft, setDraft, onSave, onCancel, layers }: {
+  draft: Connector; setDraft: (c: Connector) => void; onSave: () => void; onCancel: () => void; layers: AccessoryLayer[];
+}) {
+  const { tA, tB } = connThickness(draft);
+  const [active, setActive] = useState<ConnSurface>('bFace');
+  const [mode, setMode] = useState<ConnMode>('none');
+  const [placeId, setPlaceId] = useState<string | null>(null);
+  const [sel, setSel] = useState<string | null>(null);
+  const [drawId, setDrawId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const ref = useRef({ draft, sel, drawId, active }); ref.current = { draft, sel, drawId, active };
+  const patch = (p: Partial<Connector>) => setDraft({ ...ref.current.draft, ...p });
+  const drawOp = draft.ops.find(o => o.id === drawId) ?? null;
+  const removeSelected = () => {
+    const { draft: d, sel: id } = ref.current; if (!id) return;
+    setDraft({ ...d, holes: d.holes.filter(h => h.id !== id), ops: d.ops.filter(o => o.id !== id), parts: d.parts.filter(p => p.id !== id) });
+    setSel(null);
+  };
+  // Esc araç kipinden çıkar; Delete (giriş alanı dışında, çizim alanı kapalıyken) seçili deliği / operasyonu / modeli siler
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (ref.current.drawId) return;   // çizim alanı kendi tuşlarını yönetir
+      const tag = (document.activeElement?.tagName ?? '').toLowerCase();
+      if (e.key === 'Escape') { setMode('none'); setPlaceId(null); }
+      else if ((e.key === 'Delete' || e.key === 'Backspace') && ref.current.sel && tag !== 'input' && tag !== 'select' && tag !== 'textarea') { e.preventDefault(); removeSelected(); }
+    };
+    window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEscapeOwner('connector-tool', mode !== 'none' || !!drawId);
+  const lastHole = draft.holes[draft.holes.length - 1];
+  const holeDefaults = { diameter: lastHole?.diameter ?? 8, depth: lastHole?.depth ?? 12 };
+  const addHole = (along: number, across: number) => {
+    const h = newConnHole({ ...holeDefaults, depth: Math.min(holeDefaults.depth, connSurfaceDepth(active, tA, tB)), surface: active, along, across });
+    patch({ holes: [...ref.current.draft.holes, h] }); setSel(h.id);
+  };
+  const changeHole = (id: string, p: Partial<ConnHole>) => patch({ holes: ref.current.draft.holes.map(h => (h.id === id ? { ...h, ...p } : h)) });
+  const changeOp = (id: string, p: Partial<ConnOp>) => patch({ ops: ref.current.draft.ops.map(o => (o.id === id ? { ...o, ...p } : o)) });
+  const changePart = (id: string, p: Partial<ConnPart>) => patch({ parts: ref.current.draft.parts.map(x => (x.id === id ? { ...x, ...p } : x)) });
+  const addOp = (type: ConnOpType) => {
+    const op = newConnOp(active, type, { depth: Math.min(5, connSurfaceDepth(active, tA, tB)) });
+    patch({ ops: [...ref.current.draft.ops, op] }); setSel(op.id); setMode('none'); setPlaceId(null); setDrawId(op.id);
+  };
+  const placePart = (along: number, across: number) => {
+    if (!placeId) return;
+    changePart(placeId, { surface: active, along, across }); setSel(placeId); setMode('none'); setPlaceId(null);
+  };
+  const startPlace = (id: string) => {
+    if (placeId === id && mode === 'place') { setMode('none'); setPlaceId(null); return; }
+    const p = draft.parts.find(x => x.id === id); if (p) setActive(p.surface);
+    setDrawId(null); setSel(id); setPlaceId(id); setMode('place');
+  };
+  const onFile = async (files: FileList | null) => {
+    const f = files?.[0]; if (!f) return;
+    setBusy(true); setError(null); setInfo(null);
+    try {
+      const m = await importAccessoryFile(f);
+      setInfo(m.note ?? null);
+      const part = newConnPart(m.id, { surface: ref.current.active });
+      patch({ parts: [...ref.current.draft.parts, part] });
+      setDrawId(null); setSel(part.id); setPlaceId(part.id); setMode('place');
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+  /** Satır seçimi: etkin yüzey o öğenin yüzeyine döner (sahne ona bakar). */
+  const select = (id: string, surface: ConnSurface) => { setSel(s => (s === id ? null : id)); setActive(surface); };
+  const empty = !draft.holes.length && !draft.ops.length && !draft.parts.length;
+  return (
+    <>
+      <div className="sticky top-0 z-30 -mx-1.5 -mt-1.5 px-1.5 pt-1.5 pb-1.5 flex flex-col gap-1.5" onClick={stop}
+        style={{ background: '#f8f6f2', boxShadow: '0 6px 10px -8px rgba(40,30,20,0.18)' }}>
+        <div className="flex items-center gap-1.5">
+          <div className="yago-cell flex-1 min-w-0 h-[28px] px-2 flex items-center">
+            <input type="text" value={draft.name} placeholder="Connector" spellCheck={false} onChange={e => patch({ name: e.target.value })}
+              onKeyDown={e => { if (e.key === 'Enter') onSave(); }} className="yago-field yago-field-text" style={TEXT_INPUT} />
+          </div>
+          <ApplyBtn enabled={!busy} onClick={onSave} title="Save" />
+          <ExitBtn onClick={onCancel} />
+        </div>
+        {drawOp
+          ? <SketchPad op={drawOp} conn={draft} tB={tB} onShapes={shapes => changeOp(drawOp.id, { shapes })} onDone={() => setDrawId(null)} />
+          : <JointPreview conn={draft} tA={tA} tB={tB} active={active} onActive={s => { setActive(s); }} mode={mode} onMode={m => { setMode(m); setPlaceId(null); }}
+            holeRadius={holeDefaults.diameter / 2} sel={sel} onSel={setSel} onAddHole={addHole} onPlace={placePart} layers={layers} />}
+      </div>
+      <QbSection title="Connector" sub={draft.name || undefined}>
+        <div className="flex flex-col gap-1.5" onClick={stop}>
+          <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
+            <EditCell label="Panel A thickness" title="Sample thickness of the passing panel — preview only; real panels use their own thickness"><QbNum value={tA} min={3} w={44} onCommit={v => patch({ tA: v })} /><Unit /></EditCell>
+            <EditCell label="Panel B thickness" title="Sample thickness of the butting panel — preview only; real panels use their own thickness"><QbNum value={tB} min={3} w={44} onCommit={v => patch({ tB: v })} /><Unit /></EditCell>
+          </div>
+          {empty && <div className="yago-hint px-1">Panel B butts with its end against the face of panel A. Pick a surface on the preview (B face · B edge · A face), then add holes, drawn operations or a model to it.</div>}
+          <div className="flex flex-col gap-1">
+            <ListHead label="Holes" count={draft.holes.length} hint={mode === 'hole' ? 'click the highlighted surface · Esc' : draft.holes.length ? 'Delete removes the selected' : ''}>
+              <CardAction compact icon={Drill} label={mode === 'hole' ? 'Done' : 'Add hole'} active={mode === 'hole'} tone="amber"
+                title={mode === 'hole' ? 'Leave hole mode' : 'Add a hole: click the highlighted surface in the preview'} onClick={() => { setDrawId(null); setPlaceId(null); setMode(mode === 'hole' ? 'none' : 'hole'); }} />
+            </ListHead>
+            {draft.holes.map((h, i) => (
+              <ConnHoleRow key={h.id} hole={h} index={i} selected={sel === h.id} limit={connSurfaceDepth(h.surface, tA, tB)} onSelect={() => select(h.id, h.surface)}
+                onChange={p => { changeHole(h.id, p); if (p.surface) setActive(p.surface); }} onRemove={() => { patch({ holes: draft.holes.filter(x => x.id !== h.id) }); if (sel === h.id) setSel(null); }} />
+            ))}
+          </div>
+          <div className="flex flex-col gap-1">
+            <ListHead label="Operations" count={draft.ops.length} hint={drawOp ? 'drawing on the flat view above' : 'drawn on the active surface'}>
+              <CardAction compact icon={BoxSelect} label="Pocket" title="New pocket on the active surface — draw closed shapes; their inside is cleared to the depth" onClick={() => addOp('pocket')} />
+              <CardAction compact icon={Spline} label="Line" title="New line operation on the active surface — the tool follows the drawn lines at the depth" onClick={() => addOp('line')} />
+            </ListHead>
+            {draft.ops.map((o, i) => (
+              <ConnOpRow key={o.id} op={o} index={i} selected={sel === o.id} drawing={drawId === o.id} onSelect={() => select(o.id, o.surface)}
+                onChange={p => { changeOp(o.id, p); if (p.surface) setActive(p.surface); }} onDraw={() => { setMode('none'); setPlaceId(null); setSel(o.id); setActive(o.surface); setDrawId(d => (d === o.id ? null : o.id)); }}
+                onRemove={() => { patch({ ops: draft.ops.filter(x => x.id !== o.id) }); if (sel === o.id) setSel(null); if (drawId === o.id) setDrawId(null); }} />
+            ))}
+          </div>
+          <div className="flex flex-col gap-1">
+            <ListHead label="Models" count={draft.parts.length} hint="placed like a hole — independent of the holes">
+              <CardAction compact icon={Upload} label="Add model" title="Import the connector's 3D model (STL · OBJ · STEP · DWG …), then click the surface to place it" onClick={() => { setError(null); setInfo(null); fileRef.current?.click(); }} />
+            </ListHead>
+            {draft.parts.map(p => (
+              <ConnPartRow key={p.id} part={p} selected={sel === p.id} placing={mode === 'place' && placeId === p.id} layers={layers} onSelect={() => select(p.id, p.surface)}
+                onChange={x => { changePart(p.id, x); if (x.surface) setActive(x.surface); }} onPlace={() => startPlace(p.id)}
+                onRemove={() => { patch({ parts: draft.parts.filter(x => x.id !== p.id) }); if (sel === p.id) setSel(null); if (placeId === p.id) { setPlaceId(null); setMode('none'); } }} />
+            ))}
+          </div>
+          <input ref={fileRef} type="file" accept={ACCESSORY_ACCEPT} className="hidden" onChange={e => { void onFile(e.target.files); e.target.value = ''; }} />
+          {(busy || error || info) && <div className={`px-1 text-[10.5px] ${busy ? 'text-stone-400' : error ? 'text-red-600' : 'text-stone-500'}`}>{busy ? 'Importing…' : error ?? info}</div>}
+        </div>
+      </QbSection>
+    </>
+  );
+}
+const connSummary = (c: Connector): string => {
+  const part = (n: number, w: string) => (n ? `${n} ${w}${n === 1 ? '' : 's'}` : '');
+  return [part(c.holes.length, 'hole'), part(c.ops.length, 'operation'), part(c.parts.length, 'model')].filter(Boolean).join(' · ') || 'empty';
+};
+/** Taslak üstte (AccessoriesPanel) tutulur: kategori değişip geri gelince (ör. katman eklemek için) düzenleme kaybolmaz. */
+function ConnectorsPanel({ draft, setDraft, keepModels }: { draft: Connector | null; setDraft: (c: Connector | null) => void; /** açık ayak taslağının modelleri (silinmez) */ keepModels: string[] }) {
+  const { connectors, accessoryLayers, panelTypeConfig } = useStoreFields('connectors', 'accessoryLayers', 'panelTypeConfig');
+  const save = async () => {
+    if (!draft) return;
+    await saveConnector({ ...draft, name: draft.name.trim() || 'Connector' });
+    setDraft(null);
+    await pruneUnusedAccessoryModels(keepModels);
+  };
+  const cancel = async () => { setDraft(null); await pruneUnusedAccessoryModels(keepModels); };
+  return (
+    <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" style={{ fontFamily: UI_FONT }}>
+      {draft ? <ConnectorEditor draft={draft} setDraft={setDraft} layers={accessoryLayers} onSave={() => void save()} onCancel={() => void cancel()} /> : (
+        <QbSection title="Connectors" sub={connectors.length ? 'holes, drawn operations and a model on a two-panel joint' : undefined}
+          trailing={<CardAction compact icon={Plus} label="New" title="New connector" onClick={() => setDraft(newConnector(`Connector ${connectors.length + 1}`))} />}>
+          {!connectors.length ? <div className="yago-hint px-1 py-0.5">None yet — a connector describes what is machined on two joined panels (holes, pockets, grooves) and its 3D model. Panel types decide where it is used.</div> : (
+            <div className="flex flex-col gap-1">
+              {connectors.map(c => {
+                const uses = connectorUseCount(c.id, panelTypeConfig);
+                return (
+                  <div key={c.id} className={ROW}>
+                    <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-stone-700">{c.name}</span>
+                    <span className={`shrink-0 ${MUTED}`}>{connSummary(c)}</span>
+                    <span className={`shrink-0 ${MUTED}`} title="Panel-type edges that use this connector (Accessories › Panel types)">· {uses ? `${uses} edge${uses === 1 ? '' : 's'}` : 'unused'}</span>
+                    <button type="button" title="Edit" onClick={() => setDraft(cloneConnector(c))} className={ICON_BTN}><Pencil size={12} strokeWidth={1.9} /></button>
+                    <button type="button" title={uses ? 'Delete — the edges that use it lose their connector' : 'Delete'} onClick={() => void deleteConnector(c.id).then(() => pruneUnusedAccessoryModels(keepModels))} className={DEL_BTN}><Trash2 size={12} strokeWidth={1.9} /></button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </QbSection>
+      )}
     </div>
   );
 }
@@ -717,14 +1840,17 @@ export function AccessoriesPanel() {
   const { accessoryCategory, accessoryModels, legModels, legPresets, accessoryLayers } = useStoreFields('accessoryCategory', 'accessoryModels', 'legModels', 'legPresets', 'accessoryLayers');
   const [legDraft, setLegDraft] = useState<LegModel | null>(null);
   const [presetDraft, setPresetDraft] = useState<LegPreset | null>(null);
+  const [connDraft, setConnDraft] = useState<Connector | null>(null);
+  // Kaydedilmemiş taslakların modelleri budamada korunur (iki düzenleyici aynı anda açık olabilir).
+  const connKeep = connDraft?.parts.map(p => p.modelId) ?? [], legKeep = legDraft?.parts.map(p => p.modelId) ?? [];
   const saveLeg = async () => {
     if (!legDraft || !legDraft.parts.length) return;
     await saveLegModel({ ...legDraft, name: legDraft.name.trim() || 'Leg' });
     setLegDraft(null);
-    await pruneUnusedAccessoryModels();   // değiştirilen yuvaların eski dosyaları
+    await pruneUnusedAccessoryModels(connKeep);   // değiştirilen yuvaların eski dosyaları (açık bağlayıcı taslağının modelleri kalır)
     syncPlinthSetsUsingPreset(null);      // Ø / model / delikler değişmiş olabilir: setleri kullanan gövdeler yeniden çözülür
   };
-  const cancelLeg = async () => { setLegDraft(null); await pruneUnusedAccessoryModels(); };
+  const cancelLeg = async () => { setLegDraft(null); await pruneUnusedAccessoryModels(connKeep); };
   const savePreset = async () => {
     if (!presetDraft) return;
     await saveLegPreset({ ...presetDraft, name: presetDraft.name.trim() || 'Leg set' });
@@ -732,6 +1858,8 @@ export function AccessoriesPanel() {
     syncPlinthSetsUsingPreset(presetDraft.id);   // Auto setler düzeni canlı okur: engel / damga kutuları yenilenir
   };
   if (accessoryCategory === 'layers') return <LayersPanel />;
+  if (accessoryCategory === 'connectors') return <ConnectorsPanel draft={connDraft} setDraft={setConnDraft} keepModels={legKeep} />;
+  if (accessoryCategory === 'panelTypes') return <PanelTypesPanel />;
   if (accessoryCategory !== 'legs') return null;
   return (
     <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" style={{ fontFamily: UI_FONT }}>
@@ -747,7 +1875,7 @@ export function AccessoriesPanel() {
                     <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-stone-700">{lm.name}</span>
                     {d && <span className={`shrink-0 ${MUTED}`}>H {fmt1(d.height)} · Ø {fmt1(d.diameter)}{nh ? ` · ${nh} hole${nh === 1 ? '' : 's'}` : ''}</span>}
                     <button type="button" title="Edit" onClick={() => setLegDraft({ ...lm, parts: [...lm.parts], holes: [...(lm.holes ?? [])] })} className={ICON_BTN}><Pencil size={12} strokeWidth={1.9} /></button>
-                    <button type="button" title="Delete" onClick={() => void deleteLegModel(lm.id).then(() => pruneUnusedAccessoryModels())} className={DEL_BTN}><Trash2 size={12} strokeWidth={1.9} /></button>
+                    <button type="button" title="Delete" onClick={() => void deleteLegModel(lm.id).then(() => pruneUnusedAccessoryModels(connKeep))} className={DEL_BTN}><Trash2 size={12} strokeWidth={1.9} /></button>
                   </div>
                 );
               })}

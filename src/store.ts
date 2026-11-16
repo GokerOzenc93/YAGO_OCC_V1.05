@@ -110,6 +110,8 @@ export interface VirtualFace {
   railStrip?: RailStripSpec;
   /** Dikey kayıt iç köşe uzatması: bölge `dir` ucundan uzatılır; `band` = levhanın plan bandı (VF düzleminden [lo, hi]). */
   railExt?: Array<RailExt & { band: [number, number] }>;
+  /** PANEL TİPİ (elle seçilmiş); yoksa konumdan otomatik bulunur (ConnectorService.panelTypeOf). */
+  panelType?: PanelTypeId;
 }
 /** İç köşe uzatmasının hedefi: dış normali `n` olan gövde yüzü; uzatma o düzlemden `depth` önce biter. Her regen'de yeniden ölçülür. */
 export interface RailExtTarget { n: Vec3; depth: number }
@@ -325,6 +327,8 @@ export interface PanelGroup {
   memberVfIds: string[];
   /** Grup adı (vars. 'Shelf' / 'Divider'); üye panellerin adı budur. */
   name?: string;
+  /** Üyelerin panel tipi (raf: sabit / hareketli); yoksa yüzey varsayılanı. Üye VF.panelType bunu ezer. */
+  panelType?: PanelTypeId;
   createdAt: number;
 }
 
@@ -411,7 +415,7 @@ export const PANEL_EDGE_DIRS: Record<QuickBodyPanelKey, PanelEdgeDir[]> = {
 export const panelEdgeOf = (cfg: QuickBodyConfig, key: QuickBodyPanelKey, dir: PanelEdgeDir): number => cfg.ext?.[key]?.[dir] ?? 0;
 /* ───────── AKSESUAR KÜTÜPHANESİ (AccessoryService) ───────── */
 export type AccessoryUnit = 'mm' | 'cm' | 'm' | 'in';
-export type AccessoryCategory = 'legs' | 'rails' | 'hinges' | 'layers';
+export type AccessoryCategory = 'legs' | 'rails' | 'hinges' | 'layers' | 'connectors' | 'panelTypes';
 /** Aksesuar katmanı: kütüphane geneli liste; parça `layerId` ile bağlanır, katman rengi parçayı boyar. */
 export interface AccessoryLayer { id: string; name: string; color: string; createdAt: number }
 /** Delik (genel): aksesuar çerçevesinde silindir. `dir` delme yönü, `pos` ağız merkezi, `diameter` / `depth` mm.
@@ -443,6 +447,40 @@ export interface LegPreset {
   id: string; name: string; legModelId: string | null; count: 4 | 5 | 6; side: number; front: number; rear: number; height: number; createdAt: number;
   rules?: LegRule[];
 }
+
+/* ───────── PANEL TİPLERİ + BAĞLAYICILAR (ConnectorService) ─────────
+   Panel tipi = panelin dolaptaki görevi. Tip başına kenar kuralları (hangi kenara hangi bağlayıcı, nasıl dizilir) ve yüzey başına
+   izinli tipler + varsayılan kütüphanede saklanır; ileride kenar bandı da aynı tip / kenar rolünü kullanır. */
+export type PanelTypeId =
+  | 'leftSide' | 'rightSide' | 'top' | 'bottom' | 'rearPanel' | 'back' | 'divider' | 'fixedShelf' | 'adjustableShelf'
+  | 'topFrontRailH' | 'topFrontRailV' | 'topRearRailH' | 'topRearRailV'
+  | 'bottomFrontRailH' | 'bottomFrontRailV' | 'bottomRearRailH' | 'bottomRearRailV'
+  | 'frontPlinth' | 'rearPlinth' | 'free';
+/** Panelin yerleştiği yüzey: gövde yüzü rolü ya da iç panel aracı (raf / dikme / arkalık). */
+export type PanelSurface = PanelEdgeDir | 'shelf' | 'divider' | 'back';
+/** Kenar boyunca dizilim: 'spacing' = uçlardan mesafe + azami aralık (adet otomatik) · 'count' = sabit adet, eşit dağıtılır. */
+export type EdgeLayoutMode = 'spacing' | 'count';
+export interface EdgeConnectorRule { connectorId: string | null; mode: EdgeLayoutMode; start: number; end: number; maxSpacing: number; count: number }
+/** Tip kuralı: kenar rolü (ön / arka / üst / alt / sol / sağ) → o kenar başka panele dayanıyorsa atılacak bağlayıcı. */
+export interface PanelTypeRule { edges: Partial<Record<PanelEdgeDir, EdgeConnectorRule>> }
+export interface PanelSurfaceRule { allowed: PanelTypeId[]; def: PanelTypeId }
+export interface PanelTypeConfig { rules: Partial<Record<PanelTypeId, PanelTypeRule>>; surfaces: Partial<Record<PanelSurface, PanelSurfaceRule>> }
+/** Temsili birleşim: B paneli UCUYLA A panelinin yüzüne dayanır. bFace = B'nin geniş yüzü · bEdge = B'nin ucu (kalınlığı) · aFace = A'nın temas yüzü. */
+export type ConnSurface = 'bFace' | 'bEdge' | 'aFace';
+/** Delik: `along` = birleşim çizgisi boyunca bağlayıcı noktasından · `across` = bFace'te birleşimden B'nin içine, bEdge / aFace'te B kalınlığının ortasından. */
+export interface ConnHole { id: string; surface: ConnSurface; along: number; across: number; diameter: number; depth: number }
+/** Çizim nesnesi — yüzey 2B koordinatında (x = along, y = across); Draft.Shape2 ile yapısal uyumlu. */
+export type ConnShape =
+  | { t: 'line'; a: { x: number; y: number }; b: { x: number; y: number } }
+  | { t: 'circle'; c: { x: number; y: number }; r: number }
+  | { t: 'pline'; v: Array<{ x: number; y: number }>; closed?: boolean };
+/** Çizilmiş operasyon: 'pocket' = kapalı çevrenin içi `depth` kadar boşaltılır · 'line' = çizgi boyunca `width` çaplı takım `depth` derinlikte yürür. */
+export type ConnOpType = 'pocket' | 'line';
+export interface ConnOp { id: string; surface: ConnSurface; type: ConnOpType; depth: number; width: number; shapes: ConnShape[] }
+/** Bağlayıcı modeli (aksesuar dosyası): delik gibi yüzeye yerleşir; modelin +Y'si yüzeyden DIŞARI bakar (`flip` → içeri), `inset` malzemeye gömme,
+ *  `spin` yüzey normali etrafında dönüş (°). Deliklerden bağımsızdır. */
+export interface ConnPart { id: string; modelId: string; surface: ConnSurface; along: number; across: number; inset: number; spin: number; flip?: boolean; layerId?: string | null }
+export interface Connector { id: string; name: string; holes: ConnHole[]; ops: ConnOp[]; parts: ConnPart[]; tA?: number; tB?: number; createdAt: number }
 
 export const DEFAULT_QUICK_BODY: QuickBodyConfig = {
   base: 'plinth', thickness: 18,
@@ -592,6 +630,11 @@ export interface AppState {
   upsertLegPreset: (p: LegPreset) => void; removeLegPreset: (id: string) => void;
   upsertAccessoryLayer: (l: AccessoryLayer) => void; removeAccessoryLayer: (id: string) => void;
   accessoryCategory: AccessoryCategory; setAccessoryCategory: (c: AccessoryCategory) => void;
+  /* PANEL TİPLERİ + BAĞLAYICILAR (ConnectorService): kütüphane kaydı (IndexedDB), burada canlı kopya. */
+  connectors: Connector[]; upsertConnector: (c: Connector) => void; removeConnector: (id: string) => void; setConnectors: (list: Connector[]) => void;
+  panelTypeConfig: PanelTypeConfig; setPanelTypeConfig: (c: PanelTypeConfig) => void;
+  /** Yerleştirme şeridinde seçilen panel tipi (null = otomatik / yüzey varsayılanı); her mod açılışında sıfırlanır. */
+  placementPanelType: PanelTypeId | null; setPlacementPanelType: (t: PanelTypeId | null) => void;
   /** Arkalık seçmede tip: 'outer' = arkadan çakma, 'inner' = kanallı. */
   backPickPlacement: BackPlacement; setBackPickPlacement: (p: BackPlacement) => void;
 
@@ -690,7 +733,7 @@ export const applyXformDelta = (b: Xform, d: XformDelta): Xform => ({
 const patchById = <T extends { id: string }>(list: T[], id: string, u: Partial<T>): T[] => list.map(x => (x.id === id ? { ...x, ...u } : x));
 /** Seçme/yerleştirme modları karşılıklı dışlayıcı: biri açılınca diğerleri adaylarıyla birlikte kapanır. */
 const pickModesOff = () => ({
-  raycastMode: false, raycastPendingVf: null, placementName: '', quickBodyMode: false,
+  raycastMode: false, raycastPendingVf: null, placementName: '', placementPanelType: null, quickBodyMode: false,
   volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0,
   doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0,
   backPickMode: false, backPickCandidates: [], backPickIndex: 0,
@@ -914,6 +957,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   upsertLegPreset: (p) => set((s) => ({ legPresets: upsertById(s.legPresets, p) })),
   removeLegPreset: (id) => set((s) => ({ legPresets: s.legPresets.filter(x => x.id !== id) })),
   accessoryCategory: 'legs', setAccessoryCategory: (c) => set({ accessoryCategory: c }),
+  connectors: [], upsertConnector: (c) => set((s) => ({ connectors: upsertById(s.connectors, c) })),
+  removeConnector: (id) => set((s) => ({ connectors: s.connectors.filter(x => x.id !== id) })), setConnectors: (list) => set({ connectors: list }),
+  panelTypeConfig: { rules: {}, surfaces: {} }, setPanelTypeConfig: (c) => set({ panelTypeConfig: c }),
+  placementPanelType: null, setPlacementPanelType: (t) => set({ placementPanelType: t }),
 
   filletMode: false, setFilletMode: (e) => set({ filletMode: e, selectedFilletFaces: [], selectedFilletFaceData: [] }),
   selectedFilletFaces: [],

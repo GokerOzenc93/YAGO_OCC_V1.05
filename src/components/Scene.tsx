@@ -18,6 +18,7 @@ import {
   convertReplicadToThreeGeometry, type AxisLetter, type AxisDir, axisDirToVec, uniqueMeshPoints, resolveBaseVertices, composeVertexTargets,
   confirmPanelMoveRef, confirmPanelRotateRef, resetRefFacePick, axisIndexOf, getReplicadVertices, round1, swingPoints,
 } from './Geometry';
+import { placementTypeFor } from './ConnectorService';
 import {
   type PlinthPick, type PlinthRegion, confirmPlinthPick, plinthBoxOf, plinthBoxesOf, plinthCandidates, plinthLegSpots, plinthPickBox,
   plinthRowKey, plinthSetsOf, isPlinthRow, finishPlinthEdit, plinthRegionOf, prismGeometry, bodyFrontAxis, bodyFaces, setBodyFaceRole, bodyFacesByRole,
@@ -880,7 +881,9 @@ export function confirmBodyPanelPlacement(vf: VirtualFace | null | undefined): v
   // Gövde paneli varsayılan kapak + arkalık sınırıdır (satırdan kapatılır); var olan gruplar sonraki rebuild'de devralır.
   // Eğri yüz paneli sınır başlamaz (sınır kutusu köşe bloğu gibi davranırdı).
   const bound = { ...vf, doorBound: vf.doorBound ?? !vf.curved, backBound: vf.backBound ?? !vf.curved };
-  st.addVirtualFace(name ? { ...bound, description: name } : bound);
+  // Şeritte elle seçilen tip yalnız otomatikten farklıysa yazılır (yoksa panel konumunu izler).
+  const type = placementTypeFor(vf, st.placementPanelType), typed = type ? { ...bound, panelType: type } : bound;
+  st.addVirtualFace(name ? { ...typed, description: name } : typed);
   st.setRaycastMode(false);
 }
 

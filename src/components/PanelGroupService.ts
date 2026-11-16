@@ -2233,7 +2233,8 @@ export function confirmVolumePick(shapeId: string, kind: PanelGroup['kind'], pic
   const st = useAppStore.getState();
   const gid = st.volumePickGroupId;
   if (gid) void relocatePanelGroup(gid, pick);
-  else createPanelGroupFromCavity(shapeId, kind, pick, st.placementName);
+  // Şeritte seçilen tip (yalnız varsayılandan farklıysa dolu; araç değişince sıfırlanır) gruba yazılır.
+  else createPanelGroupFromCavity(shapeId, kind, pick, st.placementName, st.placementPanelType ? { panelType: st.placementPanelType } : {});
   st.setVolumePickMode(null);
 }
 
@@ -2955,7 +2956,8 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     const fresh = vfOnFace(ctx, n, seed, siblings, old?.vf.description || name, opts.stack, opts.strip, opts.railExt);
     if (!fresh) { warnings.push(`${name}: no free region on that face`); return false; }
     // Aynı parça: VF ve panel id'si korunur (raf / kapak / arkalık referansları bozulmaz); yüz şekli tercihi de korunur.
-    const vf: VirtualFace = { ...fresh, id: old?.vf.id ?? fresh.id, quickBody: key, ...(old?.vf.fitFaceShape ? { fitFaceShape: true } : {}) };
+    const vf: VirtualFace = { ...fresh, id: old?.vf.id ?? fresh.id, quickBody: key, ...(old?.vf.fitFaceShape ? { fitFaceShape: true } : {}),
+      ...(old?.vf.panelType ? { panelType: old.vf.panelType } : {}) };
     if (opts.bound === false) { vf.doorBound = false; vf.backBound = false; }
     if (opts.doorBound !== undefined) vf.doorBound = opts.doorBound;
     if (opts.backBound !== undefined) vf.backBound = opts.backBound;

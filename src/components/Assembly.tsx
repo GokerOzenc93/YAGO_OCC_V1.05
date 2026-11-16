@@ -13,7 +13,7 @@ import {
 import {
   type BackPlacement, type DoorType, type CornerKey, type Shape, type QuickBodyConfig, type QuickBodyBase, type PanelGroup, type FaceExtrudeValueMode,
   useStoreFields, useAppStore, type VirtualFace, type DoorGroup, type BackGroup, shapeById, childPanelsOf, panelOfVf, requestRebuild,
-  type QuickBodyRails, type RailKind, type RailSpec, type RailBackRel, railsOf, type QuickBodyPanelKey, type PanelEdgeDir, PANEL_EDGE_DIRS,
+  type QuickBodyRails, type RailKind, type RailSpec, type RailBackRel, railsOf, type QuickBodyPanelKey, type PanelEdgeDir, type PanelTypeId, PANEL_EDGE_DIRS,
   type QuickBackRefKey,
 } from '../store';
 import {
@@ -47,6 +47,9 @@ import {
   panelEdgeValue, panelEdgeLimits, backRefOf,
 } from './PanelGroupService';
 import { confirmBodyPanelPlacement } from './Scene';
+import {
+  edgeConnectorPositions, panelOrientation, panelTypeChoice, panelTypeCode, panelTypeLabel, panelTypeShort, setGroupPanelType, setVfPanelType, surfaceRuleOf,
+} from './ConnectorService';
 import { useDraft as useSketch } from './Draft';
 import { beginFacePick, deleteSketch, editSketch, exitFace, sketchFeaturesOf } from './DraftView';
 import {
@@ -2280,6 +2283,67 @@ function PlacementDock({ tag, defaultName, showName = true, ready, status, onCon
     </div>
   );
 }
+/* ───────── PANEL TİPİ (ConnectorService) ───────── */
+/** Satırdaki tip kodu (LS · TP · FS …): otomatik = soluk, elle seçilmiş = turuncu. Tipsiz satırda (kapak) boş. */
+function PanelTypeTag({ vf }: { vf: VirtualFace }) {
+  const c = panelTypeChoice(vf);
+  if (!c) return null;
+  return (
+    <span title={`${panelTypeLabel(c.current)}${c.manual ? ' — set by hand' : ' — automatic (from its position)'}`}
+      className={`shrink-0 w-[24px] text-center text-[9px] font-bold tracking-[0.03em] select-none ${c.manual ? 'text-orange-600' : 'text-stone-400'}`}>{panelTypeCode(c.current)}</span>
+  );
+}
+const EDGE_ORDER: PanelEdgeDir[] = ['top', 'bottom', 'front', 'rear', 'left', 'right'];
+/** Açık panel satırında: tip seçimi (yalnız o yüzeyde sunulan tipler) + panelin kenar rolleri (bağlayıcılı kenar turuncu, adetle). */
+function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefined }) {
+  const { panelTypeConfig: cfg, connectors } = useStoreFields('panelTypeConfig', 'connectors');
+  const c = panelTypeChoice(vf);
+  if (!c) return null;
+  const o = panelOrientation(panel);
+  const opts = c.options.map(t => [t, t === c.auto ? `${panelTypeLabel(t)} · auto` : panelTypeLabel(t)] as [PanelTypeId, string]);
+  const edges = o ? [...o.edges].sort((a, b) => EDGE_ORDER.indexOf(a.role) - EDGE_ORDER.indexOf(b.role)) : [];
+  return (
+    <div className="flex items-center gap-1 mt-1.5" onClick={stop}>
+      <SelectBox label="Type" className={c.manual ? 'is-accent' : ''} value={c.current} options={opts} onChange={t => setVfPanelType(vf.id, t)}
+        title={`Panel type — only the types offered on this face (Accessories › Types). ${c.manual ? `Set by hand; automatic would be ${panelTypeLabel(c.auto)}.` : 'Automatic: follows the panel\'s position.'}`} />
+      {o && (
+        <div className="yago-cell is-passive shrink-0 h-[28px] pl-2 pr-1 flex items-center gap-1.5"
+          title="Edges of this panel named by the body's face roles — connectors (and later edge banding) are applied by these names">
+          <span className="yago-label shrink-0">Edges</span>
+          <div className="flex items-center gap-[3px]">
+            {edges.map((e, i) => {
+              const rule = cfg.rules?.[c.current]?.edges[e.role], conn = rule?.connectorId ? connectors.find(x => x.id === rule.connectorId) : undefined;
+              const n = conn ? edgeConnectorPositions(rule!, e.length).length : 0;
+              return (
+                <span key={i} title={`${EDGE_LABEL[e.role]} edge · ${fmt1(e.length)} mm${conn ? ` · ${n} × ${conn.name} where it butts against a panel` : ' · no connector'}`}
+                  className={`h-[18px] px-[5px] rounded-[5px] text-[9.5px] font-semibold flex items-center gap-[3px] ring-1
+                    ${conn ? 'bg-[#fff4ec] text-[#c2410c] ring-[#f3c7a5]' : 'bg-white text-stone-500 ring-[#e3ddd4]'}`}>
+                  {EDGE_LABEL[e.role]}{conn && <span className="tabular-nums font-bold">{n}</span>}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+/** Yerleştirme şeridinde tip seçimi: yalnız o yüzeyde sunulan tipler; tek tip varsa satır çizilmez. Seçim otomatiğe eşitse kayıt tutulmaz. */
+function PlacementTypeRow({ options, auto }: { options: PanelTypeId[]; auto: PanelTypeId }) {
+  const picked = useAppStore(s => s.placementPanelType);
+  if (options.length < 2) return null;
+  const value = picked && options.includes(picked) ? picked : auto;
+  return (
+    <div style={{ ...DOCK_ROW, paddingTop: 0 }} title="Panel type — the types offered on this face (Accessories › Types); the marked one is automatic">
+      <span className="yago-label shrink-0 pl-1 pr-0.5">Type</span>
+      <div className="flex-1 min-w-0">
+        <Segmented height={24} active={value} onPick={k => useAppStore.getState().setPlacementPanelType(k === auto ? null : (k as PanelTypeId))}
+          items={options.map(t => ({ key: t, label: panelTypeShort(t), title: `${panelTypeLabel(t)}${t === auto ? ' — automatic for this spot' : ''}` }))} />
+      </div>
+    </div>
+  );
+}
+
 /** Liste üstüne yapışık yerleştirme şeritleri: panel yüzü · raf/dikme hacmi (ya da grubu yeniden konumlama) · kapak · arkalık. */
 export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
   const {
@@ -2303,6 +2367,7 @@ export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
           : ready ? `${stackBase ? `In front of ${stackBase.description || 'panel'} (on its inner face)` : 'Face selected'}`
             + ' — click again for the next region · right-click: place'
           : 'Click a body face in the 3D view'}
+        extra={(() => { const c = raycastPendingVf ? panelTypeChoice(raycastPendingVf) : null; return c ? <PlacementTypeRow options={c.options} auto={c.auto} /> : null; })()}
         onConfirm={() => confirmBodyPanelPlacement(useAppStore.getState().raycastPendingVf)} onExit={() => setRaycastMode(false)} />
     );
   };
@@ -2315,6 +2380,7 @@ export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
         status={!shape ? noShape
           : n === 0 ? (reloc ? 'Click the new volume (only panels before this group bound it)' : 'Click inside a volume in the 3D view')
           : `Volume ${volumePickIndex + 1}/${n} · ${cur?.shape === 'box' ? 'Box' : 'Shaped'} — click: next · right-click: ${reloc ? 'relocate' : 'place'}`}
+        extra={reloc ? null : (() => { const r = surfaceRuleOf(mode); return <PlacementTypeRow options={r.allowed} auto={r.def} />; })()}
         onConfirm={() => { if (ready && shape) confirmVolumePick(shape.id, mode, volumePickCandidates[volumePickIndex]); }}
         onExit={() => setVolumePickMode(null)} confirmTitle={reloc ? 'Relocate group to this volume' : `Place ${kind.toLowerCase()}`} />
     );
@@ -2877,6 +2943,7 @@ export function AssemblyPanel() {
         <ExtrudeDock panel={activePanel} draft={extrudeThicknessStr} setDraft={setExtrudeThicknessStr} onDone={rowDone} />
         <MoveDock panel={activePanel} draft={moveValueStr} setDraft={setMoveValueStr} onDone={rowDone} />
         <RotateDock panel={activePanel} draft={rotateValueStr} setDraft={setRotateValueStr} onDone={rowDone} />
+        <PanelTypeStrip vf={vf} panel={vp} />
         <div className={`${PREVIEW_FRAME} mt-1.5`} style={{ height: PREVIEW_HEIGHT, background: PREVIEW_BG }}>
           {activeDims && activePanel
             ? <PanelPreview2D key={activePanel.id} shape={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated} />
@@ -3140,10 +3207,14 @@ export function AssemblyPanel() {
             {door && doorMember?.leafCount === 2 && (
               <span className="shrink-0 text-[10px] font-semibold text-stone-400 tabular-nums">{doorMember.leaf + 1}/2</span>
             )}
+            <span className="flex-1" /><PanelTypeTag vf={vf} />
           </span>
         ) : (
-          <input type="text" value={vf.description || ''} onClick={stop} onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
-            placeholder="Panel" title="Panel name" className={`${ROW_INPUT_CLASS} font-medium`} />
+          <>
+            <input type="text" value={vf.description || ''} onClick={stop} onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
+              placeholder={panelTypeLabel(panelTypeChoice(vf)?.current)} title="Panel name" className={`${ROW_INPUT_CLASS} font-medium`} />
+            <PanelTypeTag vf={vf} />
+          </>
         ),
         dims: <RowDims w={dims?.primary} h={dims?.secondary} t={dims?.thickness} tLetter="T" />,
         trailW: member ? ROW_TRAIL_W - MEMBER_INSET : ROW_TRAIL_W,
@@ -3212,6 +3283,7 @@ export function AssemblyPanel() {
           const autoGap = g.targetGap != null && g.targetGap > 0;
           const applyCount = (n: number) => { setFieldDraft(null); if (!isNaN(n) && n >= 1 && n !== g.count) void setGroupCount(g.id, n); };
           const mvf = g.memberVfIds.map(vfById);
+          const groupTypes = surfaceRuleOf(g.kind === 'divider' ? 'divider' : 'shelf');
           return <>
             {/* Satır 1: hacim araçları · satır 2: etiketli değer hücreleri */}
             <div className="flex items-center gap-1 mb-1.5">
@@ -3225,7 +3297,13 @@ export function AssemblyPanel() {
               <span className="flex-1 min-w-0" />
               <CardAction compact icon={Equal} label="Equalize" title="Equalize gaps (unlock all)" onClick={() => { void equalizeGroupGaps(g.id); }} />
             </div>
-            <div className="grid grid-cols-2 gap-x-1 mb-1.5" style={QB_CELL_ROW}>
+            <div className={`grid ${groupTypes.allowed.length > 1 || g.panelType ? 'grid-cols-3' : 'grid-cols-2'} gap-x-1 mb-1.5`} style={QB_CELL_ROW}>
+              {(groupTypes.allowed.length > 1 || g.panelType) && (
+                <SelectBox label="Type" className={g.panelType ? 'is-accent' : ''} value={g.panelType ?? groupTypes.def}
+                  options={[...new Set([...(g.panelType ? [g.panelType] : []), ...groupTypes.allowed])].map(t => [t, panelTypeShort(t)] as [PanelTypeId, string])}
+                  title="Panel type of every member of this group — the types offered by this tool (Accessories › Types)"
+                  onChange={t => setGroupPanelType(g.id, t === groupTypes.def ? null : t)} />
+              )}
               <FieldBox label="Quantity" title="Number of panels in this group">
                 <StepBtn title="Fewer" disabled={g.count <= 1} onClick={() => applyCount(g.count - 1)}><Minus size={11} strokeWidth={2.2} /></StepBtn>
                 <input {...draftInput(`${g.id}:count`, String(g.count), raw => applyCount(parseInt(raw, 10)))} inputMode="numeric"
