@@ -2890,6 +2890,17 @@ function mergeCuts(...lists: QuickCut[][]): QuickCut[] {
 export interface QuickBodyResult { panelCount: number; backCreated: boolean; cyclic: boolean; warnings: string[] }
 
 export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Promise<QuickBodyResult | null> {
+  // Hızlı gövde birkaç zincirleme üretimden oluşur (paneller → arkalık → baza …): tek motor oturumu → durum çubuğu tek parça ilerler.
+  const { withEngineSession, whenBodySettled } = await import('./PanelEngine');   // PanelEngine bu dosyayı içe aktarır → dinamik (döngü yok)
+  return withEngineSession('Building cabinet', async () => {
+    const res = await applyQuickBodyInner(shapeId, cfg);
+    // Arkalık gibi yeni VF'lerin panelleri Assembly'de React efektiyle, bu işlem döndükten SONRA üretilir (addShape → tam üretim): onlar da
+    // aynı oturumda kalsın — gövde oturana dek (motor sessiz + panelsiz VF yok) beklenir.
+    await whenBodySettled(shapeId);
+    return res;
+  });
+}
+async function applyQuickBodyInner(shapeId: string, cfg: QuickBodyConfig): Promise<QuickBodyResult | null> {
   const st = useAppStore.getState();
   const body = shapeById(shapeId, st.shapes); if (!body) return null;
   const eff = effectiveBodyGeometry(body);

@@ -249,8 +249,13 @@ const notify = () => { for (const l of listeners) l(); };
 /** Geometri önbelleği değişince (yükleme bitti) bileşenler yeniden okusun. */
 export function onAccessoryGeometry(l: () => void): () => void { listeners.add(l); return () => { listeners.delete(l); }; }
 
-/** Kütüphaneyi IDB'den store'a yükler (uygulama açılışı). */
-export async function loadAccessoryLibrary(): Promise<void> {
+/** Kütüphaneyi IDB'den store'a yükler (uygulama açılışı). TEK SEFERLİK: geliştirme kipinde açılış efekti iki kez çalışır; ikinci yükleme
+ *  kaydı örnek bağlayıcı eklenmeden önce okuyup eklendikten sonra listeyi boşla eziyordu ("Connector 1" kayıtta var, listede yok). */
+let _libLoad: Promise<void> | null = null;
+export function loadAccessoryLibrary(): Promise<void> {
+  return (_libLoad ??= readAccessoryLibrary().catch(err => { _libLoad = null; throw err; }));
+}
+async function readAccessoryLibrary(): Promise<void> {
   const [models, legModels, legPresets, layersStored, connectors, settings] = await Promise.all([
     idbGetAll<ModelRecord>('models'), idbGetAll<LegModel>('legModels'), idbGetAll<LegPreset>('legPresets'), idbGetAll<AccessoryLayer>('layers'),
     idbGetAll<Connector>('connectors'), idbGetAll<PanelTypeConfig & { id: string }>('settings'),

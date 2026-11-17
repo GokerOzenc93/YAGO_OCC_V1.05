@@ -671,6 +671,8 @@ export interface AppState {
   quickBodyMode: boolean; setQuickBodyMode: (b: boolean) => void;
   quickBodyConfig: QuickBodyConfig; setQuickBodyConfig: (patch: Partial<QuickBodyConfig>) => void;
   quickBodyBusy: boolean; setQuickBodyBusy: (b: boolean) => void;
+  /** Motor uzun bir üretimde: ekran kilitli, bekleme penceresi açık (PanelEngine iş takibi yazar, Ui.BusyOverlay çizer). */
+  engineBusy: EngineBusy | null;
 
   raycastMode: boolean; setRaycastMode: (b: boolean) => void;
   /** Yüz yakalamada önizlenen (henüz yerleşmemiş) VF — şeritteki ✓ bununla onaylar. */
@@ -740,8 +742,24 @@ export const panelOfVf = (vfId: string | undefined, shapes: Shape[] = useAppStor
   vfId ? shapes.find(s => s.type === 'panel' && s.parameters?.virtualFaceId === vfId) : undefined;
 export const vfOfPanel = (panel: Shape | undefined, vfs: VirtualFace[] = useAppStore.getState().virtualFaces): VirtualFace | undefined =>
   vfs.find(f => f.id === (panel?.parameters as any)?.virtualFaceId);
-/** Motoru tembel yükleyip gövdenin panellerini yeniden üretir (tek rebuild giriş noktası). */
-export const requestRebuild = (parentId: string, opts?: { changedPanelId?: string; orderChanged?: boolean }): Promise<void> =>
+/** Bekleme penceresinin durumu. İlerleme SÜREYE göre: `frac` = biten adımların tahmini süresi / toplam tahmin; `fracTo` = şimdiki adım
+ *  bitince varılacak oran, `stepMs` = o adımın tahmini süresi (çubuk bu sürede `fracTo`'ya kayar — ana iş parçacığı doluyken de akar). */
+export interface EngineBusy {
+  title: string; detail: string; frac: number; fracTo: number; stepMs: number; step: number; steps: number;
+  /** İşin başladığı an (Date.now) ve kalan süre tahmini (ms; bilinmiyorsa null). */
+  startedAt: number; etaMs: number | null;
+}
+/** Motor oturumu sürüyor mu (tepkisiz bayrak — her karede okunur; zincirleme üretimleri kapsar). */
+export const engineLoad = { active: false };
+/** Panel giriş animasyonu ↔ motor (tepkisiz, her karede okunur):
+ *  `ready`   — motorun son geçişte ürettiği paneller: animasyon panelin SON geometrisini bekler (ara geçişte biçim değiştirmesin).
+ *  `decor`   — delikleri kesim işçisinde olan paneller: animasyon sonuna doğru yavaşlar, delikler gelince tamamlanır.
+ *  `playing` / `waiting` — süren / başlamayı bekleyen animasyon sayısı: animasyon oynarken (ya da bekleyen panel hazır olduğunda,
+ *  `readyTick`) motor adım aralarında kare çizdirir. */
+export const entryGate = { ready: new Set<string>(), decor: new Set<string>(), playing: 0, waiting: 0, readyTick: 0 };
+/** Motoru tembel yükleyip gövdenin panellerini yeniden üretir (tek rebuild giriş noktası). `connectorsOnly` = yalnız bağlayıcı kesicisi
+ *  değişen paneller yeniden üretilir (kural / bağlayıcı / tip değişimi); hiçbiri değişmediyse iş yapılmaz. */
+export const requestRebuild = (parentId: string, opts?: { changedPanelId?: string; orderChanged?: boolean; connectorsOnly?: boolean }): Promise<void> =>
   import('./components/PanelEngine').then(({ rebuildPanelsForParent }) => rebuildPanelsForParent(parentId, opts));
 
 type Xform = Pick<Shape, 'position' | 'rotation' | 'scale'>;
@@ -997,6 +1015,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   quickBodyConfig: DEFAULT_QUICK_BODY,
   setQuickBodyConfig: (patch) => set((s) => ({ quickBodyConfig: { ...s.quickBodyConfig, ...patch } })),
   quickBodyBusy: false, setQuickBodyBusy: (b) => set({ quickBodyBusy: b }),
+  engineBusy: null,
 
   raycastMode: false,
   setRaycastMode: (b) => set({ ...(b ? pickModesOff() : {}), raycastMode: b, raycastPendingVf: null }),

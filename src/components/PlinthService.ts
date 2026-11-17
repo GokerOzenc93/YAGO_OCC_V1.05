@@ -186,6 +186,8 @@ export function setBodyFaceRole(shapeId: string, gi: number, role: FaceRole | Fa
     : role && role !== face.auto ? { descriptor: face.descriptor, role } : null;
   const overrides = next ? [...kept, next] : kept;
   st.updateShape(shapeId, { parameters: { ...body.parameters, faceRoles: { ...fr, overrides } } } as Partial<Shape>);
+  // Rol / görev panelin tipini (→ bağlayıcılarını) değiştirebilir: yalnız kesicisi değişen paneller yenilenir.
+  void requestRebuild(shapeId, { connectorsOnly: true });
 }
 /** Rolü `role` olan tüm düz yüzler (eğikler dahil): normal, merkez, alan, eksen (eğikse null); alan azalan. */
 export function bodyFacesByRoleAll(body: Shape | undefined | null, role: FaceRole, st = useAppStore.getState()): Array<{ axis: AxisDir | null; bounds: { min: Vec3; max: Vec3 }; center: Vec3; normal: Vec3; area: number }> {

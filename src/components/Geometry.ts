@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import initOpenCascade from 'opencascade.js';
-import { cast, setOC } from 'replicad';
+import { Plane, cast, draw, makeCylinder, setOC } from 'replicad';
+import { type BrepTriInfo, cutShape, fuseShapes, geometryFromMeshData, meshDataOf, placeShapeBy, prismTool, startCutWorker } from './CutWorker';
 import {
   type VirtualFace, type FaceDescriptor, type FilletInfo, type SubtractedGeometry, type Shape, shapeById, requestRebuild, vfOfPanel, type RefFacePick,
   type RailStripSpec, type RailExt, type RailExtTarget, type SketchFeature, useAppStore,
@@ -319,99 +320,12 @@ function calculateSurfaceType(face: FaceData, faces: FaceData[], adjacencyMap: M
   return 'curved';
 }
 
-/** B-Rep yüz bilgisi: her üçgenin ait olduğu gerçek yüzey (`tri`) ve düz / eğri (`curved`). Mesh açısı sezgisi teğet geçişte
- *  (düz → radüs → düz) üçünü tek yüz sayıyordu. Dikişle bölünmüş silindir parçaları tek kimlik alır (`surfaceKeyOf`). */
-export interface BrepTriInfo { tri: Int32Array; curved: Uint8Array; keys: string[]; /** köşe başına GERÇEK yüzey normali (OCC) — eğri yüzde fasetanınki değil */ normals?: Float32Array }
+// B-Rep yüz bilgisi (`BrepTriInfo`, `surfaceKeyOf`) ve mesh dönüşümü CutWorker çekirdeğinde: kesim işçisi de aynı kodu kullanır.
+export { surfaceKeyOf, type BrepTriInfo } from './CutWorker';
 const brepInfoOf = (geometry: THREE.BufferGeometry, faceCount: number): BrepTriInfo | null => {
   const b = geometry.userData?.brep as BrepTriInfo | undefined;
   return b && b.tri?.length === faceCount ? b : null;
 };
-/** Eğri yüzeyin kimliği: silindirde eksen + yarıçap (dikişle / kesimle ikiye bölünen aynı silindir tek yüz sayılır); ötekilerde yüzün kendisi. */
-export function surfaceKeyOf(oc: any, face: any, type: string, index: number): string {
-  if (type !== 'CYLINDRE') return `f${index}`;
-  let ad: any = null;
-  try {
-    ad = new oc.BRepAdaptor_Surface_2(face.wrapped, true);
-    const cyl = ad.Cylinder(), ax = cyl.Axis(), loc = ax.Location(), dir = ax.Direction(), r = cyl.Radius();
-    let d = new THREE.Vector3(dir.X(), dir.Y(), dir.Z());
-    const o = new THREE.Vector3(loc.X(), loc.Y(), loc.Z());
-    // Eksen yönü işaretsiz, eksen noktası eksen üzerinde orijine en yakın nokta → aynı silindir aynı anahtarı verir.
-    if (d.x < -1e-6 || (Math.abs(d.x) <= 1e-6 && (d.y < -1e-6 || (Math.abs(d.y) <= 1e-6 && d.z < 0)))) d = d.negate();
-    o.addScaledVector(d, -o.dot(d));
-    const q = (x: number) => (Math.round(x * 100) / 100 || 0).toFixed(2);
-    return `c${q(r)}|${q(d.x)},${q(d.y)},${q(d.z)}|${q(o.x)},${q(o.y)},${q(o.z)}`;
-  } catch { return `f${index}`; }
-  finally { try { ad?.delete(); } catch { /* sarmalayıcı zaten bırakılmış */ } }
-}
-function brepTriInfo(shape: any, mesh: { triangles: ArrayLike<number>; vertices: ArrayLike<number>; normals?: ArrayLike<number>; faceGroups?: Array<{ start: number; count: number; faceId: number }> }): BrepTriInfo | null {
-  const fg = mesh.faceGroups;
-  if (!fg?.length) return null;
-  try {
-    const oc = window.__ocInstance;
-    const tri = new Int32Array(Math.floor(mesh.triangles.length / 3)).fill(-1);
-    const curved: number[] = [], keys: string[] = [], keyId = new Map<string, number>();
-    let k = 0, fi = 0;
-    for (const face of shape.faces as any[]) {
-      fi++;
-      if (k >= fg.length) break;
-      if (face.hashCode !== fg[k].faceId) continue;   // üçgenlenmemiş yüz mesh'te yok
-      const type = String(face.geomType);
-      const key = type === 'PLANE' ? `p${fi}` : surfaceKeyOf(oc, face, type, fi);
-      let id = keyId.get(key);
-      if (id === undefined) { id = curved.length; keyId.set(key, id); curved.push(type === 'PLANE' ? 0 : 1); keys.push(key); }
-      const t0 = fg[k].start / 3, t1 = t0 + fg[k].count / 3;
-      for (let t = t0; t < t1; t++) tri[t] = id;
-      k++;
-    }
-    if (k !== fg.length || tri.includes(-1)) return null;
-    const hasNormals = !!mesh.normals && mesh.normals.length === mesh.vertices.length;
-    // Teğet sürekli serbest eğri yüzler (elips / spline dilimleri) ortak köşelerde normaller aynıysa tek yüz olur ("fA+fB");
-    // silindirler yalnız aynı eksen + yarıçapla birleşir.
-    const free = curved.map((c, id) => !!c && keys[id].startsWith('f'));
-    if (hasNormals && free.filter(Boolean).length > 1) {
-      const root = curved.map((_, i) => i);
-      const find = (x: number): number => { while (root[x] !== x) { root[x] = root[root[x]]; x = root[x]; } return x; };
-      const V = mesh.vertices, Nn = mesh.normals!, T = mesh.triangles;
-      const at = new Map<string, Array<{ id: number; v: number }>>();
-      const seen = new Set<number>();
-      for (let t = 0; t < tri.length; t++) {
-        const id = tri[t];
-        if (!free[id]) continue;
-        for (let c = 0; c < 3; c++) {
-          const v = T[t * 3 + c];
-          if (seen.has(v)) continue;
-          seen.add(v);
-          const kk = `${Math.round(V[v * 3] * 100)},${Math.round(V[v * 3 + 1] * 100)},${Math.round(V[v * 3 + 2] * 100)}`;
-          const l = at.get(kk);
-          if (l) l.push({ id, v }); else at.set(kk, [{ id, v }]);
-        }
-      }
-      const smooth = new Map<string, number>();
-      for (const l of at.values()) for (let i = 0; i < l.length; i++) for (let j = i + 1; j < l.length; j++) {
-        const a = l[i], b = l[j];
-        if (a.id === b.id) continue;
-        const dot = Nn[a.v * 3] * Nn[b.v * 3] + Nn[a.v * 3 + 1] * Nn[b.v * 3 + 1] + Nn[a.v * 3 + 2] * Nn[b.v * 3 + 2];
-        if (Math.abs(dot) < 0.9995) continue;
-        const pk = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
-        smooth.set(pk, (smooth.get(pk) ?? 0) + 1);
-      }
-      for (const [pk, cnt] of smooth) {
-        if (cnt < 2) continue;
-        const [a, b] = pk.split('|').map(Number), ra = find(a), rb = find(b);
-        if (ra !== rb) { root[Math.max(ra, rb)] = Math.min(ra, rb); }
-      }
-      if (root.some((r, i) => r !== i)) {
-        const members = new Map<number, number[]>();
-        root.forEach((_, i) => { const r = find(i); (members.get(r) ?? members.set(r, []).get(r)!).push(i); });
-        for (const [r, list] of members) if (list.length > 1) keys[r] = list.map(i => keys[i]).join('+');
-        for (let t = 0; t < tri.length; t++) tri[t] = find(tri[t]);
-      }
-    }
-    const normals = curved.some(Boolean) && hasNormals ? Float32Array.from(mesh.normals!) : undefined;
-    return { tri, curved: Uint8Array.from(curved), keys, normals };
-  } catch { return null; }
-}
-
 /** Köşe paylaşan üçgen komşuluğu (tol 0.001). Uzamsal ızgarayla O(F); O(F²) taramayla birebir aynı sıra. */
 function buildAdjacencyMap(faces: FaceData[], tolerance = 0.001): Map<number, Set<number>> {
   const cellOf = (x: number) => Math.floor(x / tolerance);
@@ -661,6 +575,8 @@ export const initReplicad = async () => {
     const oc = await initOpenCascade();
     setOC(oc);
     window.__ocInstance = oc;
+    // Kesim işçisi (ikinci OCC örneği) ana örnek hazır olduktan sonra, boşta yüklenir: iki büyük derleme aynı anda yarışmasın.
+    setTimeout(startCutWorker, 1500);
     return oc;
   })().catch((error) => {
     window.__ocInitPromise = undefined;
@@ -673,8 +589,8 @@ export const initReplicad = async () => {
 export interface BoxSize { width: number; height: number; depth: number }
 
 export const createReplicadBox = async ({ width, height, depth }: BoxSize): Promise<any> => {
+  // replicad dosyanın başında durağan içe aktarılır: sık çağrılan kurucularda `await import()` her çağrıda bir görev sırası bekliyordu.
   await initReplicad();
-  const { draw } = await import('replicad');
   return draw().movePointerTo([0, 0]).lineTo([width, 0]).lineTo([width, height]).lineTo([0, height]).close().sketchOnPlane().extrude(depth);
 };
 
@@ -685,23 +601,13 @@ export const createReplicadBoxAt = async (min: ArrayLike<number>, max: ArrayLike
 /** Delik silindiri: `start`'tan `dir` yönünde `length` boyunda, yarıçap r. */
 export const createHoleCylinder = async (start: Vec3, dir: Vec3, radius: number, length: number): Promise<any> => {
   await initReplicad();
-  const { makeCylinder } = await import('replicad');
   return makeCylinder(radius, length, start, dir);
 };
 /** Çokgen prizma kesici: düzlemsel kapalı çokgen (`pts`, gövde-yerel), yüzeyin DIŞ normali `nOut`; çokgen `lift` kadar dışarıdan başlar,
  *  malzemeye doğru `len` kadar iner. Ardışık aynı noktalar atılır; 3'ten az köşe → null. */
 export const createPrismTool = async (pts: Vec3[], nOut: Vec3, lift: number, len: number) => {
   await initReplicad();
-  const { draw, Plane } = await import('replicad');
-  const n = new THREE.Vector3(...nOut).normalize(), P = pts.map(p => new THREE.Vector3(...p));
-  const clean = P.filter((p, i) => p.distanceTo(P[(i + P.length - 1) % P.length]) > 1e-4);
-  if (clean.length < 3) return null;
-  const o = clean[0].clone().addScaledVector(n, lift);
-  const u = clean[1].clone().sub(clean[0]).projectOnPlane(n).normalize(), v = new THREE.Vector3().crossVectors(n, u);
-  const uv = clean.map(p => { const d = p.clone().sub(clean[0]); return [d.dot(u), d.dot(v)] as [number, number]; });
-  let pen = draw(uv[0]);
-  for (let i = 1; i < uv.length; i++) pen = pen.lineTo(uv[i]);
-  return pen.close().sketchOnPlane(new Plane([o.x, o.y, o.z], [u.x, u.y, u.z], [n.x, n.y, n.z])).extrude(-(len + lift));
+  return prismTool(pts, nOut, lift, len);
 };
 /** DERİN kopya (yeni TShape). replicad `clone()` yüzeyseldir (aynı TShape'i paylaşır) ve OCC boolean'ı girdilerinin köşe / kenar
  *  toleransını YERİNDE büyütebilir: teğete yakın tek bir kesişim gövde katısının toleransını 0 → 7,4 mm yapıyordu (ölçüldü); o andan sonra
@@ -722,23 +628,20 @@ export function deepCopyShape<T>(shape: T): T {
  *  Glue (commonFace) kesimi atlıyor → kullanılmaz. `simplify` = eş-düzlem yüzleri birleştir. 3B katı değilse fırlatır. */
 export async function cutWithTools(base: any, tools: any[], simplify = false, /** OCC bulanık toleransı (mm): eş-yüzeyli çiftte sağlam kesim. */ fuzzy = 0): Promise<any> {
   if (!tools.length) return base;
-  const oc = await initReplicad();
-  const { cast } = await import('replicad');
-  const args = new oc.TopTools_ListOfShape_1(); args.Append_1(base.wrapped);
-  const list = new oc.TopTools_ListOfShape_1(); for (const t of tools) list.Append_1(t.wrapped);
-  const op = new oc.BRepAlgoAPI_Cut_1();
-  const progress = new oc.Message_ProgressRange_1();
-  try {
-    op.SetArguments(args); op.SetTools(list);
-    op.SetCheckInverted(false);   // girdiler düzgün katılar; ters katı denetimi atlanır (~%10)
-    if (fuzzy > 0) op.SetFuzzyValue(fuzzy);
-    op.Build(progress);
-    if (simplify) op.SimplifyResult(true, true, 1e-3);
-    if (op.HasErrors()) throw new Error('boolean cut failed');
-    const out = cast(op.Shape());
-    if (!(out as any).wrapped || typeof (out as any).cut !== 'function') throw new Error('cut result is not a 3D shape');
-    return out;
-  } finally { args.delete(); list.delete(); op.delete(); progress.delete(); }
+  return cutShape(await initReplicad(), base, tools, simplify, fuzzy);
+}
+
+/** Boolean aracı: OCC katısını taşıyan herhangi bir sarmalayıcı (replicad katısı ya da çıplak `{ wrapped }`). */
+export type OccTool = { wrapped: unknown };
+/** Araçları TEK katıda birleştirir (tek BRepAlgoAPI_Fuse; birbirine değmeyenler bileşik olarak kalır). Birim araç için: araçların kendi
+ *  aralarındaki kesişim burada bir kez çözülür, sonuç saklanıp `placeShape` ile çoğaltılır. Tek araç aynen döner. */
+export async function fuseTools(tools: OccTool[]): Promise<OccTool> {
+  if (tools.length < 2) return tools[0];
+  return fuseShapes(await initReplicad(), tools);
+}
+/** Katının katı dönüşümle (3 × 4, satır satır) yerleştirilmiş DERİN kopyası — saklanan araca boolean dokunmaz (bkz. deepCopyShape). */
+export function placeShape(shape: OccTool, m: number[]): OccTool {
+  return placeShapeBy(window.__ocInstance, shape, m);
 }
 
 /** Güvenli kesişim ölçüsü: vol(a) − vol(a − b). OCC Common çok eş-düzlem yüzlü çiftlerde boş dönebiliyor (aynı çiftte Cut doğru);
@@ -869,7 +772,6 @@ export function fitDrivenBody(parameters: any): { axes: [number, number]; size: 
 /** Adımın kesici katısı: kapalı döngüler yüz düzleminin 1 mm DIŞINDAN içeri doğru prizmalanır; iç içe döngülerde tek sıra ada / deliktir. */
 async function sketchToolOf(f: SketchFeature, fr: SketchFrame, vars: Record<string, number>): Promise<any | null> {
   await initReplicad();
-  const { draw, Plane } = await import('replicad');
   const { loops } = profileLoops(placeSketchShapes(f, fr.w, fr.h, vars));
   if (!loops.length) return null;
   const LIFT = 1;
@@ -923,18 +825,8 @@ export function assertBounds(shape: any): void {
 
 export const convertReplicadToThreeGeometry = (shape: any): THREE.BufferGeometry => {
   try {
-    const mesh = shape.mesh({ tolerance: 0.1, angularTolerance: 30 });
-    if (!mesh.vertices || !mesh.triangles) throw new Error('Invalid mesh data');
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(Array.from(mesh.vertices as ArrayLike<number>), 3));
-    geometry.setIndex(Array.from(mesh.triangles as ArrayLike<number>));
-    // Üçgen → gerçek (B-Rep) yüzey eşlemesi: yüz gruplaması eğri / düz ayrımını buradan okur (getFacesAndGroups).
-    const brep = brepTriInfo(shape, mesh);
-    if (brep) geometry.userData.brep = brep;
-    geometry.computeVertexNormals();
-    geometry.computeBoundingBox();
-    geometry.computeBoundingSphere();
-    return geometry;
+    // Mesh + B-Rep yüz eşlemesi çekirdekte (kesim işçisi aynı kodla düz veri üretir, burada yalnız three geometrisine çevrilir).
+    return geometryFromMeshData(meshDataOf(window.__ocInstance, shape));
   } catch (error) {
     console.error('convertReplicadToThreeGeometry failed:', error);
     throw error;
@@ -967,7 +859,6 @@ export const createPanelFromVirtualFace = async (
   vertices: Vec3[], normal: Vec3, panelThickness: number, planeExpand = 0
 ): Promise<any> => {
   await initReplicad();
-  const { draw, Plane } = await import('replicad');
   const n = new THREE.Vector3(...normal).normalize();
 
   // up: normale en dik dünya ekseni (en küçük |bileşen|); baskın bileşen seçimi 45°'de dejenere cross üretir.
@@ -3160,7 +3051,6 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
   const samplePt = step.samplePoint ? new THREE.Vector3(...step.samplePoint) : undefined;
   const matchingFace = findMatchingReplicadFace(currentShape, faceNormal, faceCenter, samplePt);
   if (!matchingFace) return null;
-  const { cast } = await import('replicad');
   const prismOf = (face: any, len: number): any => {
     const vec = new oc.gp_Vec_4(faceNormal.x * len, faceNormal.y * len, faceNormal.z * len);
     const pb = new oc.BRepPrimAPI_MakePrism_1(face.wrapped, vec, false, true);

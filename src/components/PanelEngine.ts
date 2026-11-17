@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import {
   type CavityBox, type PanelGroup, type PanelHole, type RailExt, type RailExtTarget, type Shape, type VirtualFace, childPanelsOf, panelOfVf,
-  shapeById, useAppStore, vfOfPanel,
+  engineLoad, entryGate, shapeById, useAppStore, vfOfPanel,
 } from '../store';
 import {
   type ExtrudeStep, type TransformStep, applyExtrudeSteps, applyTransformSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets,
@@ -13,7 +13,7 @@ import {
 } from './Geometry';
 import {
   type BrepTriInfo, type CoplanarFaceGroup, type FaceData, type Vec3, initReplicad, isShapedBody, matchCurvedFaceGroup, overlapVolumeByCut, surfaceKeyOf,
-  angleToTouchPlane, assertBounds, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry, createHoleCylinder,
+  angleToTouchPlane, assertBounds, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry,
   createPanelFromVirtualFace, createReplicadBox, createReplicadBoxAt, cutWithTools, deepCopyShape, dot3, effectiveBodyGeometry, errMsg, findFaceByDescriptor,
   fromPlaneUV, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix, halfSpaceSlab, isFlatNormal, localBboxOf, normDeg, panelThickness,
   pointFromFracBox, projRange, resolveVfFracPoint, rotateAboutAxis, round1, round3, spanAlong, toVector3, uniqueMeshPoints, uniquePoints, vec3,
@@ -24,7 +24,10 @@ import { edgeGapsOf, isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups }
 import { backGrooveCuttersFor, backNailStampFor, backStackAt, isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
 import { isPlinthVf, plinthBoxOf, plinthHoleCuttersFor, plinthLegBoxes, plinthSetsOf } from './PlinthService';
 import { type HoleCutter, holeCutterBox, panelHoleRecord } from './AccessoryService';
-import { type ConnSolidCut, connectorCutSig, connectorCutsFor } from './ConnectorService';
+import { type ConnSolidCut, type ConnUnitCut, connectorCutSig, connectorCutsFor, holeSpec, unitSpec } from './ConnectorService';
+import {
+  type CutBox, type OccShape, type ToolSpec, type UnitCache, cutBySpecs, cutInWorker, cutWorkerReady, geometryFromMeshData, shapeFromBytes, shapeToBytes,
+} from './CutWorker';
 
 // Kapak / arkalık levhaları köşe birleşimine girmez, gövdeyle kesilmez, damgalamaz — istisna: arkalığın iç parçası çakma kenarındaki
 // ve sırada sonra gelen gövde panelini basar (backNailStampFor).
@@ -1697,11 +1700,240 @@ export interface RebuildOpts {
   /** Yalnız bu panel işlem gördü ve sıralama DEĞİŞMEDİ → mümkünse tek-panel modu. */
   changedPanelId?: string;
   orderChanged?: boolean;
+  /** Yalnız bağlayıcı kesicisi değişen paneller yeniden üretilir (kural / bağlayıcı / tip değişimi); geri kalan hiçbir şeye dokunulmaz. */
+  connectorsOnly?: boolean;
 }
 const inFlight = new Set<string>();
 const pending = new Map<string, RebuildOpts | undefined>();
 
-/** Aynı parent için rebuild sürüyorsa kuyruğa alınır; TAM rebuild isteği her zaman korunur. */
+/* ───────── İŞ TAKİBİ: durum çubuğundaki ilerleme + animasyonla iç içe üretim ─────────
+   Motor ana iş parçacığında çalışır (OCC eşzamanlı). İki şey yapılır:
+   1) KARE PAYI — panel giriş animasyonu oynuyorsa (ya da başlamayı bekliyorsa) motor adım aralarında tarayıcıya bir kare çizdirir: üretim
+      sürerken animasyon akar. Kare payı varken giriş kilitlenir (adım aralarında tıklama sahneyi değiştirmesin; bırakma olayları geçer).
+   2) İLERLEME — iş 280 ms'yi geçer ya da kalan tahmin 450 ms'den uzunsa durum çubuğu ilerleme çubuğuna döner (store.engineBusy).
+      Süreye göre: her adımın (panel × geçiş) ve işçideki her delik işinin süresi önceki üretimden hatırlanır.
+   Motor oturumu (`engineLoad.active`) zincirleme üretimleri kapsar (160 ms ara); ilerleme işçideki delik işleri de bitince kapanır. */
+const BUSY = { SHOW_AFTER: 280, SHOW_IF_LEFT: 450, PAINT_ANIM: 12, PAINT_BAR: 100, GRACE: 160, MIN_VISIBLE: 450 } as const;
+interface BusyJob {
+  t0: number; shown: boolean; shownAt: number; lastPaint: number; title: string; label: string; tick: number;
+  /** Tahmini toplam / biten süre (ms) ve adım sayacı (motor adımları + işçideki delik işleri). */
+  totalMs: number; doneMs: number; n: number; i: number;
+  /** Gösterilen oran GERİ GİTMEZ: iş büyüyünce (zincirleme üretim) o anki oran taban olur, kalan yol yeni toplama göre dolar. */
+  shownFrac: number; floor: number; floorDone: number; seenTotal: number;
+  /** Açık tutulan oturumda (hızlı gövde) zincirdeki sonraki üretimler baştan bilinmez: ilerleme DUVAR SAATİYLE, aynı türden önceki
+   *  oturumun gerçek süresine (`wallExpect`) göre. Öğrenilmiş süre yoksa (ilk kez) beklenen iş = ilk planın 5 katı (`expect`). */
+  expect: number; wallExpect: number; kind: string;
+  /** Planlanan adımların tahminleri (sırayla): biten işe adımın PLANDAKİ tahmini eklenir — o arada öğrenilen yeni tahmin değil (aynı panel
+   *  bir üretimde iki kez işlenince biten iş toplamı aşıp çubuğu %99'a fırlatıyordu). */
+  planQ: number[];
+  cur: { key: string; pred: number; t: number } | null;
+  /** İşçide bekleyen delik işleri: panel → tahmin. */
+  decor: Map<string, number>;
+  engineEnd: ReturnType<typeof setTimeout> | null; endTimer: ReturnType<typeof setTimeout> | null;
+}
+let _job: BusyJob | null = null;
+/** Açık tutulan oturum sayısı (`withEngineSession`): zincirleme üretimden oluşan bir işlem (hızlı gövde) boyunca motor oturumu ve
+ *  ilerleme kapanmaz. */
+let _holds = 0;
+/** Adımın son ölçülen süresi (panel id + geçiş; işçi işi `id|decor`): sonraki üretimin tahmini. */
+const _stepMs = new Map<string, number>();
+const stepKey = (panel: Shape, final: boolean) => `${panel.id}|${final ? 1 : 0}`;
+/** Tür başına ölçülen ortalama süre (ara geçiş / son geçiş / işçideki kesim): ilk kez üretilen panelin tahmini — sabit varsayılan değil
+ *  (yeni panel varsayılanla, aynı panelin sonraki adımı ölçümle sayılınca tahminler farklı birimde kalıyordu). */
+const _avgMs = { pass: 18, final: 45, decor: 180 };
+const avgKey = (key: string): keyof typeof _avgMs => (key.endsWith('|decor') ? 'decor' : key.endsWith('|1') ? 'final' : 'pass');
+/** Tahmin: panelin son ölçümü; yoksa türün ortalaması (bombeli panel ağırdır). */
+const stepPred = (panel: Shape, final: boolean) =>
+  _stepMs.get(stepKey(panel, final)) ?? (isCurvedPanel(panel) || vfOfPanel(panel)?.curved ? Math.max(500, _avgMs.final * 4) : final ? _avgMs.final : _avgMs.pass);
+const remember = (key: string, ms: number) => {
+  if (_stepMs.size > 4000) _stepMs.clear();
+  const old = _stepMs.get(key);
+  _stepMs.set(key, old == null ? ms : old * 0.35 + ms * 0.65);
+  const k = avgKey(key);
+  _avgMs[k] = _avgMs[k] * 0.85 + ms * 0.15;
+};
+/** Bir kare çizilene kadar bekler (çizimden hemen sonra sürer). Sekme gizliyse / kare gelmezse beklemez. */
+const nextPaint = (): Promise<void> => new Promise(res => {
+  let done = false;
+  const fin = () => { if (!done) { done = true; res(); } };
+  if (typeof document === 'undefined' || document.hidden || typeof requestAnimationFrame !== 'function') { setTimeout(fin, 0); return; }
+  requestAnimationFrame(() => { const ch = new MessageChannel(); ch.port1.onmessage = fin; ch.port2.postMessage(0); });
+  setTimeout(fin, 200);
+});
+/** GİRİŞ KİLİDİ: kare payı verilirken basma / tıklama / tekerlek / tuş olayları yutulur (bırakma olayları geçer — süren sürükleme
+ *  takılmasın). Dinleyiciler pencerede, yakalama aşamasında. İmleç "progress". */
+let _locked = false, _lockInstalled = false;
+const LOCK_EVENTS = ['pointerdown', 'mousedown', 'click', 'dblclick', 'contextmenu', 'wheel', 'keydown', 'keypress', 'touchstart', 'pointermove', 'mousemove', 'dragstart'];
+function lockInput(on: boolean): void {
+  if (_locked === on) return;
+  _locked = on;
+  if (typeof document !== 'undefined') document.documentElement.classList.toggle('yago-busy-lock', on);
+  if (!on || _lockInstalled || typeof window === 'undefined') return;
+  _lockInstalled = true;
+  for (const type of LOCK_EVENTS) window.addEventListener(type, e => {
+    if (!_locked) return;
+    e.stopImmediatePropagation();
+    if (e.cancelable && type !== 'pointermove' && type !== 'mousemove') e.preventDefault();
+  }, { capture: true, passive: false });
+}
+function publishBusy(): void {
+  const j = _job; if (!j || !j.shown) return;
+  const now = performance.now(), total = Math.max(1, j.totalMs, j.expect), elapsed = now - j.t0;
+  // İş büyüdüyse yeniden tabanla: gösterilen oran olduğu yerden devam eder, geri düşmez; kalan yol yeni toplamla ölçülür.
+  if (total > j.seenTotal) { j.floor = j.shownFrac; j.floorDone = j.doneMs; j.seenTotal = total; }
+  const span = Math.max(1, total - j.floorDone);
+  const toFrac = (done: number) => Math.min(1, j.floor + (1 - j.floor) * Math.max(0, done - j.floorDone) / span);
+  // Açık oturumda öğrenilmiş süre varsa: geçen süre / beklenen süre (bitene dek en çok %97).
+  const byWall = _holds && j.wallExpect > 0 ? Math.min(0.97, elapsed / j.wallExpect) : 0;
+  const frac = Math.max(j.shownFrac, byWall || toFrac(j.doneMs));
+  j.shownFrac = frac;
+  const rate = j.doneMs > 60 ? Math.min(6, Math.max(0.3, elapsed / j.doneMs)) : 1;
+  // Çubuğun bir sonraki durağı: süren motor adımı ya da (motor boştaysa) işçideki sıradaki delik işi.
+  const pred = j.cur?.pred ?? (j.decor.size ? j.decor.values().next().value as number : 0);
+  useAppStore.setState({ engineBusy: {
+    title: j.title, detail: j.label, frac,
+    fracTo: byWall ? Math.min(0.97, (elapsed + Math.max(120, pred * rate)) / j.wallExpect) : Math.max(frac, toFrac(j.doneMs + pred)), stepMs: Math.max(120, pred * rate),
+    step: Math.min(j.i, j.n), steps: j.n, startedAt: Date.now() - elapsed,
+    etaMs: byWall ? Math.max(0, j.wallExpect - elapsed) : j.doneMs > 60 ? Math.max(0, (total - j.doneMs) * rate) : null,
+  } });
+}
+function closeStep(): void {
+  const j = _job; if (!j?.cur) return;
+  remember(j.cur.key, performance.now() - j.cur.t);
+  j.doneMs += j.cur.pred; j.cur = null;
+}
+function maybeShow(j: BusyJob, now: number): void {
+  if (!j.shown && (now - j.t0 > BUSY.SHOW_AFTER || j.totalMs - j.doneMs > BUSY.SHOW_IF_LEFT)) { j.shown = true; j.shownAt = now; publishBusy(); }
+}
+function jobEnter(): void {
+  engineLoad.active = true;
+  if (_job) {
+    if (_job.engineEnd) { clearTimeout(_job.engineEnd); _job.engineEnd = null; }
+    if (_job.endTimer) { clearTimeout(_job.endTimer); _job.endTimer = null; }
+    return;
+  }
+  _job = { t0: performance.now(), shown: false, shownAt: 0, lastPaint: 0, title: 'Building panels', label: '', tick: entryGate.readyTick, totalMs: 0, doneMs: 0, n: 0, i: 0,
+    shownFrac: 0, floor: 0, floorDone: 0, seenTotal: 0, expect: 0, wallExpect: 0, kind: '', planQ: [],
+    cur: null, decor: new Map(), engineEnd: null, endTimer: null };
+}
+/** Oturum türü başına öğrenilmiş GERÇEK süre (ms) — tarayıcıda saklanır (bir sonraki hızlı gövdenin çubuğu toplam süreye göre dolar). */
+const SESSION_WALL_KEY = 'yago.engine.sessionMs';
+const _sessionWall = new Map<string, number>((() => {
+  try { return Object.entries(JSON.parse(localStorage.getItem(SESSION_WALL_KEY) ?? '{}') as Record<string, number>).filter(([, v]) => v > 50 && v < 600000); }
+  catch { return []; }
+})());
+/** Üretilecek adımlar işe eklenir (toplam süre tahmini büyür). */
+function jobPlan(steps: Array<{ panel: Shape; final: boolean }>, title?: string): void {
+  const j = _job; if (!j) return;
+  let ms = 0;
+  for (const s of steps) { const p = stepPred(s.panel, s.final); j.planQ.push(p); ms += p; }
+  j.totalMs += ms;
+  j.n += steps.length;
+  if (_holds && j.kind && !j.expect && !j.wallExpect && ms > 0) j.expect = ms * 5;   // ilk kez: öğrenilmiş süre yok
+  if (title && !j.shown) j.title = title;
+}
+/** Adım başı: önceki adım kapanır; animasyon oynuyorsa ya da çubuk açıksa tarayıcıya bir kare çizdirilir. */
+async function jobStep(panel: Shape, final: boolean, name: string): Promise<void> {
+  const j = _job; if (!j) return;
+  closeStep();
+  const now = performance.now();
+  // Plansız adım (kuyruk boş) toplama da eklenir: biten iş toplamı aşmasın.
+  let pred = j.planQ.shift();
+  if (pred == null) { pred = stepPred(panel, final); j.totalMs += pred; j.n++; }
+  j.cur = { key: stepKey(panel, final), pred, t: now }; j.i++;
+  j.label = `${name} · ${Math.min(j.i, j.n)} of ${j.n}`;
+  maybeShow(j, now);
+  // Animasyon oynuyor ya da bekleyen panel az önce hazır oldu → kısa aralıkla kare; yalnız çubuk açıksa seyrek.
+  const fresh = entryGate.waiting > 0 && entryGate.readyTick !== j.tick, anim = entryGate.playing > 0 || fresh;
+  if ((anim || j.shown) && (fresh || !j.lastPaint || now - j.lastPaint > (anim ? BUSY.PAINT_ANIM : BUSY.PAINT_BAR))) {
+    j.tick = entryGate.readyTick;
+    lockInput(true);
+    publishBusy();
+    await nextPaint();
+    j.lastPaint = performance.now();
+    if (j.cur) j.cur.t = j.lastPaint;   // çizim beklemesi adımın süresine sayılmaz
+  }
+}
+/** Birden çok üretimden oluşan işlemi (hızlı gövde) TEK oturum sayar: aradaki boşluklarda durum çubuğu kapanıp %0'dan yeniden başlamaz,
+ *  giriş kilidi ve animasyon kapısı işlem boyunca sürer. */
+export async function withEngineSession<T>(title: string, fn: () => Promise<T>): Promise<T> {
+  jobEnter();
+  const j = _job!, t0 = performance.now();
+  if (!j.shown) j.title = title;
+  if (!j.kind) { j.kind = title; j.wallExpect = _sessionWall.get(title) ?? 0; }
+  _holds++;
+  try { return await fn(); }
+  finally {
+    _holds--;
+    // Öğren: bu tür oturumun gerçek süresi (sonraki oturumun çubuğu toplam süreye göre dolsun).
+    if (!_holds && _job === j && j.kind === title) {
+      const ms = performance.now() - t0, old = _sessionWall.get(title);
+      _sessionWall.set(title, old == null ? ms : old * 0.4 + ms * 0.6);
+      try { localStorage.setItem(SESSION_WALL_KEY, JSON.stringify(Object.fromEntries(_sessionWall))); } catch { /* depolama kapalı */ }
+      j.expect = 0; j.wallExpect = 0;
+    }
+    jobLeave();
+  }
+}
+/** Adım içi nefes: animasyon oynuyorsa ve son kareden beri 12 ms'den uzun çalışıldıysa bir kare çizdirilir (panel üretimiyle VF yeniden
+ *  hesabı arasında — ikisi birlikte tek dilimde animasyonu takıyordu). */
+async function jobBreath(): Promise<void> {
+  const j = _job; if (!j || !(entryGate.playing > 0)) return;
+  const now = performance.now();
+  if (j.lastPaint && now - j.lastPaint <= BUSY.PAINT_ANIM) return;
+  lockInput(true);
+  const t = performance.now();
+  await nextPaint();
+  j.lastPaint = performance.now();
+  if (j.cur) j.cur.t += j.lastPaint - t;   // çizim beklemesi adımın süresine sayılmaz
+}
+/** Delik işi işçiye gitti: ilerlemeye eklenir. */
+function jobDecorAdd(panelId: string): void {
+  if (!_job) jobEnter();
+  const j = _job!, pred = _stepMs.get(`${panelId}|decor`) ?? _avgMs.decor;
+  if (j.decor.has(panelId)) return;
+  j.decor.set(panelId, pred); j.totalMs += pred; j.n++;
+}
+/** Delik işi bitti (`ms` null = başarısız / düşürüldü). */
+function jobDecorDone(panelId: string, ms: number | null): void {
+  if (ms != null) remember(`${panelId}|decor`, ms);
+  const j = _job; if (!j) return;
+  const pred = j.decor.get(panelId);
+  if (pred != null) { j.decor.delete(panelId); j.doneMs += pred; j.i++; }
+  if (!j.cur) j.label = j.decor.size ? `Cutting grooves and holes · ${j.decor.size} left` : 'Finishing';
+  maybeShow(j, performance.now());
+  publishBusy();
+  jobLeave();
+}
+/** Kuyruk boşaldı: motor oturumu kısa bir aradan sonra kapanır (zincirleme üretim aynı oturuma eklenir); ilerleme, işçideki delik işleri
+ *  de bitince kapanır. */
+function jobLeave(): void {
+  const j = _job; if (!j || inFlight.size || pending.size) return;
+  closeStep();
+  // Motor adımı yok, işçide kesim sürüyor: etiket onu söylesin.
+  if (j.decor.size) { j.label = `Cutting grooves and holes · ${j.decor.size} left`; publishBusy(); }
+  if (_holds) return;
+  if (engineLoad.active && !j.engineEnd) {
+    j.engineEnd = setTimeout(() => {
+      j.engineEnd = null;
+      if (_job !== j || inFlight.size || pending.size || _holds) return;
+      engineLoad.active = false;
+      lockInput(false);
+      if (j.decor.size) { j.label = `Cutting grooves and holes · ${j.decor.size} left`; publishBusy(); }
+      jobLeave();
+    }, BUSY.GRACE);
+    return;
+  }
+  if (engineLoad.active || j.decor.size) return;
+  if (j.shown) { j.label = 'Finishing'; publishBusy(); }
+  if (j.endTimer) clearTimeout(j.endTimer);
+  j.endTimer = setTimeout(() => {
+    if (_job !== j || inFlight.size || pending.size || _holds || j.decor.size) return;
+    _job = null;
+    if (j.shown) useAppStore.setState({ engineBusy: null });
+  }, j.shown ? Math.max(120, BUSY.MIN_VISIBLE - (performance.now() - j.shownAt)) : 0);
+}
+
 export async function rebuildPanelsForParent(parentShapeId: string, opts?: RebuildOpts): Promise<void> {
   if (inFlight.has(parentShapeId)) {
     const prevFull = pending.has(parentShapeId) && pending.get(parentShapeId) === undefined;
@@ -1709,6 +1941,7 @@ export async function rebuildPanelsForParent(parentShapeId: string, opts?: Rebui
     return;
   }
   inFlight.add(parentShapeId);
+  jobEnter();
   try {
     await rebuildOnce(parentShapeId, opts);
   } finally {
@@ -1718,6 +1951,7 @@ export async function rebuildPanelsForParent(parentShapeId: string, opts?: Rebui
       pending.delete(parentShapeId);
       await rebuildPanelsForParent(parentShapeId, nextOpts);
     }
+    jobLeave();
   }
 }
 
@@ -1727,6 +1961,23 @@ export async function whenRebuildIdle(parentShapeId: string, timeoutMs = 60000):
   while ((inFlight.has(parentShapeId) || pending.has(parentShapeId)) && Date.now() - t0 < timeoutMs) await new Promise(r => setTimeout(r, 40));
 }
 
+/** Gövde "oturdu" mu: motor `quietMs` boyunca hiç üretim yapmadı VE gövdede paneli henüz üretilmemiş VF yok. Başka bir işin SONRADAN
+ *  tetiklediği üretimleri de yakalar (ör. arkalık VF'sinin paneli Assembly'de React efektiyle, addShape → tam üretim). Panelsiz VF
+ *  ilerlemeden 3 sn kalırsa (onu üretecek arayüz açık değil) beklemez. En çok `timeoutMs`. */
+export async function whenBodySettled(parentShapeId: string, quietMs = 450, timeoutMs = 30000): Promise<void> {
+  const t0 = Date.now();
+  // Sessizlik hem SÜREYLE hem ART ARDA GÖZLEMLE ölçülür: ana iş parçacığı uzun bir görevle (yeni panelin yerleşmesi) bloke kalınca gecikmiş
+  // zamanlayıcı, kuyruktaki üretim isteğinden önce çalışıp "sessiz" diyordu; blok tek gözlem sayılır, bekleyen işlere sıra gelir.
+  let quietSince = Date.now(), quietPolls = 0, lastMissing = -1, missingSince = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    if (inFlight.has(parentShapeId) || pending.has(parentShapeId)) { await whenRebuildIdle(parentShapeId, timeoutMs); quietSince = Date.now(); quietPolls = 0; continue; }
+    const missing = useAppStore.getState().virtualFaces.filter(f => f.shapeId === parentShapeId && !f.hasPanel && !f.plinthId).length;
+    if (missing !== lastMissing) { lastMissing = missing; missingSince = Date.now(); }
+    if (missing && Date.now() - missingSince < 3000) { quietSince = Date.now(); quietPolls = 0; await new Promise(r => setTimeout(r, 60)); continue; }
+    if (++quietPolls >= 8 && Date.now() - quietSince >= quietMs) return;
+    await new Promise(r => setTimeout(r, 40));
+  }
+}
 function mergeResolved<T extends { id: string; resolvedValue?: number }>(steps: T[], resolved: Array<{ id: string; value: number }>): T[] | null {
   if (!resolved.length) return null;
   const byId = new Map(resolved.map(r => [r.id, r.value]));
@@ -1993,30 +2244,52 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       // Tek boolean (cutWithTools); aynı mesh + kesiciler için sonuç yeniden kullanılır (_grooveCache). Delik kaydı (Shape.holes) yazılır.
       let ungrooved: THREE.BufferGeometry | null = null;
       let grooved: { rp: any; geometry: THREE.BufferGeometry; holes: PanelHole[] } | null = null;
+      // Delikleri işçiye verilecekse: plan + kesilecek katının baytları (yazımdan sonra kuyruğa girer).
+      let decor: { plan: DecorPlan; bytes: Uint8Array } | null = null;
+      const feats = groove ? liveSketchFeatures(panel) : [];
+      const postSteps = groove ? postExtrudeStepsOf(panel) : [];
       if (groove && !isSheetPanel(panel)) {
         const boxes = isRotated ? [] : mergeGrooveCutters(backGrooveCuttersFor(panel));
         // Bağlayıcılar: bu panelin B (uç + yüz) ya da A (temas yüzü) olduğu birleşimlerin delikleri + pocket / line katıları.
         const conn = connectorCutsFor(panel);
         _connSig.set(panel.id, conn.holes.length || conn.solids.length ? `${conn.holes.map(h => h.key).join(';')}~${conn.solids.map(c => c.key).join(';')}` : '');
-        const holes = [...plinthHoleCuttersFor(panel), ...conn.holes];
+        const plinthHoles = plinthHoleCuttersFor(panel), holes = [...plinthHoles, ...conn.holes];
         if (boxes.length || holes.length || conn.solids.length) {
           const base = meshed && meshed.shape === rp ? meshed.geometry : convertReplicadToThreeGeometry(rp);
           const pb = localBboxOf(base);
           const liveBoxes = pb ? boxes.filter(c => boxTouches(c, pb)) : [];
           const liveHoles = pb ? holes.filter(c => boxTouches(holeCutterBox(c), pb)) : [];
           const liveSolids = pb ? conn.solids.filter(c => boxTouches(c.box, pb)) : [];
+          // Kesim ARAÇLARI: bağlayıcı noktaları birim araç olarak (araç–araç kesişimi önceden çözülmüş), kalanlar tek tek.
+          const tool = pb ? {
+            holes: [...plinthHoles, ...conn.loose.holes].filter(c => boxTouches(holeCutterBox(c), pb)),
+            solids: conn.loose.solids.filter(c => boxTouches(c.box, pb)), units: conn.units.filter(u => boxTouches(u.box, pb)),
+          } : { holes: [], solids: [], units: [] };
           if (pb && (liveBoxes.length || liveHoles.length || liveSolids.length)) {
+            const pbox = { min: [pb.min.x, pb.min.y, pb.min.z] as Vec3, max: [pb.max.x, pb.max.y, pb.max.z] as Vec3 };
             const sig = `${meshSignature(base)}|${liveBoxes.map(c => c.min.map(round1).join(',') + '/' + c.max.map(round1).join(',')).join(';')}|${liveHoles.map(c => c.key).join(';')}|${liveSolids.map(c => c.key).join(';')}`;
+            const holeRecords = liveHoles.map(c => panelHoleRecord(c, pbox));
             const hit = _grooveCache.get(panel.id);
             if (hit && hit.sig === sig) { ungrooved = base; grooved = { rp: hit.rp, geometry: hit.geometry, holes: hit.holes }; }
             else {
-              const pbox = { min: [pb.min.x, pb.min.y, pb.min.z] as Vec3, max: [pb.max.x, pb.max.y, pb.max.z] as Vec3 };
-              const cut = await cutByTools(rp, liveBoxes, liveHoles, pbox, liveSolids);
-              if (cut) {
-                const holeRecords = liveHoles.map(c => panelHoleRecord(c, pbox));
-                ungrooved = base; grooved = { rp: cut, geometry: convertReplicadToThreeGeometry(cut), holes: holeRecords };
-                if (_grooveCache.size > 200) _grooveCache.clear();
-                _grooveCache.set(panel.id, { sig, rp: cut, geometry: grooved.geometry, holes: holeRecords });
+              // KESİM İŞÇİSİ: aynı tek boolean (kanal + delikler + bağlayıcı katıları) işçide; panel şimdilik kesilmemiş yazılır. Kesimden
+              // sonra katıya bir şey uygulanmıyorsa (çizim adımı / çizim sonrası extrude yok) ve işçi hazırsa; aksi halde burada, eski yol.
+              if (!feats.length && !postSteps.length && cutWorkerReady()) {
+                try {
+                  decor = {
+                    plan: { sig, base: rp, specs: specsOf(liveBoxes, tool.holes, tool.solids, tool.units), pb: pbox, holes: holeRecords, simplify: liveBoxes.length > 0 },
+                    bytes: shapeToBytes(window.__ocInstance, rp),
+                  };
+                  ungrooved = base; grooved = { rp, geometry: base, holes: [] };
+                } catch (err) { console.warn('[YAGO][KESİM] katı işçiye aktarılamadı, burada kesiliyor:', errMsg(err)); decor = null; }
+              }
+              if (!decor) {
+                const cut = await cutByTools(rp, liveBoxes, tool.holes, pbox, tool.solids, tool.units);
+                if (cut) {
+                  ungrooved = base; grooved = { rp: cut, geometry: convertReplicadToThreeGeometry(cut), holes: holeRecords };
+                  if (_grooveCache.size > 200) _grooveCache.clear();
+                  _grooveCache.set(panel.id, { sig, rp: cut, geometry: grooved.geometry, holes: holeRecords });
+                }
               }
             }
           }
@@ -2028,7 +2301,6 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       let preGeo: THREE.BufferGeometry | null = null;
       let sketched: { rp: any; geometry: THREE.BufferGeometry } | null = null;
       let sketchErrors: Record<string, string> = {};
-      const feats = groove ? liveSketchFeatures(panel) : [];
       if (feats.length) {
         preGeo = grooved ? grooved.geometry : meshed && meshed.shape === rp ? meshed.geometry : convertReplicadToThreeGeometry(rp);
         const baseGeo = ungrooved ?? preGeo;
@@ -2050,7 +2322,6 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       // Çizim sonrası extrude (`postExtrudeSteps`): çizim uygulanmış son katının yüzlerine; yalnız son geçişte, katı düzeyinde.
       let posted: THREE.BufferGeometry | null = null;
       let resolvedPostUpdate: ExtrudeStep[] | null = null;
-      const postSteps = groove ? postExtrudeStepsOf(panel) : [];
       if (postSteps.length) {
         try {
           const before = sketched ? sketched.geometry : preGeo ?? (grooved ? grooved.geometry : meshed && meshed.shape === rp ? meshed.geometry : convertReplicadToThreeGeometry(rp));
@@ -2086,6 +2357,13 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
         replicadShape: rp, ungroovedGeometry: ungrooved ?? undefined, holes: grooved?.holes.length ? grooved.holes : undefined,
         ...(Object.keys(paramPatch).length ? { parameters: { ...panel.parameters, ...paramPatch } } : {}),
       } as any);
+      if (groove) {
+        // Delikler işçide → beklenen sonuç kaydedilir; yoksa eski bekleyen iş geçersizdir (sonucu yazılmaz).
+        if (decor) scheduleDecor(panel.id, decor.plan, decor.bytes, geometry.uuid);
+        else { _decorWant.delete(panel.id); entryGate.decor.delete(panel.id); }
+        // Giriş animasyonu bu panelin son geçiş geometrisini bekliyordu.
+        entryGate.ready.add(panel.id); entryGate.readyTick++;
+      }
     } catch (err) {
       console.error('[YAGO][MOTOR] panel üretim hatası:', panel.id, errMsg(err));
     }
@@ -2093,17 +2371,29 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
 
   // BAĞLAYICI DÜZELTMESİ: birleşim, komşunun SON geometrisinden okunur. Panel üretilirken komşusu henüz eski / hiç üretilmemiş olabilir
   // (tek-panel modu, geçiş içi sıra) → üretim bitince kesici imzası değişen paneller bir kez daha üretilir (ayak izi değişmez, VF'ye dokunulmaz).
-  const connectorFixup = async (vfs: VirtualFace[]) => {
+  /** İş takibiyle üretim: adım bekleme penceresine yazılır (ad = VF adı), gerekiyorsa önce bir kare çizdirilir. */
+  const buildStep = async (panel: Shape, vfs: VirtualFace[], final: boolean) => {
+    await jobStep(panel, final, vfOfPanel(panel, vfs)?.description?.trim() || 'Panel');
+    await buildPanel(panel, vfs, final);
+  };
+  const connectorFixup = async (vfs: VirtualFace[], title?: string) => {
     for (let round = 0; round < 2; round++) {
       const st = useAppStore.getState();
       const stale = children.filter(c => { const p = shapeById(c.id, st.shapes); return !!p && !isSheetPanel(p) && connectorCutSig(p, st) !== (_connSig.get(c.id) ?? ''); });
       if (!stale.length) return;
-      for (const c of stale) await buildPanel(c, vfs);
+      jobPlan(stale.map(panel => ({ panel, final: true })), title);
+      for (const c of stale) await buildStep(c, vfs, true);
     }
   };
+  // Yalnız bağlayıcı: kesicisi değişen paneller son geçişle yeniden üretilir (ayak izi değişmez, VF'ye dokunulmaz).
+  if (opts?.connectorsOnly) {
+    await connectorFixup(useAppStore.getState().virtualFaces.filter(f => f.shapeId === parentShapeId), 'Cutting connector holes');
+    return;
+  }
   if (singleMode) {
     const vfs = useAppStore.getState().virtualFaces.filter(f => (f as any).shapeId === parentShapeId);
-    await buildPanel(changedChild!, vfs);
+    jobPlan([{ panel: changedChild!, final: true }]);
+    await buildStep(changedChild!, vfs, true);
     await connectorFixup(vfs);
     return;
   }
@@ -2115,9 +2405,11 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
     return recalculateVirtualFacesForShape(parentNow, vfs, st.shapes, st.panelGroups);
   };
   let currentVfs = recalc(useAppStore.getState().virtualFaces);
+  jobPlan([0, 1].flatMap(pass => children.map(panel => ({ panel, final: pass === 1 }))));
   for (let pass = 0; pass < 2; pass++) {
     for (const panel of children) {
-      await buildPanel(panel, currentVfs, pass === 1);
+      await buildStep(panel, currentVfs, pass === 1);
+      await jobBreath();
       currentVfs = recalc(currentVfs);
     }
   }
@@ -2145,27 +2437,80 @@ const _grooveCache = new Map<string, { sig: string; rp: any; geometry: THREE.Buf
 /** Panelin son üretimde kullandığı bağlayıcı kesici imzası ('' = yok): üretim sonunda güncel imzayla karşılaştırılır (connectorFixup). */
 const _connSig = new Map<string, string>();
 const _sketchCache = new Map<string, { sig: string; rp: any | null; geometry: THREE.BufferGeometry | null; errors: Record<string, string> }>();
-/** Kutu + silindir kesicileri tek boolean'da; sonuç kutusu sapıyorsa / hata verirse ardışık kesime düşer. Hiçbiri kesilemezse null. */
-async function cutByTools(rp: any, boxes: CavityBox[], holes: HoleCutter[], pb: CavityBox, solids: ConnSolidCut[] = []): Promise<any | null> {
-  const tools: any[] = [];
-  for (const c of boxes) { try { tools.push(await createReplicadBoxAt(c.min, c.max)); } catch { /* bozuk kutu atlanır */ } }
-  for (const c of holes) { try { tools.push(await createHoleCylinder(c.start, c.dir, c.radius, c.length)); } catch { /* bozuk silindir atlanır */ } }
-  for (const c of solids) { try { const t = await c.build(); if (t) tools.push(t); } catch { /* kurulamayan pocket / line atlanır */ } }
-  if (!tools.length) return null;
-  const sane = (s: any): boolean => {
-    try {
-      const b = s.boundingBox.bounds as [number[], number[]];
-      return [0, 1, 2].every(a => Math.abs(b[0][a] - pb.min[a]) < 1 && Math.abs(b[1][a] - pb.max[a]) < 1);
-    } catch { return false; }
-  };
+/** BİRİM ARAÇ önbelleği (ConnectorService.ConnUnitCut): kanonik çerçevede birleştirilmiş bağlayıcı aracı (ana iş parçacığı; işçinin kendi
+ *  önbelleği var). */
+const _unitTools: UnitCache = new Map();
+/** Kesiciler → taşınabilir tarifler (CutWorker.ToolSpec). */
+const specsOf = (boxes: CavityBox[], holes: HoleCutter[], solids: ConnSolidCut[] = [], units: ConnUnitCut[] = []): ToolSpec[] => [
+  ...boxes.map((c): ToolSpec => ({ k: 'box', min: c.min, max: c.max })), ...holes.map(holeSpec), ...solids.map(c => c.spec), ...units.map(unitSpec),
+];
+/** Kutu + delik + bağlayıcı kesicileri ana iş parçacığında, tek boolean (CutWorker.cutBySpecs). Hiçbiri kesilemezse null. */
+async function cutByTools(rp: any, boxes: CavityBox[], holes: HoleCutter[], pb: CavityBox, solids: ConnSolidCut[] = [], units: ConnUnitCut[] = []): Promise<any | null> {
+  return cutBySpecs(await initReplicad(), rp, specsOf(boxes, holes, solids, units), pb, boxes.length > 0, _unitTools);
+}
+
+/* ───────── SON GEÇİŞ KESİMİ İŞÇİDE: arkalık kanalı + ayak / bağlayıcı delikleri ─────────
+   Panelin son geçişi KESİLMEMİŞ katıyla biter ve hemen yazılır; aynı tek boolean (eski yolla birebir: araçlar, sıra, `simplify`) kesim
+   işçisinde yapılır, sonuç gelince aynı panele yazılır. Ana iş parçacığı kesimi beklemez → panel giriş animasyonu akar, kanal ve delikler
+   animasyon sırasında belirir (animasyon iş bitene dek sonunda yavaşlar).
+   Neden güvenli: ayak izi / damga zaten kesilmemiş ağdan okunur (`ungroovedGeometry`); kardeş kesiminde (`cutByEarlierOverlaps`) kanalın
+   hacmine giren tek parça arkalıktır ve arkalık / kapak bu kesime hiç girmez; delikler panelin kendi hacminde.
+   Yalnız kesimden SONRA katıya bir şey uygulanmayan panelde (çizim adımı / çizim sonrası extrude yok) ve işçi hazırken; aksi halde eski yol. */
+interface DecorPlan { sig: string; base: OccShape; specs: ToolSpec[]; pb: CutBox; holes: PanelHole[]; simplify: boolean }
+/** Panel başına beklenen süsleme: imza + yazıldığında GÖSTERİLEN geometri. Sonuç ancak ikisi hâlâ tutuyorsa yazılır (o arada yeniden
+ *  üretilen panelde yeni iş yoldadır; eski sonuç atılır). */
+const _decorWant = new Map<string, { sig: string; geoUuid: string }>();
+/** Yoldaki işler: `panelId|imza`. */
+const _decorInFlight = new Set<string>();
+/** Panel kesilmemiş yazıldı, kesim işçide: işi kuyruğa koyar (aynı imzalı iş yoldaysa yalnız beklenen geometri güncellenir). */
+function scheduleDecor(panelId: string, plan: DecorPlan, bytes: Uint8Array, shownUuid: string): void {
+  _decorWant.set(panelId, { sig: plan.sig, geoUuid: shownUuid });
+  entryGate.decor.add(panelId);
+  const key = `${panelId}|${plan.sig}`;
+  if (_decorInFlight.has(key)) return;
+  _decorInFlight.add(key);
+  jobDecorAdd(panelId);
+  void cutInWorker(panelId, bytes, plan.specs, plan.pb, plan.simplify).then(r => {
+    _decorInFlight.delete(key);
+    if (r.type === 'done' && r.ok) jobDecorDone(panelId, r.ms); else jobDecorDone(panelId, null);
+    if (r.type !== 'done') return;
+    if (!r.ok) {
+      if (r.msg !== 'superseded' && _decorWant.get(panelId)?.sig === plan.sig) void decorOnMain(panelId, plan);
+      return;
+    }
+    let rp: OccShape, geometry: THREE.BufferGeometry;
+    try { rp = shapeFromBytes(window.__ocInstance, r.bytes); geometry = geometryFromMeshData(r.mesh); }
+    catch (err) { console.warn('[YAGO][KESİM] işçi sonucu okunamadı, delikler ana iş parçacığında kesilecek:', errMsg(err)); void decorOnMain(panelId, plan); return; }
+    if (_grooveCache.size > 200) _grooveCache.clear();
+    _grooveCache.set(panelId, { sig: plan.sig, rp, geometry, holes: plan.holes });
+    writeDecor(panelId, plan.sig, rp, geometry, plan.holes);
+  });
+}
+/** İşçi kesemedi / sonucu okunamadı: eski yol (ana iş parçacığı). */
+async function decorOnMain(panelId: string, plan: DecorPlan): Promise<void> {
   try {
-    const cut = await cutWithTools(rp, tools, boxes.length > 0);
-    if (sane(cut)) return cut;
-    console.error('[YAGO][MOTOR] çok araçlı kesim kutuyu bozdu, ardışık kesime dönülüyor');
-  } catch (err) { console.error('[YAGO][MOTOR] çok araçlı kesim hatası, ardışık kesime dönülüyor:', errMsg(err)); }
-  let cut = rp, n = 0;
-  for (const t of tools) { try { const c = cut.cut(t); if (sane(c)) { cut = c; n++; } } catch { /* kesilemeyen araç atlanır */ } }
-  return n ? cut : null;
+    const cut = await cutBySpecs(await initReplicad(), plan.base, plan.specs, plan.pb, plan.simplify, _unitTools);
+    if (!cut) return;
+    const geometry = convertReplicadToThreeGeometry(cut);
+    _grooveCache.set(panelId, { sig: plan.sig, rp: cut, geometry, holes: plan.holes });
+    writeDecor(panelId, plan.sig, cut, geometry, plan.holes);
+  } catch (err) { console.warn('[YAGO][KESİM] delikler kesilemedi:', panelId, errMsg(err)); }
+}
+function writeDecor(panelId: string, sig: string, rp: OccShape, geometry: THREE.BufferGeometry, holes: PanelHole[]): void {
+  const want = _decorWant.get(panelId);
+  if (!want || want.sig !== sig) return;
+  const st = useAppStore.getState(), cur = shapeById(panelId, st.shapes);
+  if (!cur || cur.geometry?.uuid !== want.geoUuid) return;
+  // Ayak izi kesilmemiş mesh'ten okunmaya devam eder: etiket yeni (delikli) geometriye taşınır.
+  const ug = (cur as any).ungroovedGeometry as THREE.BufferGeometry | undefined;
+  if (ug) ug.userData.groovedUuid = geometry.uuid;
+  _decorWant.delete(panelId);
+  entryGate.decor.delete(panelId);
+  st.updateShape(panelId, { geometry, replicadShape: rp, holes: holes.length ? holes : undefined } as any);
+}
+/** Testler / dışa aktarma için: işçideki bütün delik işleri bitene (ve yazılana) kadar bekler. */
+export async function whenDecorIdle(): Promise<void> {
+  for (let i = 0; i < 2400 && (_decorInFlight.size || inFlight.size || pending.size); i++) await new Promise(r => setTimeout(r, 25));
 }
 function meshSignature(g: THREE.BufferGeometry): string {
   const pos = g.getAttribute('position') as THREE.BufferAttribute | undefined;

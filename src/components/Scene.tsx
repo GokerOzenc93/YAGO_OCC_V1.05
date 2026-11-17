@@ -3,7 +3,7 @@ import React, { useMemo, useRef, useEffect, useState, useCallback, useLayoutEffe
 import { Line, TransformControls, PerspectiveCamera, OrthographicCamera, Html, OrbitControls, GizmoHelper } from '@react-three/drei';
 import { useThree, useFrame, Canvas } from '@react-three/fiber';
 import {
-  type DoorGroup, useAppStore, shapeById, useStoreFields, ViewMode, type VirtualFace, childPanelsOf, vfOfPanel, type FilletInfo, type CavityPick,
+  type DoorGroup, engineLoad, entryGate, useAppStore, shapeById, useStoreFields, ViewMode, type VirtualFace, childPanelsOf, vfOfPanel, type FilletInfo, type CavityPick,
   type XformDelta, applyXformDelta, Tool, type Shape, CameraType, requestRebuild,
 } from '../store';
 import {
@@ -514,8 +514,19 @@ function entryCtxOf(shape: any): EntryCtx | null {
 function usePanelEntryAnimation(ref: React.RefObject<THREE.Group>, meshRef: React.RefObject<THREE.Mesh>, lineRef: React.MutableRefObject<any>, shape: any) {
   const gl = useThree(st => st.gl);
   const anim = useRef<{
-    start: number; ctx: EntryCtx | null; fx: AnyEntryFx | null; done: boolean; mat: THREE.Material | null; u: Record<string, { value: any }> | null; shadow: boolean;
-  }>({ start: -1, ctx: null, fx: null, done: false, mat: null, u: null, shadow: true });
+    started: boolean; ctx: EntryCtx | null; fx: AnyEntryFx | null; done: boolean; mat: THREE.Material | null; u: Record<string, { value: any }> | null; shadow: boolean;
+    /** Yerel animasyon saati (ms; gecikme süresince negatif) ve başlamadan önce beklenen süre (ms). */
+    t: number; waited: number;
+    /** Sayaçtaki yeri (entryGate.waiting / playing). */
+    slot: 'none' | 'waiting' | 'playing';
+  }>({ started: false, ctx: null, fx: null, done: false, mat: null, u: null, shadow: true, t: 0, waited: 0, slot: 'none' });
+  const setSlot = (to: 'none' | 'waiting' | 'playing') => {
+    const a = anim.current;
+    if (a.slot === to) return;
+    if (a.slot === 'waiting') entryGate.waiting--; else if (a.slot === 'playing') entryGate.playing--;
+    if (to === 'waiting') entryGate.waiting++; else if (to === 'playing') entryGate.playing++;
+    a.slot = to;
+  };
   const finishReveal = () => {
     const a = anim.current;
     if (a.mat) { uninstallRevealShader(a.mat); a.mat = null; a.u = null; }
@@ -524,16 +535,22 @@ function usePanelEntryAnimation(ref: React.RefObject<THREE.Group>, meshRef: Reac
     const lm = lineRef.current?.material;
     if (lm) { lm.clippingPlanes = null; lm.transparent = false; lm.opacity = 1; lm.needsUpdate = true; }
   };
-  useEffect(() => () => { if (anim.current.mat) uninstallRevealShader(anim.current.mat); }, []);
-  useFrame(({ clock }) => {
+  useEffect(() => () => { if (anim.current.mat) uninstallRevealShader(anim.current.mat); setSlot('none'); }, []);
+  useFrame((_, delta) => {
     const a = anim.current, g = ref.current;
     if (a.done || !g || !shape.geometry) return;
-    const now = clock.elapsedTime * 1000;
-    if (a.start < 0) {
+    if (!a.started) {
+      // Motorun ürettiği panel SON geçiş geometrisini bekler (ara geçişte biçim değiştirip zıplamasın). Motor dışında doğan panel, motor boşsa
+      // kısa bir beklemeden sonra başlar; en çok 20 sn beklenir (kapı hiç açılmazsa panel görünmez kalmasın).
+      const ready = entryGate.ready.has(shape.id) || (!engineLoad.active && a.waited > 120) || a.waited > 20000;
+      if (!ready) { a.waited += delta * 1000; g.visible = false; setSlot('waiting'); return; }
+      g.visible = true;
+      a.started = true;
       a.ctx = entryCtxOf(shape);
-      if (!a.ctx) { a.done = true; return; }
+      if (!a.ctx) { a.done = true; setSlot('none'); return; }
+      setSlot('playing');
       a.fx = Math.random() < 0.45 ? buildRevealFx(a.ctx) : buildEntryFx(a.ctx);
-      a.start = now + a.fx.delay;
+      a.t = -a.fx.delay;
       if (a.fx.kind === 'reveal') {
         gl.localClippingEnabled = true;
         const mesh = meshRef.current;
@@ -546,7 +563,12 @@ function usePanelEntryAnimation(ref: React.RefObject<THREE.Group>, meshRef: Reac
       }
     }
     const fx = a.fx!;
-    const t = Math.min(1, Math.max(0, (now - a.start) / fx.dur));
+    // YEREL SAAT: kare aralığı 1/30 sn ile sınırlı — ana iş parçacığı dolu kaldığında animasyon zıplamaz, durduğu yerden sürer.
+    // Delikleri kesim işçisindeyken sona doğru yavaşlar (≈ %93'e asimptotik yaklaşır); delikler gelince normal hızla tamamlanır.
+    const t0 = a.t / fx.dur;
+    const speed = entryGate.decor.has(shape.id) && t0 > 0.5 ? Math.max(0.025, Math.min(1, (0.93 - t0) / 0.43)) : 1;
+    a.t += Math.min(delta, 1 / 30) * 1000 * speed;
+    const t = Math.min(1, Math.max(0, a.t / fx.dur));
     if (fx.kind === 'motion') applyEntryFx(fx, t, a.ctx!, g);
     else {
       const p = revealCurve(t) * 1.04;
@@ -573,10 +595,36 @@ function usePanelEntryAnimation(ref: React.RefObject<THREE.Group>, meshRef: Reac
     }
     if (t >= 1) {
       a.done = true;
+      setSlot('none');
       g.position.set(0, 0, 0); g.quaternion.identity(); g.scale.setScalar(1);
       if (fx.kind === 'reveal') finishReveal();
     }
   });
+}
+
+const NO_FACES: ReturnType<typeof getFacesAndGroups> = { faces: [], groups: [] };
+/** Giriş animasyonunun gölgelendiricisini açılışta, boşta derletir: yoksa İLK animasyon başlarken program derlenir / bağlanır (ölçülen
+ *  ~300–500 ms; yazılımsal GPU'da). Panel malzemesiyle aynı tür ve ayarlar (Lambert, iki yüz, gölge) → program önbelleğine aynı anahtar. */
+export function RevealShaderWarmup() {
+  const gl = useThree(st => st.gl), scene = useThree(st => st.scene), camera = useThree(st => st.camera);
+  useEffect(() => {
+    let cancelled = false;
+    const run = () => {
+      if (cancelled) return;
+      const mat = new THREE.MeshLambertMaterial({ color: '#f0ebe3', side: THREE.DoubleSide });
+      const fx = { shaderId: 1, len: 1, cell: 1, band: 0.05, seed: 0, axis: new THREE.Vector3(0, 1, 0), origin: new THREE.Vector3(), glow: new THREE.Color('#fff'), u: new THREE.Vector3(1, 0, 0) };
+      installRevealShader(mat, fx as unknown as RevealFx);
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
+      mesh.castShadow = true; mesh.receiveShadow = true; mesh.frustumCulled = false; mesh.scale.setScalar(1e-6);
+      scene.add(mesh);
+      const done = () => { scene.remove(mesh); mesh.geometry.dispose(); mat.dispose(); };
+      try { void gl.compileAsync(scene, camera).then(done, done); } catch { done(); }
+    };
+    const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number };
+    const t = setTimeout(() => (w.requestIdleCallback ? w.requestIdleCallback(run, { timeout: 4000 }) : run()), 2500);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [gl, scene, camera]);
+  return null;
 }
 
 export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React.memo(({ shape, isSelected }) => {
@@ -595,7 +643,6 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const [moveRefHover, setMoveRefHover] = useState(false);
   const draftIso = useDraft(st => st.isolate);
   const draftBodyEdit = useDraft(st => st.bodyPreview?.shapeId ?? null);
-  const { faces, groups: faceGroups } = useMemo(() => (shape.geometry ? getFacesAndGroups(shape.geometry) : { faces: [], groups: [] }), [shape.geometry]);
 
   const params = shape.parameters;
   const parentShapeId = params?.parentShapeId;
@@ -622,6 +669,9 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
 
   // Ok modunda yüz seçilmez (oklar en dış yüzü büyütür) → yüz yakalama / vurgu kapalı, panel normal çizilir.
   const isFaceExtrudeTarget = S.faceExtrudeMode && shape.id === S.faceExtrudeTargetPanelId && S.faceExtrudeValueMode !== 'arrow' && S.faceExtrudeValueMode !== 'arrowFixed';
+  // Yüz grupları YALNIZ yüz extrude hedefinde gerekir (vurgu + yüz seçimi). Her geometri değişiminde her panel için hesaplanıyordu (üretim
+  // sırasında ana iş parçacığının en büyük kalemlerinden biri).
+  const { faces, groups: faceGroups } = useMemo(() => (isFaceExtrudeTarget && shape.geometry ? getFacesAndGroups(shape.geometry) : NO_FACES), [isFaceExtrudeTarget, shape.geometry]);
   const isFaceExtrudeXray = S.faceExtrudeMode && shape.id !== S.faceExtrudeTargetPanelId;
   // Yeniden hacim seçimi: sahne grubun adımından önceki duruma döner (sonraki paneller çizilmez, grubun üyeleri saydam).
   const repickRole: 'none' | 'bounds' | 'member' | 'later' = (() => {
@@ -3660,6 +3710,7 @@ const Scene: React.FC = () => {
             if (cam.up.x !== 0 || cam.up.y !== 1 || cam.up.z !== 0) { cam.up.set(0, 1, 0); c.update(); }
           }}
           onEnd={() => { upFixRef.current = null; }} />
+        <RevealShaderWarmup />
 
         {shapes.map(shape => {
           const isSel = selectedShapeId === shape.id;

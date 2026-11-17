@@ -309,12 +309,60 @@ const READY_DOT: React.CSSProperties = {
   width: '6px', height: '6px', borderRadius: '50%', background: '#10b981', boxShadow: '0 0 0 2.5px rgba(16,185,129,0.18),0 0 4px rgba(16,185,129,0.4)',
 };
 
+/* ───────── DURUM ÇUBUĞU = İLERLEME ÇUBUĞU ─────────
+   Motor uzun bir üretimdeyken (store.engineBusy; iş takibi PanelEngine'de) durum çubuğunun KENDİSİ ilerleme çubuğuna döner: arka planı
+   soldan sağa açık turuncuyla dolar (alt kenarında ince turuncu çizgi), solda işin adı · süren panel · yüzde · geçen / kalan süre.
+   Ana iş parçacığı OCC ile doluyken de akması için dolgu ve nabız yalnız transform / opacity ile hareket eder (tarayıcı bunları ayrı iş
+   parçacığında sürdürür); dolgu her adımda, adımın tahmini süresi boyunca adım sonundaki orana kayar. */
+const BUSY_CSS = `
+@keyframes yagoBusyPulse{0%,100%{transform:scale(.7);opacity:.45}50%{transform:scale(1);opacity:1}}
+.yago-sb-fill{position:absolute;left:0;top:0;bottom:0;width:100%;transform-origin:0 50%;pointer-events:none;will-change:transform;
+  background:linear-gradient(90deg,rgba(234,88,12,.05),rgba(234,88,12,.13));border-bottom:2px solid #ea580c;transition-property:transform,opacity;transition-timing-function:linear}
+.yago-sb-dot{width:7px;height:7px;border-radius:50%;background:#ea580c;will-change:transform,opacity;animation:yagoBusyPulse 1.1s ease-in-out infinite}
+html.yago-busy-lock,html.yago-busy-lock *{cursor:progress!important}
+`;
+const fmtSeconds = (ms: number) => (ms < 9950 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 1000)} s`);
+/** Durum çubuğunun meşgul görünümü: dolgu katmanı + soldaki iş bilgisi. Kapanırken son durum kısa süre kalır (dolgu söner). */
+function useBusyView() {
+  const busy = useAppStore(s => s.engineBusy);
+  const [view, setView] = useState(busy);
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (busy) { setView(busy); return; }
+    const t = setTimeout(() => setView(null), 260);
+    return () => clearTimeout(t);
+  }, [busy]);
+  // Geçen süre: iş parçacığı boş kaldıkça tazelenir (motor adımları zaten her çizimde yeni durum yazar).
+  useEffect(() => { if (!busy) return; const t = setInterval(() => tick(n => n + 1), 200); return () => clearInterval(t); }, [!!busy]);   // eslint-disable-line react-hooks/exhaustive-deps
+  return { busy, view };
+}
+function BusyStatus({ view, live }: { view: NonNullable<ReturnType<typeof useAppStore.getState>['engineBusy']>; live: boolean }) {
+  const elapsed = Math.max(0, Date.now() - view.startedAt), pct = Math.round(view.frac * 100);
+  const left = pct >= 100 ? 'done' : view.etaMs == null ? 'estimating…' : view.etaMs < 700 ? 'almost done' : `about ${fmtSeconds(view.etaMs)} left`;
+  return (
+    <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: 1 }} role="status" aria-live="polite" aria-busy={live}>
+      <span className="yago-sb-dot" style={{ flexShrink: 0 }} />
+      <span style={{ color: '#c2410c', fontSize: '11px', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', whiteSpace: 'nowrap', flexShrink: 0 }}>{view.title}</span>
+      <span style={{ color: '#57534e', fontSize: '11.5px', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{view.detail || 'Preparing'}</span>
+      <VSep />
+      <span style={{ color: '#1c1917', fontSize: '12px', fontWeight: 650, fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{pct}<span style={{ color: '#a39b91', fontSize: '10.5px', marginLeft: 1 }}>%</span></span>
+      <span style={{ color: '#8a8378', fontSize: '11px', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', flexShrink: 0 }}>{fmtSeconds(elapsed)} · {left}</span>
+    </div>
+  );
+}
+
 export const StatusBar: React.FC = () => {
   const { shapes, selectedShapeId, vertexEditMode, selectedVertexIndex } = useStoreFields('shapes', 'selectedShapeId', 'vertexEditMode', 'selectedVertexIndex');
   const selectedShape = shapeById(selectedShapeId, shapes);
   const vertexModCount = selectedShape?.vertexModifications?.length || 0;
+  const { busy, view } = useBusyView();
   return (
     <div className="fixed left-0 right-0 z-20" style={STATUS_BAR}>
+      <style>{BUSY_CSS}</style>
+      {/* Dolgu: durum çubuğunun kendisi ilerleme çubuğu */}
+      <div className="yago-sb-fill" aria-hidden
+        style={{ transform: `scaleX(${view ? Math.max(0.006, view.fracTo) : 0})`, opacity: busy ? 1 : 0, transitionDuration: `${view ? Math.round(view.stepMs) : 200}ms, 240ms` }} />
+      {view ? <BusyStatus view={view} live={!!busy} /> : <>
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
         <span style={READY_DOT} />
         <span style={{ color: '#047857', fontSize: '11px', fontWeight: 540, letterSpacing: '0.04em', textTransform: 'uppercase' }}>Ready</span>
@@ -333,7 +381,8 @@ export const StatusBar: React.FC = () => {
       )}
       {vertexModCount > 0 && <><VSep /><LabelValue label="Edits" value={vertexModCount} valueColor={TOKENS.modClr} mono /></>}
       <DraftStatus />
-      <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+      </>}
+      <div style={{ position: 'relative', marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
         <span style={{ color: TOKENS.labelClr, fontSize: '10.5px', fontWeight: 420, letterSpacing: '0.05em', textTransform: 'uppercase' }}>mm</span>
         <VSep />
         <span style={{ color: '#6b6560', fontSize: '11px', fontWeight: 500, fontFamily: MONO_FONT, letterSpacing: '0.02em' }}>YAGO v1.0</span>

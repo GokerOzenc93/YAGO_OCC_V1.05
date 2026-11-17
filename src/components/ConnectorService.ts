@@ -10,8 +10,9 @@ import {
   type EdgeConnectorRule, type PanelEdgeDir, type PanelGroup, type PanelSurface, type PanelSurfaceRule, type PanelTypeConfig, type PanelTypeId, type PanelTypeRule,
   type Shape, type VirtualFace, panelOfVf, requestRebuild, shapeById, useAppStore, vfOfPanel,
 } from '../store';
-import { type Vec3, createHoleCylinder, createPrismTool, effectiveBodyGeometry, footprintGeometry, genId, localBboxOf, panelHasRotation, round1 } from './Geometry';
-import { type HoleCutter, PANEL_TYPE_CONFIG_ID, holeCutterOf, importAccessoryFile, libraryDelete, libraryPut } from './AccessoryService';
+import { type Vec3, effectiveBodyGeometry, footprintGeometry, genId, localBboxOf, panelHasRotation, round1 } from './Geometry';
+import { type ToolSpec } from './CutWorker';
+import { type HoleCutter, PANEL_TYPE_CONFIG_ID, holeCutterBox, holeCutterOf, importAccessoryFile, libraryDelete, libraryPut } from './AccessoryService';
 import { isDoorPanel } from './DoorService';
 import { isFaceKind, roleOfNormal } from './LegLayout';
 import { bodyFaces, bodyFrontAxis } from './PlinthService';
@@ -516,71 +517,135 @@ export function jointSurfacePoint(j: PanelJoint, s: number, surface: ConnSurface
   return { pos, normal: surface === 'bFace' ? j.t : surface === 'bEdge' ? (j.nIn.map(v => -v) as Vec3) : j.nIn };
 }
 /** Kesici katı (pocket / line): anahtar (önbellek imzası), kaba kutu (eleme) ve tembel kurucu. */
-export interface ConnSolidCut { key: string; box: CavityBox; build: () => Promise<unknown> }
+/** Pocket / line katısı: kesici TARİFİ (düz veri — kesim işçisine de gider, bkz. CutWorker.ToolSpec). */
+export interface ConnSolidCut { key: string; box: CavityBox; spec: ToolSpec }
 const CONN_MOUTH = 1;
 const keyOf = (...v: Array<number | string | Vec3>) => v.map(x => (Array.isArray(x) ? x.map(round1).join(',') : typeof x === 'number' ? round1(x) : x)).join('|');
 function boxAround(pts: Vec3[], pad: number): CavityBox {
   const b = new THREE.Box3().setFromPoints(pts.map(p => new THREE.Vector3(...p))).expandByScalar(pad);
   return { min: b.min.toArray() as Vec3, max: b.max.toArray() as Vec3 };
 }
+/** Tek bağlayıcı noktasının (`s` = birleşim başından mm, `k` = sıra) kesicileri — panelin o birleşimdeki görevine göre (B: yüz + uç, A: temas
+ *  yüzü). `j` gerçek birleşim ya da KANONİK birleşim (`canonJoint`) olabilir: geometri yalnız birleşimin çerçevesinden okunur. */
+function pointCuts(j: PanelJoint, s: number, k: number, isB: boolean, isA: boolean, out: { holes: HoleCutter[]; solids: ConnSolidCut[] }): void {
+  const mine = (sf: ConnSurface) => (sf === 'aFace' ? isA : isB);
+  const limitOf = (sf: ConnSurface) => (sf === 'bFace' ? j.tB : sf === 'aFace' ? j.tA : Infinity);
+  const depthOf = (sf: ConnSurface, d: number) => (d >= limitOf(sf) - 1e-6 ? limitOf(sf) + CONN_MOUTH : d);
+  for (const h of j.connector.holes) {
+    if (!mine(h.surface) || !(h.diameter > 0) || !(h.depth > 0)) continue;
+    const sp = jointSurfacePoint(j, s, h.surface, h.along, h.across), dir = sp.normal.map(v => -v) as Vec3;
+    out.holes.push(holeCutterOf({ center: sp.pos, dir, radius: h.diameter / 2, depth: depthOf(h.surface, h.depth) }, [0, 0, 0], `${j.key}#${k}:${h.id}`,
+      { kind: 'connector', connectorId: j.connector.id, holeId: h.id, joint: j.key, index: k }));
+  }
+  for (const op of j.connector.ops) {
+    if (!mine(op.surface) || !(op.depth > 0)) continue;
+    const depth = depthOf(op.surface, op.depth), at = (x: number, y: number) => jointSurfacePoint(j, s, op.surface, x, y);
+    const nOut = at(0, 0).normal, dir = nOut.map(v => -v) as Vec3;
+    const lifted = (p: Vec3): Vec3 => [p[0] + nOut[0] * CONN_MOUTH, p[1] + nOut[1] * CONN_MOUTH, p[2] + nOut[2] * CONN_MOUTH];
+    const cyl = (c: { x: number; y: number }, r: number) => {
+      const p = at(c.x, c.y).pos;
+      out.solids.push({ key: keyOf('c', p, r, depth, dir), box: boxAround([lifted(p), [p[0] + dir[0] * depth, p[1] + dir[1] * depth, p[2] + dir[2] * depth]], r),
+        spec: { k: 'cyl', start: lifted(p), dir, r, len: depth + CONN_MOUTH } });
+    };
+    const prism = (poly: Array<{ x: number; y: number }>) => {
+      const pts = poly.map(q => at(q.x, q.y).pos);
+      out.solids.push({ key: keyOf('p', ...pts, depth, dir), box: boxAround([...pts.map(lifted), ...pts.map(p => [p[0] + dir[0] * depth, p[1] + dir[1] * depth, p[2] + dir[2] * depth] as Vec3)], 0.01),
+        spec: { k: 'prism', pts, nOut, lift: CONN_MOUTH, len: depth } });
+    };
+    op.shapes.forEach(sh => {
+      if (op.type === 'pocket') {
+        if (sh.t === 'circle') cyl(sh.c, sh.r);
+        else if (sh.t === 'pline' && connShapeClosed(sh) && sh.v.length >= 3) prism(sh.v);
+        return;
+      }
+      // LINE: takım yolu — her doğru parçası `width` eninde dikdörtgen, köşe / uçlarda takım çapında silindir; dairede halka.
+      const w = op.width; if (!(w > 0)) return;
+      if (sh.t === 'circle') {
+        const p = at(sh.c.x, sh.c.y).pos, rOut = sh.r + w / 2, rIn = sh.r - w / 2;
+        out.solids.push({ key: keyOf('r', p, rOut, rIn, depth, dir), box: boxAround([lifted(p), [p[0] + dir[0] * depth, p[1] + dir[1] * depth, p[2] + dir[2] * depth]], rOut),
+          spec: { k: 'ring', start: lifted(p), dir, rOut, rIn, len: depth + CONN_MOUTH } });
+        return;
+      }
+      const pts = connShapePoints(sh);
+      for (let q = 0; q + 1 < pts.length; q++) {
+        const a = pts[q], b = pts[q + 1], dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy); if (l < 1e-6) continue;
+        const ox = (-dy / l) * (w / 2), oy = (dx / l) * (w / 2);
+        prism([{ x: a.x + ox, y: a.y + oy }, { x: b.x + ox, y: b.y + oy }, { x: b.x - ox, y: b.y - oy }, { x: a.x - ox, y: a.y - oy }]);
+      }
+      (connShapeClosed(sh) ? pts.slice(0, -1) : pts).forEach(c => cyl(c, w / 2));
+    });
+  }
+}
+/* BİRİM ARAÇ — hız: bir bağlayıcı noktasının araçları çoğu zaman birbirini keser (kam yuvası Ø15 ↔ mil kanalı Ø8, line operasyonunun
+   dikdörtgeni ↔ uç silindirleri). OCC boolean'ı araç–araç kesişimini HER noktada, HER üretimde yeniden çözüyordu: silindir × silindir çifti
+   başına ~110 ms (ölçüldü; 12 araçlı alt panel 680 ms, aynı delikler birbirini kesmeyince 55 ms). Çözüm: noktanın araçları KANONİK
+   çerçevede bir kez birleştirilir (fuse) ve saklanır; her noktaya katı dönüşümle (taşı + döndür) kopyalanır → panel kesimi yalnız
+   düzlem × silindir çözer. Kanonik çerçeve: e1 = birleşim yönü (el yönü ters birleşimde −e1) · e2 = B'nin işlenen yüzü · e3 = A'dan B'nin içine. */
+export interface ConnUnitCut {
+  /** İçerik anahtarı (kanonik geometri): aynı anahtar = aynı birleşik araç (motor önbelleği). */
+  key: string;
+  /** Kanonik → gövde-yerel katı dönüşüm, satır satır 3 × 4 (gp_Trsf.SetValues sırası). */
+  m: number[];
+  box: CavityBox;
+  /** Kanonik çerçevedeki parçalar (araç ilk kez kurulurken). */
+  canon: { holes: HoleCutter[]; solids: ConnSolidCut[] };
+  /** Aynı noktanın gövde-yerel kesicileri: birim kurulamazsa tek tek kesilir. */
+  real: { holes: HoleCutter[]; solids: ConnSolidCut[] };
+}
+type CanonUnit = { key: string; holes: HoleCutter[]; solids: ConnSolidCut[] };
+const _canonCache = new WeakMap<Connector, Map<string, CanonUnit>>();
+/** Bağlayıcının kanonik birimi (görev + el yönü + kalınlıklar başına bir kez; bağlayıcı kaydedilince nesnesi değişir → kendiliğinden yenilenir). */
+function canonUnit(j: PanelJoint, isB: boolean, hand: 1 | -1): CanonUnit {
+  let byConn = _canonCache.get(j.connector);
+  if (!byConn) { byConn = new Map(); _canonCache.set(j.connector, byConn); }
+  const id = `${isB ? 'B' : 'A'}|${hand}|${j.tB}|${j.tA}`;
+  let u = byConn.get(id);
+  if (!u) {
+    const jc: PanelJoint = { ...j, key: 'u', o: [0, 0, 0], along: [hand, 0, 0], t: [0, 1, 0], nIn: [0, 0, 1] };
+    const parts = { holes: [] as HoleCutter[], solids: [] as ConnSolidCut[] };
+    pointCuts(jc, 0, 0, isB, !isB, parts);
+    u = { key: `${parts.holes.map(h => h.key).join(';')}~${parts.solids.map(c => c.key).join(';')}`, ...parts };
+    byConn.set(id, u);
+  }
+  return u;
+}
+/** Kesicinin taşınabilir tarifi (delik silindiri · pocket / line katısı · birim araç). */
+export const holeSpec = (c: HoleCutter): ToolSpec => ({ k: 'cyl', start: c.start, dir: c.dir, r: c.radius, len: c.length });
+export const unitSpec = (u: ConnUnitCut): ToolSpec => ({
+  k: 'unit', key: u.key, m: u.m,
+  parts: [...u.canon.holes.map(holeSpec), ...u.canon.solids.map(c => c.spec)], fallback: [...u.real.holes.map(holeSpec), ...u.real.solids.map(c => c.spec)],
+});
+export interface PanelConnectorCuts {
+  /** Tüm delikler (delik kaydı + imza) ve tüm pocket / line katıları (imza). */
+  holes: HoleCutter[]; solids: ConnSolidCut[];
+  /** KESİM ARAÇLARI: çok parçalı noktalar birim olarak, tek parçalı noktalar `loose` içinde tek tek. */
+  units: ConnUnitCut[]; loose: { holes: HoleCutter[]; solids: ConnSolidCut[] };
+}
+const boxUnion = (boxes: CavityBox[]): CavityBox => ({
+  min: [0, 1, 2].map(a => Math.min(...boxes.map(b => b.min[a]))) as Vec3, max: [0, 1, 2].map(a => Math.max(...boxes.map(b => b.max[a]))) as Vec3,
+});
 /** Panelin bağlayıcı kesicileri: B olduğu birleşimlerde yüz + uç işlemleri, A olduğu birleşimlerde temas yüzü işlemleri.
  *  Delikler `HoleCutter` (panelin delik kaydına girer); pocket / line katıları ayrı. Derinlik malzemeyi aşarsa boydan boya. */
-export function connectorCutsFor(panel: Shape, st: St = useAppStore.getState()): { holes: HoleCutter[]; solids: ConnSolidCut[] } {
-  const out = { holes: [] as HoleCutter[], solids: [] as ConnSolidCut[] };
+export function connectorCutsFor(panel: Shape, st: St = useAppStore.getState()): PanelConnectorCuts {
+  const out: PanelConnectorCuts = { holes: [], solids: [], units: [], loose: { holes: [], solids: [] } };
   const bodyId = panel.parameters?.parentShapeId as string | undefined; if (!bodyId) return out;
   for (const j of bodyJoints(bodyId, st)) {
     const isB = j.bId === panel.id, isA = j.aId === panel.id; if (!isB && !isA) continue;
-    const mine = (s: ConnSurface) => (s === 'aFace' ? isA : isB);
-    const limitOf = (s: ConnSurface) => (s === 'bFace' ? j.tB : s === 'aFace' ? j.tA : Infinity);
-    const depthOf = (s: ConnSurface, d: number) => (d >= limitOf(s) - 1e-6 ? limitOf(s) + CONN_MOUTH : d);
+    // El yönü: (birleşim yönü, işlenen yüz, içe yön) üçlüsü sol-elliyse kanonik birim ayna kurulur (dönüşüm katı kalır).
+    const [A, T, N] = [j.along, j.t, j.nIn];
+    const det = A[0] * (T[1] * N[2] - T[2] * N[1]) - A[1] * (T[0] * N[2] - T[2] * N[0]) + A[2] * (T[0] * N[1] - T[1] * N[0]);
+    const hand: 1 | -1 = det < 0 ? -1 : 1;
     j.positions.forEach((s, k) => {
-      for (const h of j.connector.holes) {
-        if (!mine(h.surface) || !(h.diameter > 0) || !(h.depth > 0)) continue;
-        const sp = jointSurfacePoint(j, s, h.surface, h.along, h.across), dir = sp.normal.map(v => -v) as Vec3;
-        out.holes.push(holeCutterOf({ center: sp.pos, dir, radius: h.diameter / 2, depth: depthOf(h.surface, h.depth) }, [0, 0, 0], `${j.key}#${k}:${h.id}`,
-          { kind: 'connector', connectorId: j.connector.id, holeId: h.id, joint: j.key, index: k }));
-      }
-      for (const op of j.connector.ops) {
-        if (!mine(op.surface) || !(op.depth > 0)) continue;
-        const depth = depthOf(op.surface, op.depth), at = (x: number, y: number) => jointSurfacePoint(j, s, op.surface, x, y);
-        const nOut = at(0, 0).normal, dir = nOut.map(v => -v) as Vec3;
-        const lifted = (p: Vec3): Vec3 => [p[0] + nOut[0] * CONN_MOUTH, p[1] + nOut[1] * CONN_MOUTH, p[2] + nOut[2] * CONN_MOUTH];
-        const cyl = (c: { x: number; y: number }, r: number) => {
-          const p = at(c.x, c.y).pos;
-          out.solids.push({ key: keyOf('c', p, r, depth, dir), box: boxAround([lifted(p), [p[0] + dir[0] * depth, p[1] + dir[1] * depth, p[2] + dir[2] * depth]], r),
-            build: () => createHoleCylinder(lifted(p), dir, r, depth + CONN_MOUTH) });
-        };
-        const prism = (poly: Array<{ x: number; y: number }>) => {
-          const pts = poly.map(q => at(q.x, q.y).pos);
-          out.solids.push({ key: keyOf('p', ...pts, depth, dir), box: boxAround([...pts.map(lifted), ...pts.map(p => [p[0] + dir[0] * depth, p[1] + dir[1] * depth, p[2] + dir[2] * depth] as Vec3)], 0.01),
-            build: () => createPrismTool(pts, nOut, CONN_MOUTH, depth) });
-        };
-        op.shapes.forEach(sh => {
-          if (op.type === 'pocket') {
-            if (sh.t === 'circle') cyl(sh.c, sh.r);
-            else if (sh.t === 'pline' && connShapeClosed(sh) && sh.v.length >= 3) prism(sh.v);
-            return;
-          }
-          // LINE: takım yolu — her doğru parçası `width` eninde dikdörtgen, köşe / uçlarda takım çapında silindir; dairede halka.
-          const w = op.width; if (!(w > 0)) return;
-          if (sh.t === 'circle') {
-            const p = at(sh.c.x, sh.c.y).pos, rOut = sh.r + w / 2, rIn = sh.r - w / 2;
-            out.solids.push({ key: keyOf('r', p, rOut, rIn, depth, dir), box: boxAround([lifted(p), [p[0] + dir[0] * depth, p[1] + dir[1] * depth, p[2] + dir[2] * depth]], rOut),
-              build: async () => {
-                const outer = await createHoleCylinder(lifted(p), dir, rOut, depth + CONN_MOUTH);
-                return rIn > 0.05 ? outer.cut(await createHoleCylinder(lifted(p), dir, rIn, depth + CONN_MOUTH)) : outer;
-              } });
-            return;
-          }
-          const pts = connShapePoints(sh);
-          for (let q = 0; q + 1 < pts.length; q++) {
-            const a = pts[q], b = pts[q + 1], dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy); if (l < 1e-6) continue;
-            const ox = (-dy / l) * (w / 2), oy = (dx / l) * (w / 2);
-            prism([{ x: a.x + ox, y: a.y + oy }, { x: b.x + ox, y: b.y + oy }, { x: b.x - ox, y: b.y - oy }, { x: a.x - ox, y: a.y - oy }]);
-          }
-          (connShapeClosed(sh) ? pts.slice(0, -1) : pts).forEach(c => cyl(c, w / 2));
-        });
-      }
+      const real = { holes: [] as HoleCutter[], solids: [] as ConnSolidCut[] };
+      pointCuts(j, s, k, isB, isA, real);
+      out.holes.push(...real.holes); out.solids.push(...real.solids);
+      if (real.holes.length + real.solids.length < 2) { out.loose.holes.push(...real.holes); out.loose.solids.push(...real.solids); return; }
+      const canon = canonUnit(j, isB, hand), p = [0, 1, 2].map(x => j.o[x] + A[x] * s);
+      out.units.push({
+        key: canon.key, canon, real,
+        m: [0, 1, 2].flatMap(r => [hand * A[r], T[r], N[r], p[r]]),
+        box: boxUnion([...real.holes.map(holeCutterBox), ...real.solids.map(c => c.box)]),
+      });
     });
   }
   return out;
@@ -610,14 +675,15 @@ export function connectorPartInstances(bodyId: string, st: St = useAppStore.getS
   return out;
 }
 let _refreshTimer: ReturnType<typeof setTimeout> | null = null;
-/** Kural / bağlayıcı / tip değişti: panelli gövdeler yeniden üretilir (delikler ve modeller güncellenir). Art arda değişiklikler tek seferde. */
+/** Kural / bağlayıcı / tip değişti: gövdelerin bağlayıcı kesimleri tazelenir (delikler ve modeller güncellenir). Art arda değişiklikler tek seferde. */
 export function refreshConnectorBodies(onlyBodyId?: string): void {
   if (_refreshTimer) clearTimeout(_refreshTimer);
   _refreshTimer = setTimeout(() => {
     _refreshTimer = null;
     const st = useAppStore.getState();
     const ids = new Set(st.shapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId).map(s => s.parameters.parentShapeId as string));
-    for (const id of ids) if (!onlyBodyId || id === onlyBodyId) void requestRebuild(id);
+    // Yalnız kesicisi değişen paneller yeniden üretilir (tam rebuild değil; değişmeyen gövdede hiç iş yok).
+    for (const id of ids) if (!onlyBodyId || id === onlyBodyId) void requestRebuild(id, { connectorsOnly: true });
   }, 120);
 }
 
