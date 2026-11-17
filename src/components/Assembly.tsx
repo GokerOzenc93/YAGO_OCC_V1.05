@@ -40,7 +40,7 @@ import {
 } from './Geometry';
 import {
   effectiveJoins, panelOrderFor, baseLiftOf, confirmRefCavityExtrude, executeCavityExtrude, executeCavityExtrudeOuter, updateCavityStep, deleteCavityStep, groupName,
-  confirmVolumePick, type TreeNode, findNode, treeLeaves, memberThicknessesOf, boxSpan, groupKindLabel,
+  confirmVolumePick, type TreeNode, findNode, treeLeaves, memberThicknessesOf, boxSpan, customGroupName, groupPanelType,
   renamePanelGroup, deletePanelGroupWithMembers, setGroupCount, startCavityEdit, startGroupRepick, setGroupTargetGap, equalizeGroupGaps,
   previewGroupGap, editGroupGap, toggleGroupGapLock, groupLayoutSnapshot, restoreGroupLayout, type GroupLayoutSnap, previewGroupMemberThickness,
   setGroupMemberThickness, applyQuickBody, quickBodyOf, quickBodyVfsOf, removeQuickBody, quickLegsOf, lockedCorners, railCountOf, railBackRelOf, facePartCountOf, railPassesPanel,
@@ -48,7 +48,8 @@ import {
 } from './PanelGroupService';
 import { confirmBodyPanelPlacement } from './Scene';
 import {
-  bodyJoints, edgeRulesOf, panelOrientation, panelTypeChoice, panelTypeCode, panelTypeLabel, panelTypeShort, setGroupPanelType, setVfPanelType, surfaceRuleOf,
+  bodyJoints, customPanelName, edgeRulesOf, panelNameOf, panelOrientation, panelTypeChoice, panelTypeCode, panelTypeLabel, panelTypeShort, setGroupPanelType, setVfPanelType,
+  surfaceRuleOf,
 } from './ConnectorService';
 import { useDraft as useSketch } from './Draft';
 import { beginFacePick, deleteSketch, editSketch, exitFace, sketchFeaturesOf } from './DraftView';
@@ -2254,25 +2255,64 @@ export function VolumeSteps({ group: g, ...edit }: StepEditProps & { group: Pane
 
 const rectTxt = (r: { u0: number; u1: number; v0: number; v1: number }) => `${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)}`;
 
-/* Ortak yerleştirme şeridi: ad ve (kapakta) outer/inner yerleştirme ÖNCESİ seçilir; Enter = sahnede sağ tık. */
-function PlacementDock({ tag, defaultName, showName = true, ready, status, onConfirm, onExit, confirmTitle, lead, extra }: {
+/* ───────── AD = ROL ───────── */
+export type RoleChoice = { current: PanelTypeId; auto: PanelTypeId; options: PanelTypeId[] };
+/** AD ALANI: elle ad yoksa ROLÜN adı yazılı gelir (gerçek değer — soluk ipucu değil); yazılan ad elle ad olur, silinince rolün adına döner.
+ *  Yüzeyde alternatif rol varsa sağdaki okla açılır liste gelir: seçilen rol panele verilir, ad da onu izler. */
+export function RoleNameField({ name, auto, roles, onName, onRole, title, inputClass = '', inputStyle, autoFocus, onKeyDown, manual }: {
+  /** elle yazılmış ad (yoksa boş) */ name: string; /** ad yokken yazılan: rolün adı */ auto: string; roles?: RoleChoice | null;
+  onName: (v: string) => void; onRole?: (t: PanelTypeId) => void; title: string; inputClass?: string; inputStyle?: React.CSSProperties;
+  autoFocus?: boolean; onKeyDown?: (e: React.KeyboardEvent) => void; /** rol elle seçilmiş (otomatikten farklı): ok turuncu */ manual?: boolean;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  // Alan odaktayken rol değişirse (3B'de başka yüze tıklandı) ve henüz ad yazılmadıysa yazı yeni rolün adına döner.
+  const prevAuto = useRef(auto);
+  useEffect(() => { const was = prevAuto.current; prevAuto.current = auto; setDraft(d => (d != null && d === was ? auto : d)); }, [auto]);
+  const many = !!roles && roles.options.length > 1 && !!onRole;
+  return (
+    <div className="relative flex-1 min-w-0 flex items-center" onClick={stop}>
+      <input type="text" value={draft ?? (name || auto)} placeholder={auto} spellCheck={false} autoFocus={autoFocus} title={title}
+        onFocus={e => { setDraft(name || auto); e.target.select(); }} onBlur={() => setDraft(null)} onKeyDown={onKeyDown}
+        onChange={e => { const v = e.target.value; setDraft(v); onName(v.trim() === auto ? '' : v); }}
+        className={inputClass} style={{ textOverflow: 'ellipsis', ...inputStyle }} />
+      {many && (
+        <span className={`relative shrink-0 w-[14px] -ml-[6px] -mr-[2px] h-[22px] rounded-[5px] flex items-center justify-center hover:bg-[#f3efe8] hover:text-stone-800 transition-colors duration-150
+          ${manual ? 'text-orange-600' : 'text-stone-400'}`}
+          title={`Role: ${panelTypeLabel(roles!.current)}${manual ? ' (set by hand)' : ''} — ${roles!.options.length} roles offered here. Picking one sets the role and the name.`}>
+          <ChevronDown size={12} strokeWidth={2.2} className="pointer-events-none" />
+          <select aria-label="Panel role" value={roles!.current} onChange={e => { setDraft(null); onRole!(e.target.value as PanelTypeId); }}
+            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" style={{ fontFamily: UI_FONT }}>
+            {roles!.options.map(t => <option key={t} value={t}>{panelTypeLabel(t)}{t === roles!.auto ? '  · auto' : ''}</option>)}
+          </select>
+        </span>
+      )}
+    </div>
+  );
+}
+
+/* Ortak yerleştirme şeridi: ad ve (kapakta) outer/inner yerleştirme ÖNCESİ seçilir; Enter = sahnede sağ tık.
+   `roles` verilirse (panel / raf / dikme) ad alanı ROLÜN adıyla dolu gelir ve alternatif roller aynı alanın açılır listesindedir. */
+function PlacementDock({ tag, defaultName, showName = true, ready, status, onConfirm, onExit, confirmTitle, lead, extra, roles }: {
   tag: string; defaultName: string; showName?: boolean; ready: boolean; status: string;
   onConfirm: () => void; onExit: () => void; confirmTitle: string; lead?: React.ReactNode;
   /** Durum satırının altında ek satır (ör. baza seti: ayak seti + ön yön). */ extra?: React.ReactNode;
+  /** O yüzeyde sunulan roller + otomatik olanı (Accessories › Types). */ roles?: { options: PanelTypeId[]; auto: PanelTypeId } | null;
 }) {
-  const name = useAppStore(s => s.placementName);
+  const { placementName: name, placementPanelType: picked } = useStoreFields('placementName', 'placementPanelType');
+  const { setPlacementName, setPlacementPanelType } = useAppStore.getState();
+  const current = roles ? (picked && roles.options.includes(picked) ? picked : roles.auto) : null;
+  const autoName = current ? panelTypeLabel(current) : defaultName;
   return (
     <div style={DOCK_STRIP}>
       <div style={DOCK_ROW}>
         <span style={dockAxisTag('#44403c')}>{tag}</span>
         {lead}
         {showName ? (
-          <FieldBox label="Name" title={`Name of the new ${defaultName.toLowerCase()} (empty = ${defaultName})`}>
-            <input type="text" autoFocus value={name} placeholder={defaultName} spellCheck={false}
-              onChange={e => useAppStore.getState().setPlacementName(e.target.value)}
+          <FieldBox label="Name" title={roles ? `Name of the new panel — filled with its role (${autoName}); type to give it your own name` : `Name of the new ${defaultName.toLowerCase()} (empty = ${defaultName})`}>
+            <RoleNameField name={name} auto={autoName} roles={roles && current ? { ...roles, current } : null} autoFocus title="Name"
+              onName={setPlacementName} onRole={t => { setPlacementPanelType(t === roles?.auto ? null : t); setPlacementName(''); }}
               onKeyDown={e => { if (e.key === 'Enter' && ready) onConfirm(); if (e.key === 'Escape') onExit(); }}
-              onClick={stop} className="yago-field yago-field-text"
-              style={{ ...FIELD_INPUT, flex: 1, width: 'auto', textAlign: 'left', fontFamily: UI_FONT }} />
+              inputClass="yago-field yago-field-text" inputStyle={{ ...FIELD_INPUT, flex: 1, width: 'auto', textAlign: 'left', fontFamily: UI_FONT }} />
           </FieldBox>
         ) : <DockStatus ready={ready} text={status} />}
         <ApplyBtn enabled={ready} onClick={onConfirm} title={confirmTitle} />
@@ -2332,22 +2372,6 @@ function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefin
     </div>
   );
 }
-/** Yerleştirme şeridinde tip seçimi: yalnız o yüzeyde sunulan tipler; tek tip varsa satır çizilmez. Seçim otomatiğe eşitse kayıt tutulmaz. */
-function PlacementTypeRow({ options, auto }: { options: PanelTypeId[]; auto: PanelTypeId }) {
-  const picked = useAppStore(s => s.placementPanelType);
-  if (options.length < 2) return null;
-  const value = picked && options.includes(picked) ? picked : auto;
-  return (
-    <div style={{ ...DOCK_ROW, paddingTop: 0 }} title="Panel type — the types offered on this face (Accessories › Types); the marked one is automatic">
-      <span className="yago-label shrink-0 pl-1 pr-0.5">Type</span>
-      <div className="flex-1 min-w-0">
-        <Segmented height={24} active={value} onPick={k => useAppStore.getState().setPlacementPanelType(k === auto ? null : (k as PanelTypeId))}
-          items={options.map(t => ({ key: t, label: panelTypeShort(t), title: `${panelTypeLabel(t)}${t === auto ? ' — automatic for this spot' : ''}` }))} />
-      </div>
-    </div>
-  );
-}
-
 /** Liste üstüne yapışık yerleştirme şeritleri: panel yüzü · raf/dikme hacmi (ya da grubu yeniden konumlama) · kapak · arkalık. */
 export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
   const {
@@ -2368,10 +2392,10 @@ export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
     return (
       <PlacementDock tag="PANEL" defaultName="Panel" ready={ready} confirmTitle="Place panel"
         status={!shape ? noShape
-          : ready ? `${stackBase ? `In front of ${stackBase.description || 'panel'} (on its inner face)` : 'Face selected'}`
+          : ready ? `${stackBase ? `In front of ${panelNameOf(stackBase)} (on its inner face)` : 'Face selected'}`
             + ' — click again for the next region · right-click: place'
           : 'Click a body face in the 3D view'}
-        extra={(() => { const c = raycastPendingVf ? panelTypeChoice(raycastPendingVf) : null; return c ? <PlacementTypeRow options={c.options} auto={c.auto} /> : null; })()}
+        roles={raycastPendingVf ? panelTypeChoice({ ...raycastPendingVf, panelType: undefined }) : null}
         onConfirm={() => confirmBodyPanelPlacement(useAppStore.getState().raycastPendingVf)} onExit={() => setRaycastMode(false)} />
     );
   };
@@ -2384,7 +2408,7 @@ export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
         status={!shape ? noShape
           : n === 0 ? (reloc ? 'Click the new volume (only panels before this group bound it)' : 'Click inside a volume in the 3D view')
           : `Volume ${volumePickIndex + 1}/${n} · ${cur?.shape === 'box' ? 'Box' : 'Shaped'} — click: next · right-click: ${reloc ? 'relocate' : 'place'}`}
-        extra={reloc ? null : (() => { const r = surfaceRuleOf(mode); return <PlacementTypeRow options={r.allowed} auto={r.def} />; })()}
+        roles={reloc ? null : (() => { const r = surfaceRuleOf(mode); return { options: r.allowed, auto: r.def }; })()}
         onConfirm={() => { if (ready && shape) confirmVolumePick(shape.id, mode, volumePickCandidates[volumePickIndex]); }}
         onExit={() => setVolumePickMode(null)} confirmTitle={reloc ? 'Relocate group to this volume' : `Place ${kind.toLowerCase()}`} />
     );
@@ -3215,9 +3239,18 @@ export function AssemblyPanel() {
           </span>
         ) : (
           <>
-            <input type="text" value={vf.description || ''} onClick={stop} onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
-              placeholder={panelTypeLabel(panelTypeChoice(vf)?.current)} title="Panel name" className={`${ROW_INPUT_CLASS} font-medium`} />
-            <PanelTypeTag vf={vf} />
+            {(() => {
+              const c = panelTypeChoice(vf);
+              return (
+                <RoleNameField name={c ? customPanelName(vf) : vf.description || ''} auto={c ? panelTypeLabel(c.current) : 'Panel'} roles={c}
+                  title={c ? `Panel name — follows the panel's role (${panelTypeLabel(c.current)}) until you type your own` : 'Panel name'}
+                  onName={v => updateVirtualFace(vf.id, { description: v })}
+                  onRole={t => { setVfPanelType(vf.id, t); if (customPanelName(vf)) updateVirtualFace(vf.id, { description: '' }); }}
+                  manual={c?.manual} inputClass={`${ROW_INPUT_CLASS} font-medium`} />
+              );
+            })()}
+            {/* Ad rolün kendisiyken kod yazılmaz; elle ad varsa rol kodu yanında kalır. */}
+            {customPanelName(vf) && <PanelTypeTag vf={vf} />}
           </>
         ),
         dims: <RowDims w={dims?.primary} h={dims?.secondary} t={dims?.thickness} tLetter="T" />,
@@ -3242,6 +3275,7 @@ export function AssemblyPanel() {
     /** Grup kartı (raf/dikme · kapak · arkalık): açık = yerel açık kart ∨ tümü seçili ∨ üye satırı seçili; gövde + üye listesi. */
     const cardShell = (id: string, members: VirtualFace[], rowIdx: number, label: string, o: {
       selected: string | null; select: (id: string) => void; kind: RowKind; count: number; name: string; placeholder: string; plural: string;
+      /** raf / dikme: ad rolü izler, alternatif roller ad alanının açılır listesinde */ roles?: RoleChoice; onRole?: (t: PanelTypeId) => void;
       rename: (v: string) => void; remove: () => void; dims: React.ReactNode; section: string; member: VfOpts; body: () => React.ReactNode;
     }) => {
       const rowKey = `grp-${id}`, selAll = o.selected === id;
@@ -3259,8 +3293,12 @@ export function AssemblyPanel() {
         key: rowKey, refKey: rowKey, open, sel: selAll, dragging: dragIndex === rowIdx, armed: armedRowKey === rowKey,
         lead: grip(rowKey, rowIdx, 'Drag to reorder (whole group)'), onToggle: toggle,
         title: open ? 'Collapse' : `Expand — selects all ${o.plural} in this group`, num: label, kind: o.kind, count: o.count, dims: o.dims,
-        name: <input type="text" value={o.name} onClick={stop} onChange={e => o.rename(e.target.value)} placeholder={o.placeholder}
-          title={`Group name (applies to all its ${o.plural})`} className={`${ROW_INPUT_CLASS} font-semibold`} />,
+        name: o.roles
+          ? <RoleNameField name={o.name} auto={o.placeholder} roles={o.roles} onName={o.rename} onRole={o.onRole} manual={o.roles.current !== o.roles.auto}
+            inputClass={`${ROW_INPUT_CLASS} font-semibold`}
+            title={`Group name (applies to all its ${o.plural}) — follows the role (${o.placeholder}) until you type your own`} />
+          : <input type="text" value={o.name} onClick={stop} onChange={e => o.rename(e.target.value)} placeholder={o.placeholder}
+            title={`Group name (applies to all its ${o.plural})`} className={`${ROW_INPUT_CLASS} font-semibold`} />,
         trail: <RowDelBtn title={`Delete group (all ${o.plural})`} onClick={o.remove} />,
         body: () => (
           <div className={CARD_BODY} style={CARD_BODY_STYLE} onClick={stop}>
@@ -3277,8 +3315,10 @@ export function AssemblyPanel() {
     const groupCard = (g: PanelGroup, members: VirtualFace[], rowIdx: number, label: string) => {
       const [w, h, d] = [0, 1, 2].map(a => round1(boxSpan(g.cavity, a)));
       return cardShell(g.id, members, rowIdx, label, {
-        selected: selectedPanelGroupId, select: setSelectedPanelGroupId, kind: g.kind, count: g.count, name: groupName(g),
-        placeholder: groupKindLabel(g.kind), plural: 'panels', section: 'Panels', member: { group: g },
+        selected: selectedPanelGroupId, select: setSelectedPanelGroupId, kind: g.kind, count: g.count, name: customGroupName(g),
+        placeholder: panelTypeLabel(groupPanelType(g)), plural: 'panels', section: 'Panels', member: { group: g },
+        roles: (() => { const r = surfaceRuleOf(g.kind === 'divider' ? 'divider' : 'shelf'); return { current: groupPanelType(g), auto: r.def, options: [...new Set([...(g.panelType ? [g.panelType] : []), ...r.allowed])] }; })(),
+        onRole: t => { setGroupPanelType(g.id, t === surfaceRuleOf(g.kind === 'divider' ? 'divider' : 'shelf').def ? null : t); if (customGroupName(g)) renamePanelGroup(g.id, ''); },
         rename: v => renamePanelGroup(g.id, v), remove: () => deletePanelGroupWithMembers(g.id),
         dims: <RowDims w={w} h={h} t={d} tLetter="D" title="Cavity width · height · depth" />,
         body: () => {
@@ -3508,7 +3548,7 @@ export function AssemblyPanel() {
           const typeHint = !scoped ? 'All pieces' : targetLeafIds.length === 1 ? `Piece ${pieceLabel(targetLeafIds[0])}` : `${targetLeafIds.length} pieces`;
           // KANAL PAYI kapsamı: şemada bir kenarın "±" rozeti seçiliyse yalnız o kenar, değilse grup değeri (aynı satırda).
           const clearF = backClearEdge?.id === g.id ? vfById(backClearEdge.vfId) : undefined;
-          const clearVf = clearF?.id, clearName = clearF ? clearF.description || 'Edge' : '';
+          const clearVf = clearF?.id, clearName = clearF ? panelNameOf(clearF) : '';
           const clearOwn = !!clearVf && backGrooveClearOverridden(g, clearVf);
           const gc = backGrooveClearOf(g, clearVf);
           const commit = (field: BackField) => (raw: string) => {

@@ -24,7 +24,7 @@ import { edgeGapsOf, isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups }
 import { backGrooveCuttersFor, backNailStampFor, backStackAt, isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
 import { isPlinthVf, plinthBoxOf, plinthHoleCuttersFor, plinthLegBoxes, plinthSetsOf } from './PlinthService';
 import { type HoleCutter, holeCutterBox, panelHoleRecord } from './AccessoryService';
-import { type ConnSolidCut, type ConnUnitCut, connectorCutSig, connectorCutsFor, holeSpec, unitSpec } from './ConnectorService';
+import { type ConnSolidCut, type ConnUnitCut, connectorCutSig, connectorCutsFor, holeSpec, panelNameOf, unitSpec } from './ConnectorService';
 import {
   type CutBox, type OccShape, type ToolSpec, type UnitCache, cutBySpecs, cutInWorker, cutWorkerReady, geometryFromMeshData, shapeFromBytes, shapeToBytes,
 } from './CutWorker';
@@ -2373,7 +2373,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
   // (tek-panel modu, geçiş içi sıra) → üretim bitince kesici imzası değişen paneller bir kez daha üretilir (ayak izi değişmez, VF'ye dokunulmaz).
   /** İş takibiyle üretim: adım bekleme penceresine yazılır (ad = VF adı), gerekiyorsa önce bir kare çizdirilir. */
   const buildStep = async (panel: Shape, vfs: VirtualFace[], final: boolean) => {
-    await jobStep(panel, final, vfOfPanel(panel, vfs)?.description?.trim() || 'Panel');
+    await jobStep(panel, final, panelNameOf(vfOfPanel(panel, vfs)));
     await buildPanel(panel, vfs, final);
   };
   const connectorFixup = async (vfs: VirtualFace[], title?: string) => {

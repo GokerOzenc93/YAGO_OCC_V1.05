@@ -10,7 +10,7 @@ import { ContactShadows, GizmoHelper, Grid, Html, Line, OrbitControls, useGizmoC
 import { Plus, Trash2, Upload, Pencil, RotateCcw, Drill, Check, ChevronDown, FlaskConical, Crosshair, Magnet, Maximize2, Minus, MousePointer2, PenLine, Spline, Square, BoxSelect, Circle as CircleIcon } from 'lucide-react';
 import {
   type AccessoryLayer, type AccessoryUnit, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector, type ConnectorLayout,
-  type EdgeConnectorRule, type EdgeLayoutMode, type HoleSpec, type LegModel, type LegModelPart, type LegPartRole, type LegPreset, type PanelEdgeDir, type PanelSurface,
+  type EdgeConnectorRule, type EdgeLayoutMode, type HoleSpec, type LayoutParams, type LayoutStep, type LegModel, type LegModelPart, type LegPartRole, type LegPreset, type PanelEdgeDir, type PanelSurface,
   type PanelTypeConfig, type PanelTypeId, useStoreFields,
 } from '../store';
 import { UI_FONT, useEscapeOwner } from './Ui';
@@ -29,7 +29,8 @@ import {
   CONN_REP, CONN_SURFACES, DEFAULT_CONNECTOR_LAYOUT, EDGE_ENDS, EDGE_LABEL, PANEL_SURFACES, PANEL_TYPES, PANEL_TYPE_GROUPS, PLANE_EDGES, PLANE_LABEL, type PanelPlane, candidateTypesFor, cloneConnector,
   connOpSummary, connShapeClosed, connShapePoints, connSurfaceCoords, connSurfaceDepth, connSurfaceExtent, connSurfacePoint, connThickness, connectorUseCount, deleteConnector, addSampleConnector, ruleLayout,
   MAX_EDGE_RULES, edgeConnectorPositions, edgeRulesOf, newConnHole, newConnOp, newConnPart, newConnector, newEdgeRule, panelTypeDef, panelTypeLabel, panelTypeShort, saveConnector, setEdgeRules, setSurfaceRule,
-  surfaceLabel, surfaceRuleOf, typeEdgeCount,
+  surfaceLabel, surfaceRuleOf, typeEdgeCount, MAX_LAYOUT_STEPS, addLayoutRange, layoutAt, layoutIndexAt, layoutPitch, layoutRanges, layoutRules, layoutSteps, patchLayoutAt,
+  patchLayoutRule, removeLayoutRule, setLayoutRuleUpTo,
 } from './ConnectorService';
 import { standardLegRules } from './LegLayout';
 import { syncPlinthSetsUsingPreset } from './PlinthService';
@@ -961,28 +962,152 @@ function PanelFaceView({ type, plane, size, cur, rowsOf, onEdge }: {
 }
 
 // ───────── 3. Kenar şeridi: dizilim ─────────
+/* DİZİLİM — arayüzde ÜÇ seçenek: Ends + middle · 32 grid (ızgara adımları ya da ön + arka + orta) · Even (azami aralık ya da sabit adet).
+   Her seçenek BOY ARALIĞINA göre ayrı kurala bağlanabilir ("600 mm'ye kadar şu, üstü bu"); kural sayısı serbest. Düzenlenen kural her zaman
+   önizleme boyuna UYGULANAN kuraldır: aralık çipine tıklamak önizleme boyunu o aralığa taşır, kaydırıcıyı oynatmak kuralı değiştirir. */
+type LayoutUiMode = 'ends' | 'step' | 'even';
 const LAYOUT_SEG: SegItem[] = [
   { key: 'ends', label: 'Ends + middle', title: 'One connector from each end; a third one in the middle once the joint is long enough' },
-  { key: 'spacing', label: 'Max gap', title: 'Distance from both ends + maximum gap — the count is worked out from the joint length' },
-  { key: 'count', label: 'Fixed count', title: 'Fixed number of connectors, spread evenly between the two end distances' },
+  { key: 'step', label: '32 grid', title: 'First connector exactly at the start distance, the next ones on the 32 mm grid; the distance at the other end is a minimum — the connector lands on the nearest grid hole' },
+  { key: 'even', label: 'Even', title: 'Spread evenly between the two end distances — by a maximum gap or by a fixed count' },
 ];
+const STEP_FILL_SEG: SegItem[] = [
+  { key: 'steps', label: 'By steps', title: 'Walk from the start in your own steps (multiples of the grid); every step puts a connector' },
+  { key: 'middle', label: 'Ends + middle on grid', title: 'One connector at the start, one on the grid hole nearest the other end, and one near the middle once the joint is long enough' },
+];
+const EVEN_SEG: SegItem[] = [
+  { key: 'spacing', label: 'By max gap', title: 'Distance from both ends + maximum gap — the count is worked out from the joint length' },
+  { key: 'count', label: 'By count', title: 'Fixed number of connectors, spread evenly between the two end distances' },
+];
+const uiModeOf = (m: EdgeLayoutMode): LayoutUiMode => (m === 'ends' || m === 'step' ? m : 'even');
 const Unit = () => <span className="yago-unit shrink-0 pr-1">mm</span>;
-/** Dizilim hücreleri (bağlayıcının kendi dizilimi ve kenardaki dizilim aynı parçayı kullanır): üstte kip, altında iki uç mesafesi + kipin
- *  tek değeri (orta eşiği / azami aralık / adet). */
-function LayoutCells({ value, onChange, ends }: { value: ConnectorLayout; onChange: (patch: Partial<ConnectorLayout>) => void; ends: [string, string] }) {
-  const mm = (v: number, on: (v: number) => void, min = 0) => <><QbNum value={v} min={min} w={38} onCommit={on} /><Unit /></>;
+const LEN_MIN = 100, LEN_MAX = 2400;
+type LayoutRuleRow = ReturnType<typeof layoutRules>[number];
+const ruleRangeText = (r: LayoutRuleRow, n: number): string =>
+  (n < 2 ? 'All lengths' : r.upTo == null ? `over ${fmt1(r.from)}` : r.from > 0 ? `${fmt1(r.from)} – ${fmt1(r.upTo)}` : `up to ${fmt1(r.upTo)}`);
+/** Aralığı temsil eden önizleme boyu (çipine tıklanınca): üst sınıra yakın tarafın ortası; ucu açık aralıkta sınırın 200 mm ötesi. */
+const ruleSampleLength = (r: LayoutRuleRow): number => {
+  if (r.upTo == null) return Math.max(LEN_MIN, Math.round(r.from + 200));
+  const v = Math.round((Math.max(r.from, r.upTo - 400) + r.upTo) / 20) * 10;
+  return v > r.from && v <= r.upTo ? v : r.upTo;
+};
+/** Adet kutusu: boş = "fit" (sığdığı kadar). */
+function FitCount({ value, onCommit, title }: { value: number; onCommit: (n: number) => void; title: string }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => { if (draft == null) return; const n = parseInt(draft, 10); setDraft(null); onCommit(Number.isFinite(n) && n > 0 ? Math.min(40, n) : 0); };
+  return (
+    <input type="text" inputMode="numeric" value={draft ?? (value > 0 ? String(value) : '')} placeholder="fit" title={title} onClick={stop}
+      onChange={e => setDraft(e.target.value)} onBlur={commit} onFocus={e => e.target.select()}
+      onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setDraft(null); }}
+      className="yago-field placeholder:text-stone-400 placeholder:font-medium" style={{ ...FIELD_INPUT, width: 30, flexShrink: 0, textAlign: 'right' }} />
+  );
+}
+/** DİZİLİM DÜZENLEYİCİ (bağlayıcının kendi dizilimi ve kenardaki dizilim aynı parçayı kullanır): boy aralığı kuralları · üç seçenek ·
+ *  seçeneğin değerleri. `length` = önizleme boyu; düzenlenen kural o boya uygulanandır. */
+function LayoutEditor({ layout, length, onLength, onChange, ends }: {
+  layout: ConnectorLayout; length: number; onLength: (v: number) => void; onChange: (next: ConnectorLayout) => void; ends: [string, string];
+}) {
+  const rules = layoutRules(layout), at = layoutIndexAt(layout, length), rule = rules[at], P = rule.params;
+  const set = (patch: Partial<LayoutParams>) => onChange(patchLayoutRule(layout, at, patch));
+  const mm = (v: number, on: (v: number) => void, min = 0, w = 38) => <><QbNum value={v} min={min} w={w} onCommit={on} /><Unit /></>;
+  const ui = uiModeOf(P.mode), pitch = layoutPitch(P), steps = layoutSteps(P), fill = P.fill === 'middle' ? 'middle' : 'steps';
+  const pickMode = (m: LayoutUiMode) => {
+    if (m === ui) return;
+    // 32 ızgarasına ilk geçiş: adımlar varsayılanla gelir (sonradan değiştirilir).
+    set(m === 'step' ? { mode: 'step', pitch, fill, steps } : m === 'even' ? { mode: 'spacing' } : { mode: 'ends' });
+  };
+  const setStep = (i: number, p: Partial<LayoutStep>) => set({ steps: steps.map((s, k) => (k === i ? { ...s, ...p } : s)) });
+  const fromCell = <EditCell label={`From ${ends[0]}`} title={ui === 'step' ? `Exact distance of the first connector from the ${ends[0]} of the joint (mm) — the grid starts here` : `Distance of the first connector from the ${ends[0]} of the joint (mm)`}>{mm(P.start, v => set({ start: v }))}</EditCell>;
+  const midCell = <EditCell label="Middle ≥" title="Middle from: one more connector is put in the middle when the joint is at least this long (mm) · 0 = never">{mm(P.midFrom ?? DEFAULT_CONNECTOR_LAYOUT.midFrom!, v => set({ midFrom: v }))}</EditCell>;
   return (
     <div className="flex flex-col gap-1">
-      <Segmented items={LAYOUT_SEG} active={value.mode} onPick={m => onChange({ mode: m as EdgeLayoutMode })} height={24} />
-      <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
-        <EditCell label={`From ${ends[0]}`} title={`Distance of the first connector from the ${ends[0]} of the joint (mm)`}>{mm(value.start, v => onChange({ start: v }))}</EditCell>
-        <EditCell label={`From ${ends[1]}`} title={`Distance of the last connector from the ${ends[1]} of the joint (mm)`}>{mm(value.end, v => onChange({ end: v }))}</EditCell>
-        {value.mode === 'ends'
-          ? <EditCell label="Middle ≥" title="Middle from: a third connector is put in the middle when the joint is at least this long (mm) · 0 = never">{mm(value.midFrom ?? DEFAULT_CONNECTOR_LAYOUT.midFrom!, v => onChange({ midFrom: v }))}</EditCell>
-          : value.mode === 'count'
-            ? <EditCell label="Count" title="Number of connectors on the joint (1 = centred)"><QbNum value={value.count} min={1} max={40} w={38} onCommit={v => onChange({ count: Math.round(v) })} /></EditCell>
-            : <EditCell label="Max gap" title="Largest allowed distance between two connectors — more are added as the joint gets longer (mm)">{mm(value.maxSpacing, v => onChange({ maxSpacing: v }), 10)}</EditCell>}
+      {/* Boy aralığı kuralları */}
+      <div className="flex items-center gap-1 min-h-[24px] pl-1">
+        <span className="yago-label shrink-0 pr-0.5" title="A different spacing for each joint-length range — add as many as you need">Length rules</span>
+        <div className="flex-1 min-w-0 flex flex-wrap gap-1">
+          {rules.map((r, i) => (
+            <button key={i} type="button" onClick={e => { stop(e); if (i !== at) onLength(ruleSampleLength(r)); }}
+              title={i === at ? `Editing this rule — it applies to the previewed joint (${fmt1(length)} mm)` : `Joints ${ruleRangeText(r, rules.length)} mm — click to preview and edit this rule`}
+              className={`${CHIP} tabular-nums ${i === at ? CHIP_ON : CHIP_IDLE}`}>{ruleRangeText(r, rules.length)}</button>
+          ))}
+        </div>
+        <CardAction compact icon={Plus} label="Range" className="!h-[22px] !px-2"
+          title="Add a length rule: joints up to a length you choose get their own spacing (starts as a copy of the current rule)"
+          onClick={() => { const r = addLayoutRange(layout, length); onChange(r.layout); if (length > r.upTo) onLength(r.upTo); }} />
       </div>
+      {rules.length > 1 && (
+        <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
+          {rule.upTo != null
+            ? <EditCell label="Up to" title="This rule applies to joints up to this length (mm); longer joints use the next rule">
+              {mm(rule.upTo, v => { const next = setLayoutRuleUpTo(layout, at, v); onChange(next); if (length > v) onLength(Math.max(1, v)); }, 1, 44)}</EditCell>
+            : <ReadCell label="Longer than" title="The last rule: every joint longer than the ranges before it"><ReadValue color="#78716c">{fmt1(rule.from)}</ReadValue><Unit /></ReadCell>}
+          <div className="col-span-2 min-w-0 flex items-center gap-1 pl-1">
+            <span className="flex-1 min-w-0 truncate yago-hint">{`rule ${at + 1} of ${rules.length} — slide the joint length to switch`}</span>
+            <RowTrash title="Remove this length rule — its joints fall to the next rule" onClick={() => onChange(removeLayoutRule(layout, at))} />
+          </div>
+        </div>
+      )}
+      <Segmented items={LAYOUT_SEG} active={ui} onPick={m => pickMode(m as LayoutUiMode)} height={24} />
+      {ui === 'ends' && (
+        <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
+          {fromCell}
+          <EditCell label={`From ${ends[1]}`} title={`Distance of the last connector from the ${ends[1]} of the joint (mm)`}>{mm(P.end, v => set({ end: v }))}</EditCell>
+          {midCell}
+        </div>
+      )}
+      {ui === 'even' && (
+        <>
+          <Segmented items={EVEN_SEG} active={P.mode === 'count' ? 'count' : 'spacing'} onPick={m => set({ mode: m as EdgeLayoutMode })} height={22} />
+          <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
+            {fromCell}
+            <EditCell label={`From ${ends[1]}`} title={`Distance of the last connector from the ${ends[1]} of the joint (mm)`}>{mm(P.end, v => set({ end: v }))}</EditCell>
+            {P.mode === 'count'
+              ? <EditCell label="Count" title="Number of connectors on the joint (1 = centred)"><QbNum value={P.count} min={1} max={40} w={38} onCommit={v => set({ count: Math.round(v) })} /></EditCell>
+              : <EditCell label="Max gap" title="Largest allowed distance between two connectors — more are added as the joint gets longer (mm)">{mm(P.maxSpacing, v => set({ maxSpacing: v }), 10)}</EditCell>}
+          </div>
+        </>
+      )}
+      {ui === 'step' && (
+        <>
+          <Segmented items={STEP_FILL_SEG} active={fill} onPick={m => set({ fill: m as 'steps' | 'middle', pitch, steps })} height={22} />
+          <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
+            {fromCell}
+            <EditCell label={`${ends[1]} min`} title={`Smallest allowed distance of the last connector from the ${ends[1]} of the joint (mm). The connector sits on the nearest grid hole that keeps at least this distance — so the real distance is this or a little more.`}>{mm(P.end, v => set({ end: v }))}</EditCell>
+            <EditCell label="Grid" title="Grid pitch (mm): every step is a multiple of this — 32 for the 32 mm system">{mm(pitch, v => set({ pitch: v }), 1)}</EditCell>
+          </div>
+          {fill === 'middle' ? (
+            <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
+              {midCell}
+              <span className="col-span-2 min-w-0 self-center truncate yago-hint pl-1">start and end on the grid · one more on the grid hole nearest the middle</span>
+            </div>
+          ) : (
+            <div className="flex flex-col" style={{ rowGap: QB_CELL_ROW.rowGap }}>
+              {steps.map((s, i) => (
+                <div key={i} className="yago-cell h-[28px] pl-2 pr-1 flex items-center gap-1" onClick={stop}
+                  title={`Step ${i + 1}: move ${fmt1(s.k * pitch)} mm (${s.k} × ${fmt1(pitch)}) and put a connector — ${s.n ? `${s.n} time${s.n === 1 ? '' : 's'}` : 'as many times as fit'}. A step that no longer fits is skipped and the next step takes over.`}>
+                  <span className="yago-label shrink-0 w-[44px]">Step {i + 1}</span>
+                  <QbNum value={s.k} min={1} max={99} w={24} onCommit={v => setStep(i, { k: Math.max(1, Math.round(v)) })} />
+                  <span className="yago-unit shrink-0">× {fmt1(pitch)} =</span>
+                  <span className="shrink-0 text-[12.5px] font-semibold tabular-nums text-stone-800">{fmt1(s.k * pitch)}</span><span className="yago-unit shrink-0">mm</span>
+                  <span className="flex-1 min-w-0" />
+                  <span className="yago-label shrink-0">Holes</span>
+                  <FitCount value={s.n} onCommit={n => setStep(i, { n })} title="How many connectors this step puts — empty (fit) = as many as fit before the end minimum" />
+                  {steps.length > 1
+                    ? <RowTrash title="Remove this step" onClick={() => set({ steps: steps.filter((_, k) => k !== i) })} />
+                    : <span className="shrink-0 w-[22px]" />}
+                </div>
+              ))}
+              <div className="flex items-center gap-2 h-[24px] pl-1">
+                <span className="flex-1 min-w-0 truncate yago-hint">steps run in order — a coarse step to walk, finer ones to get close to the {ends[1]}</span>
+                {steps.length < MAX_LAYOUT_STEPS && (
+                  <CardAction compact icon={Plus} label="Step" className="!h-[22px] !px-2" title={`Add a step (up to ${MAX_LAYOUT_STEPS})`}
+                    onClick={() => set({ steps: [...steps, { k: Math.max(1, Math.round(steps[steps.length - 1].k / 2)), n: 1 }] })} />
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -990,29 +1115,37 @@ type BandRow = { conn: Connector | undefined; layout: ConnectorLayout; color: st
 const BAND = { VW: 480, VH: 128, X0: 24, X1: 456, yA: 22, hA: 13, hB: 54, ky: 0.82 } as const;
 /** KENAR ŞERİDİ — panele üstten bakış, seçili kenar boyunca: üstte dayandığı panel (taralı), altında bu panelin kenar bandı; her bağlayıcı
  *  kendi renginde gerçek delik iziyle. Etkin bağlayıcının ölçü zinciri altta; baştaki ve sondaki tutamak SÜRÜKLENİR (uç mesafesi değişir).
- *  'Ends' kipinde orta bağlayıcı henüz yoksa yeri kesik halkayla, hangi boydan sonra geleceği yazıyla gösterilir. */
+ *  'Ends' kipinde orta bağlayıcı henüz yoksa yeri kesik halkayla, hangi boydan sonra geleceği yazıyla gösterilir. '32 grid' kipinde ızgara
+ *  çentikleri ve sondaki EN AZ mesafe bölgesi çizilir (delik o bölgeye giremez; ızgarada ondan önceki deliğe oturur). */
 function LayoutBand({ length, ends, rows, active, onPick, onDrag, onDrop }: {
   length: number; ends: [string, string]; rows: BandRow[]; active: number; onPick?: (i: number) => void;
-  onDrag: (i: number, patch: Partial<ConnectorLayout>) => void; onDrop: () => void;
+  onDrag: (i: number, patch: Partial<LayoutParams>) => void; onDrop: () => void;
 }) {
   const svg = useRef<SVGSVGElement>(null);
   const drag = useRef<{ i: number; which: 'start' | 'end' } | null>(null);
   const [grab, setGrab] = useState(false);
   const { VW, VH, X0, X1, yA, hA, hB, ky } = BAND, yJ = yA + hA, kx = (X1 - X0) / Math.max(1, length), xOf = (d: number) => X0 + d * kx;
   const pos = rows.map(r => edgeConnectorPositions(r.layout, length));
-  const act = rows[active], actPos = pos[active] ?? [];
+  const act = rows[active], actPos = pos[active] ?? [], P = act ? layoutAt(act.layout, length) : null;
   // Farklı bağlayıcıların üst üste gelen noktaları (≤ 9 mm): kırmızı halka.
   const clash = pos.flatMap((list, i) => list.filter(d => pos.some((o, j) => j !== i && o.some(x => Math.abs(x - d) < 9))));
   const mmAt = (e: React.PointerEvent) => { const r = svg.current!.getBoundingClientRect(); return (((e.clientX - r.left) / r.width) * VW - X0) / kx; };
   const move = (e: React.PointerEvent) => {
     const d = drag.current, row = d ? rows[d.i] : null; if (!d || !row) return;
-    const mm = mmAt(e), lim = (other: number) => Math.max(0, length - other - 1);
-    if (d.which === 'start') onDrag(d.i, { start: Math.round(Math.min(lim(row.layout.end), Math.max(0, mm))) });
-    else onDrag(d.i, { end: Math.round(Math.min(lim(row.layout.start), Math.max(0, length - mm))) });
+    const cur = layoutAt(row.layout, length), mm = mmAt(e), lim = (other: number) => Math.max(0, length - other - 1);
+    if (d.which === 'start') onDrag(d.i, { start: Math.round(Math.min(lim(cur.end), Math.max(0, mm))) });
+    else onDrag(d.i, { end: Math.round(Math.min(lim(cur.start), Math.max(0, length - mm))) });
   };
   const drop = (e: React.PointerEvent) => { if (!drag.current) return; (e.target as Element).releasePointerCapture?.(e.pointerId); drag.current = null; setGrab(false); onDrop(); };
   const chain = act ? [0, ...actPos, length] : [];
-  const mid = act?.layout.mode === 'ends' ? { on: actPos.length === 3, from: act.layout.midFrom ?? DEFAULT_CONNECTOR_LAYOUT.midFrom! } : null;
+  const mid = P?.mode === 'ends' ? { on: actPos.length === 3, from: P.midFrom ?? DEFAULT_CONNECTOR_LAYOUT.midFrom! } : null;
+  // 32 ızgarası: çentikler (çok sıkışırsa çizilmez) + sondaki en az mesafe.
+  const grid = P?.mode === 'step' && actPos.length ? { pitch: layoutPitch(P), from: Math.max(0, P.start), min: Math.max(0, P.end), rear: length - actPos[actPos.length - 1] } : null;
+  const ticks = grid && grid.pitch * kx >= 3 ? Array.from({ length: Math.floor((length - grid.from) / grid.pitch + 1e-6) + 1 }, (_, i) => grid.from + i * grid.pitch) : [];
+  const rules = act ? layoutRules(act.layout) : [], ruleText = rules.length > 1 ? `${ruleRangeText(rules[layoutIndexAt(act!.layout, length)], rules.length)} mm rule · ` : '';
+  const note = clash.length ? 'two connectors overlap'
+    : grid ? `${actPos.length} on the ${fmt1(grid.pitch)} grid · ${fmt1(grid.rear)} from ${ends[1]} (min ${fmt1(grid.min)})`
+      : mid ? (mid.on ? 'middle connector added' : mid.from > 0 ? `middle connector from ${fmt1(mid.from)} mm` : 'no middle connector') : `${actPos.length} connector${actPos.length === 1 ? '' : 's'}`;
   const yC = yJ + hB + 16;
   return (
     <svg ref={svg} viewBox={`0 0 ${VW} ${VH}`} className="block w-full select-none" style={{ fontFamily: UI_FONT, touchAction: 'none', cursor: grab ? 'grabbing' : undefined }}
@@ -1020,17 +1153,24 @@ function LayoutBand({ length, ends, rows, active, onPick, onDrag, onDrop }: {
       <defs>
         <linearGradient id="yago-band-fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0.55" stopColor={PT.fill} /><stop offset="1" stopColor={PT.fill} stopOpacity={0} /></linearGradient>
         <pattern id="yago-band-hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="5" stroke="#cfc6b8" strokeWidth="1.1" /></pattern>
+        <pattern id="yago-band-keepout" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#b5a998" strokeWidth="0.9" /></pattern>
       </defs>
-      {/* uç adları + birleşim boyu */}
+      {/* uç adları + geçerli kural / durum */}
       <text x={X0} y={12} fontSize={8.4} fontWeight={700} fill={PT.ink} style={{ letterSpacing: '0.08em' }}>{ends[0].toUpperCase()}</text>
       <text x={X1} y={12} textAnchor="end" fontSize={8.4} fontWeight={700} fill={PT.ink} style={{ letterSpacing: '0.08em' }}>{ends[1].toUpperCase()}</text>
       <text x={(X0 + X1) / 2} y={12} textAnchor="middle" fontSize={8.4} fontWeight={clash.length ? 700 : 600} style={{ fontVariantNumeric: 'tabular-nums' }}
-        fill={clash.length ? '#dc2626' : mid?.on ? act!.color : PT.mute}>
-        {clash.length ? 'two connectors overlap' : mid ? (mid.on ? 'middle connector added' : mid.from > 0 ? `middle connector from ${fmt1(mid.from)} mm` : 'no middle connector') : ''}
-      </text>
+        fill={clash.length ? '#dc2626' : mid?.on ? act!.color : PT.mute}>{act ? `${clash.length ? '' : ruleText}${note}` : ''}</text>
       {/* dayandığı panel (taralı) + bu panelin kenar bandı */}
       <rect x={X0 - 10} y={yA} width={X1 - X0 + 20} height={hA} fill="#f4efe6" /><rect x={X0 - 10} y={yA} width={X1 - X0 + 20} height={hA} fill="url(#yago-band-hatch)" />
       <rect x={X0} y={yJ} width={X1 - X0} height={hB} fill="url(#yago-band-fade)" />
+      {/* 32 ızgarası: sondaki en az mesafe bölgesi + ızgara çentikleri */}
+      {grid && grid.min > 0 && (
+        <g>
+          <rect x={xOf(length - Math.min(grid.min, length))} y={yJ} width={Math.min(grid.min, length) * kx} height={hB - 22} fill="url(#yago-band-keepout)" opacity={0.7} />
+          <line x1={xOf(length - Math.min(grid.min, length))} y1={yJ} x2={xOf(length - Math.min(grid.min, length))} y2={yJ + hB - 22} stroke="#8a8073" strokeWidth={0.9} strokeDasharray="2.5 2" />
+        </g>
+      )}
+      {ticks.map((d, i) => <line key={`t${i}`} x1={xOf(d)} y1={yJ} x2={xOf(d)} y2={yJ + 3.5} stroke="#a89f92" strokeWidth={0.7} />)}
       <path d={`M${X0} ${yJ + hB - 6}V${yJ}H${X1}V${yJ + hB - 6}`} fill="none" stroke={PT.stroke} strokeWidth={1.2} />
       {rows.map((r, ri) => {
         const on = ri === active;
@@ -1070,11 +1210,11 @@ function LayoutBand({ length, ends, rows, active, onPick, onDrag, onDrop }: {
           </g>
         );
       })}
-      {/* sürüklenen tutamaklar: etkin bağlayıcının ilk ve son noktası */}
+      {/* sürüklenen tutamaklar: etkin bağlayıcının ilk ve son noktası ('32 grid'de son tutamak EN AZ mesafeyi değiştirir; delik ızgarada atlar) */}
       {act && actPos.length >= 2 && ([['start', actPos[0]], ['end', actPos[actPos.length - 1]]] as Array<['start' | 'end', number]>).map(([which, d]) => (
         <g key={which} style={{ cursor: grab ? 'grabbing' : 'ew-resize' }}
           onPointerDown={e => { stop(e); e.preventDefault(); (e.currentTarget as Element).setPointerCapture(e.pointerId); drag.current = { i: active, which }; setGrab(true); }}>
-          <title>{`Drag to change the distance from the ${which === 'start' ? ends[0] : ends[1]}`}</title>
+          <title>{`Drag to change the ${grid && which === 'end' ? 'minimum distance' : 'distance'} from the ${which === 'start' ? ends[0] : ends[1]}`}</title>
           <rect x={xOf(d) - 11} y={yA - 4} width={22} height={hA + hB + 6} fill="transparent" />
           <path d={`M${xOf(d) - 6} ${yJ - 15}h12v8l-6 7l-6 -7z`} fill={act.color} stroke="#fff" strokeWidth={1} />
           <path d={`M${xOf(d) - 2.2} ${yJ - 12.5}v4M${xOf(d) + 2.2} ${yJ - 12.5}v4`} stroke="#fff" strokeWidth={1} strokeLinecap="round" />
@@ -1083,39 +1223,57 @@ function LayoutBand({ length, ends, rows, active, onPick, onDrag, onDrop }: {
     </svg>
   );
 }
-const LEN_MIN = 100, LEN_MAX = 2400;
-/** Önizleme boyu: kaydırıcı + kutu. Yalnız önizleme — gerçek panelde dizilim panelin kendi birleşim boyuna uygulanır. */
-function LengthSlider({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+/** Önizleme boyu: kaydırıcı + kutu. Yalnız önizleme — gerçek panelde dizilim panelin kendi birleşim boyuna uygulanır.
+ *  `marks` = boy aralığı sınırları (kaydırıcının altında çentik: nerede kural değişiyor). */
+function LengthSlider({ value, onChange, marks = [] }: { value: number; onChange: (v: number) => void; marks?: number[] }) {
   return (
     <div className="flex items-center gap-2 h-[26px] pl-1" onClick={stop}
       title="Preview only: slide to see how the connectors spread on a shorter or longer joint. Real panels use their own joint length.">
       <span className="yago-label shrink-0">Joint length</span>
-      <input type="range" min={LEN_MIN} max={LEN_MAX} step={10} value={Math.min(LEN_MAX, Math.max(LEN_MIN, value))} onChange={e => onChange(Number(e.target.value))}
-        className="flex-1 min-w-0 h-[14px] cursor-pointer" style={{ accentColor: SEL }} />
+      <div className="relative flex-1 min-w-0 h-[14px] flex items-center">
+        <input type="range" min={LEN_MIN} max={LEN_MAX} step={10} value={Math.min(LEN_MAX, Math.max(LEN_MIN, value))} onChange={e => onChange(Number(e.target.value))}
+          className="w-full min-w-0 h-[14px] cursor-pointer" style={{ accentColor: SEL }} />
+        {marks.filter(m => m > LEN_MIN && m < LEN_MAX).map(m => (
+          <span key={m} title={`Length rule changes at ${fmt1(m)} mm`} className="pointer-events-none absolute top-[11px] w-[2px] h-[5px] rounded-full bg-stone-500"
+            style={{ left: `calc(7px + (100% - 14px) * ${(m - LEN_MIN) / (LEN_MAX - LEN_MIN)} - 1px)` }} />
+        ))}
+      </div>
       <div className="yago-cell shrink-0 h-[24px] pl-1 pr-0.5 flex items-center"><QbNum value={value} min={LEN_MIN} max={6000} w={40} onCommit={onChange} /><Unit /></div>
     </div>
   );
 }
-/** Bağlayıcı düzenleyicideki "Spacing" önizlemesi: tek bağlayıcılı şerit + boy kaydırıcısı (tutamak sürüklenince dizilim taslağa yazılır). */
-function ConnSpacingPreview({ conn, layout, onChange }: { conn: Connector; layout: ConnectorLayout; onChange: (patch: Partial<ConnectorLayout>) => void }) {
+const layoutMarks = (layout: ConnectorLayout): number[] => layoutRanges(layout).map(r => r.upTo);
+/** Bağlayıcı düzenleyicideki "Spacing": tek bağlayıcılı şerit + boy kaydırıcısı + dizilim düzenleyici. Değişiklik GÜNCEL taslağa uygulanır
+ *  (`onChange` bir dönüştürücü alır: sürüklerken art arda gelen olaylar birbirini ezmesin). */
+function ConnSpacing({ conn, layout, onChange }: { conn: Connector; layout: ConnectorLayout; onChange: (fn: (cur: ConnectorLayout) => ConnectorLayout) => void }) {
   const [len, setLen] = useState(560);
   return (
-    <div className="flex flex-col gap-0.5">
-      <div className="rounded-[9px] ring-1 ring-[#e3ddd4] px-1 pt-1" style={{ background: '#faf8f5' }}>
-        <LayoutBand length={len} ends={['start', 'end']} rows={[{ conn, layout, color: RULE_COLORS[0] }]} active={0} onDrag={(_, p) => onChange(p)} onDrop={() => undefined} />
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-col gap-0.5">
+        <div className="rounded-[9px] ring-1 ring-[#e3ddd4] px-1 pt-1" style={{ background: '#faf8f5' }}>
+          <LayoutBand length={len} ends={['start', 'end']} rows={[{ conn, layout, color: RULE_COLORS[0] }]} active={0}
+            onDrag={(_, p) => onChange(cur => patchLayoutAt(cur, len, p))} onDrop={() => undefined} />
+        </div>
+        <LengthSlider value={len} onChange={setLen} marks={layoutMarks(layout)} />
       </div>
-      <LengthSlider value={len} onChange={setLen} />
+      <LayoutEditor layout={layout} length={len} onLength={setLen} onChange={next => onChange(() => next)} ends={['start', 'end']} />
     </div>
   );
 }
 const SMALL_SELECT = 'h-[22px] pl-1 pr-5 rounded-[5px] bg-transparent text-[12px] font-semibold text-stone-800 appearance-none outline-none cursor-pointer hover:bg-[#f6f3ee] transition-colors duration-150 max-w-full truncate';
-/** Kenardaki bir bağlayıcı: renk · bağlayıcı seçimi · özet · sil. Etkin satırda dizilim hücreleri + öteki yüz + (özelse) bağlayıcının dizilimine dön. */
-function EdgeRuleRow({ row, index, open, count, ends, connectors, onOpen, onPatch, onLayout, onRemove }: {
-  row: EdgeRow; index: number; open: boolean; count: number; ends: [string, string]; connectors: Connector[]; onOpen: () => void;
-  onPatch: (p: Partial<EdgeConnectorRule>) => void; onLayout: (p: Partial<ConnectorLayout>) => void; onRemove: () => void;
+/** Kuralın tek satırlık özeti (kenar satırının başlığında). */
+function layoutSummary(P: LayoutParams): string {
+  if (P.mode === 'ends') return `${fmt1(P.start)} / ${fmt1(P.end)}${P.midFrom ? ` · middle from ${fmt1(P.midFrom)}` : ''}`;
+  if (P.mode === 'step') return `${fmt1(layoutPitch(P))} grid · ${fmt1(P.start)} / min ${fmt1(P.end)}${P.fill === 'middle' ? ' · ends + middle' : ` · steps ${layoutSteps(P).map(s => fmt1(s.k * layoutPitch(P))).join(' / ')}`}`;
+  return `${fmt1(P.start)} / ${fmt1(P.end)}${P.mode === 'count' ? ` · ${P.count} fixed` : ` · max gap ${fmt1(P.maxSpacing)}`}`;
+}
+/** Kenardaki bir bağlayıcı: renk · bağlayıcı seçimi · özet · sil. Etkin satırda dizilim düzenleyici + öteki yüz + (özelse) bağlayıcının dizilimine dön. */
+function EdgeRuleRow({ row, index, open, count, ends, connectors, length, onLength, onOpen, onPatch, onLayout, onRemove }: {
+  row: EdgeRow; index: number; open: boolean; count: number; ends: [string, string]; connectors: Connector[]; length: number; onLength: (v: number) => void;
+  onOpen: () => void; onPatch: (p: Partial<EdgeConnectorRule>) => void; onLayout: (next: ConnectorLayout) => void; onRemove: () => void;
 }) {
-  const L = row.layout;
-  const summary = `${count} × · ${fmt1(L.start)} / ${fmt1(L.end)}${L.mode === 'ends' ? (L.midFrom ? ` · middle from ${fmt1(L.midFrom)}` : '') : L.mode === 'count' ? ` · ${L.count} fixed` : ` · max gap ${fmt1(L.maxSpacing)}`}`;
+  const L = row.layout, nRules = layoutRules(L).length;
+  const summary = `${count} × · ${layoutSummary(layoutAt(L, length))}${nRules > 1 ? ` · ${nRules} length rules` : ''}`;
   return (
     <div className={rowCardClass(open, false, false)}>
       <div onClick={e => { stop(e); onOpen(); }} className={`relative h-[32px] pl-2.5 pr-1 flex items-center gap-2 cursor-pointer transition-colors duration-150 hover:bg-[#faf8f5] ${open ? ROW_SEL_HEAD : ''}`}>
@@ -1134,7 +1292,7 @@ function EdgeRuleRow({ row, index, open, count, ends, connectors, onOpen, onPatc
       </div>
       {open && (
         <div className={`${CARD_BODY} flex flex-col gap-1.5`} style={CARD_BODY_STYLE} onClick={stop}>
-          <LayoutCells value={L} onChange={onLayout} ends={ends} />
+          <LayoutEditor layout={L} length={length} onLength={onLength} onChange={onLayout} ends={ends} />
           <div className="flex items-center gap-2 h-[22px] pl-1">
             <label className="shrink-0 flex items-center gap-1.5 cursor-pointer" title="Machine the panel-face holes on the other wide face of this panel (default: the hidden face — underside, top of a top panel, outside of a side)">
               <QbSwitch on={!!row.rule.flipFace} onToggle={() => onPatch({ flipFace: !row.rule.flipFace })} /><span className="yago-label">Other face</span>
@@ -1229,7 +1387,7 @@ function PanelTypesPanel() {
   const [facesOpen, setFacesOpen] = useState(false);
   const [openSurface, setOpenSurface] = useState<PanelSurface | null>(null);
   // Sürükleme sırasında dizilim taslakta tutulur; bırakınca kaydedilir (her adımda gövdeler yeniden üretilmesin).
-  const [drag, setDrag] = useState<{ i: number; patch: Partial<ConnectorLayout> } | null>(null);
+  const [drag, setDrag] = useState<{ i: number; patch: Partial<LayoutParams> } | null>(null);
   const def = panelTypeDef(sel)!;
   const plane = def.plane === 'any' ? freePlane : def.plane;
   // Önizleme ölçüsü: tip / düzlem değişince örnek ölçüye döner; "Joint length" seçili kenarın boyunu değiştirir.
@@ -1237,16 +1395,21 @@ function PanelTypesPanel() {
   useEffect(() => { setSize(sampleSizeOf(sel, plane)); }, [sel, plane]);
   const pick = (t: PanelTypeId) => { setSel(t); setEdge(null); setActive(0); setDrag(null); const b = buildOfType(t); if (b) setBuild(b); };
   const cur = edge && PLANE_EDGES[plane].includes(edge) ? edge : null;
+  const horizontal = cur ? cur === PLANE_EDGES[plane][0] || cur === PLANE_EDGES[plane][1] : true;
+  const length = horizontal ? size[0] : size[1];
+  const setLength = (v: number) => setSize(s => (horizontal ? [v, s[1]] : [s[0], v]));
   const rulesOf = (e: PanelEdgeDir) => edgeRulesOf(sel, e, cfg);
   const rowsOf = (e: PanelEdgeDir): EdgeRow[] => {
     const rows = edgeRowsOf(rulesOf(e), connectors);
-    return drag && e === cur ? rows.map((r, i) => (i === drag.i ? { ...r, layout: { ...r.layout, ...drag.patch } } : r)) : rows;
+    // Sürüklenen değer önizleme boyuna uygulanan kurala yazılır (boy aralığı kuralı varsa yalnız o aralık değişir).
+    return drag && e === cur ? rows.map((r, i) => (i === drag.i ? { ...r, layout: patchLayoutAt(r.layout, length, drag.patch) } : r)) : rows;
   };
   const rules = cur ? rulesOf(cur) : [], rows = cur ? rowsOf(cur) : [], act = Math.min(active, Math.max(0, rows.length - 1));
   const write = (list: EdgeConnectorRule[]) => { if (cur) void setEdgeRules(sel, cur, list); };
   const patchRule = (i: number, p: Partial<EdgeConnectorRule>) => write(rules.map((r, k) => (k === i ? { ...r, ...p } : r)));
+  const layoutOf = (i: number) => ruleLayout(rules[i], connectors.find(c => c.id === rules[i].connectorId));
   /** Dizilim değişti → kenara özel olur (bağlayıcının kendi dizilimi bozulmaz). */
-  const patchLayout = (i: number, p: Partial<ConnectorLayout>) => patchRule(i, { ...ruleLayout(rules[i], connectors.find(c => c.id === rules[i].connectorId)), ...p, custom: true });
+  const patchLayout = (i: number, next: ConnectorLayout) => patchRule(i, { ...next, custom: true });
   const addRule = (e: PanelEdgeDir) => {
     const list = rulesOf(e); if (!connectors.length || list.length >= MAX_EDGE_RULES) return;
     const conn = connectors.find(c => !list.some(r => r.connectorId === c.id)) ?? connectors[0];
@@ -1259,9 +1422,6 @@ function PanelTypesPanel() {
     setEdge(e); setActive(0);
     if (!rulesOf(e).length) addRule(e);
   };
-  const horizontal = cur ? cur === PLANE_EDGES[plane][0] || cur === PLANE_EDGES[plane][1] : true;
-  const length = horizontal ? size[0] : size[1];
-  const setLength = (v: number) => setSize(s => (horizontal ? [v, s[1]] : [s[0], v]));
   const ends = (cur ? EDGE_ENDS[plane][cur] : undefined) ?? (['left', 'right'] as [PanelEdgeDir, PanelEdgeDir]);
   const n = PLANE_EDGES[plane].filter(e => rulesOf(e).length > 0).length;
   return (
@@ -1299,13 +1459,13 @@ function PanelTypesPanel() {
                   <div className="rounded-[9px] ring-1 ring-[#e3ddd4] px-1 pt-1" style={{ background: '#faf8f5' }}>
                     <LayoutBand length={length} ends={[ends[0], ends[1]]} rows={rows} active={act} onPick={setActive}
                       onDrag={(i, patch) => setDrag(d => ({ i, patch: { ...(d?.i === i ? d.patch : {}), ...patch } }))}
-                      onDrop={() => { if (drag) patchLayout(drag.i, drag.patch); setDrag(null); }} />
+                      onDrop={() => { if (drag) patchLayout(drag.i, patchLayoutAt(layoutOf(drag.i), length, drag.patch)); setDrag(null); }} />
                   </div>
-                  <LengthSlider value={length} onChange={setLength} />
+                  <LengthSlider value={length} onChange={setLength} marks={rows[act] ? layoutMarks(rows[act].layout) : []} />
                   <div className="flex flex-col gap-1">
                     {rows.map((r, i) => (
                       <EdgeRuleRow key={i} row={r} index={i} open={i === act} count={edgeConnectorPositions(r.layout, length).length} ends={[ends[0], ends[1]]} connectors={connectors}
-                        onOpen={() => setActive(i)} onPatch={p => patchRule(i, p)} onLayout={p => patchLayout(i, p)}
+                        length={length} onLength={setLength} onOpen={() => setActive(i)} onPatch={p => patchRule(i, p)} onLayout={next => patchLayout(i, next)}
                         onRemove={() => { write(rules.filter((_, k) => k !== i)); setActive(a => Math.max(0, Math.min(a > i ? a - 1 : a, rules.length - 2))); }} />
                     ))}
                   </div>
@@ -2074,11 +2234,9 @@ function ConnectorEditor({ draft, setDraft, onSave, onCancel, layers }: {
             <EditCell label="Panel B thickness" title="Sample thickness of the butting panel — preview only; real panels use their own thickness"><QbNum value={tB} min={3} w={44} onCommit={v => patch({ tB: v })} /><Unit /></EditCell>
           </div>
           <div className="flex flex-col gap-1">
-            <ListHead label="Spacing" count={0} hint="along a joint — drag the first or last connector, or type the values" />
-            <ConnSpacingPreview conn={draft} layout={{ ...DEFAULT_CONNECTOR_LAYOUT, ...(draft.layout ?? {}) }}
-              onChange={p => patch({ layout: { ...DEFAULT_CONNECTOR_LAYOUT, ...(ref.current.draft.layout ?? {}), ...p } })} />
-            <LayoutCells value={{ ...DEFAULT_CONNECTOR_LAYOUT, ...(draft.layout ?? {}) }} ends={['start', 'end']}
-              onChange={p => patch({ layout: { ...DEFAULT_CONNECTOR_LAYOUT, ...(ref.current.draft.layout ?? {}), ...p } })} />
+            <ListHead label="Spacing" count={0} hint="along a joint — pick one of the three layouts; add length rules for short / long joints" />
+            <ConnSpacing conn={draft} layout={{ ...DEFAULT_CONNECTOR_LAYOUT, ...(draft.layout ?? {}) }}
+              onChange={fn => patch({ layout: fn({ ...DEFAULT_CONNECTOR_LAYOUT, ...(ref.current.draft.layout ?? {}) }) })} />
           </div>
           {empty && <div className="yago-hint px-1">Panel B butts with its end against the face of panel A. Pick a surface on the preview (B face · B edge · A face), then add holes, drawn operations or a model to it.</div>}
           <div className="flex flex-col gap-1">

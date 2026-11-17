@@ -7,8 +7,8 @@
 import * as THREE from 'three';
 import {
   type CavityBox, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector, type ConnectorLayout,
-  type EdgeConnectorRule, type PanelEdgeDir, type PanelGroup, type PanelSurface, type PanelSurfaceRule, type PanelTypeConfig, type PanelTypeId, type PanelTypeRule,
-  type Shape, type VirtualFace, panelOfVf, requestRebuild, shapeById, useAppStore, vfOfPanel,
+  type EdgeConnectorRule, type LayoutParams, type LayoutRange, type LayoutStep, type PanelEdgeDir, type PanelGroup, type PanelSurface, type PanelSurfaceRule,
+  type PanelTypeConfig, type PanelTypeId, type PanelTypeRule, type Shape, type VirtualFace, panelOfVf, requestRebuild, shapeById, useAppStore, vfOfPanel,
 } from '../store';
 import { type Vec3, effectiveBodyGeometry, footprintGeometry, genId, localBboxOf, panelHasRotation, round1 } from './Geometry';
 import { type ToolSpec } from './CutWorker';
@@ -17,6 +17,7 @@ import { isDoorPanel } from './DoorService';
 import { isFaceKind, roleOfNormal } from './LegLayout';
 import { bodyFaces, bodyFrontAxis } from './PlinthService';
 import { geoAxes, panelFrameOf } from './PanelSchematics';
+import { QUICK_PANEL_NAME, QUICK_RAIL_NAME, groupName, renameMemberVfs } from './PanelGroupService';
 
 type St = ReturnType<typeof useAppStore.getState>;
 
@@ -207,6 +208,25 @@ export function panelTypeChoice(vf: VirtualFace, st: St = useAppStore.getState()
   const options = [...new Set([...(allowed.includes(current) ? [] : [current]), ...(allowed.includes(auto) ? [] : [auto]), ...allowed])];
   return { surface, current, auto, manual: !!vf.panelType && vf.panelType !== auto, options };
 }
+/* PANEL ADI = ROL. Elle ad yazılmamışsa panel, tipinin (rolünün) adını taşır ve tip değişince ad da değişir. Boş ad ile eski otomatik adlar
+   ("Panel", hızlı gövdenin "Top" · "Left 2" · "Plinth" …) elle yazılmış SAYILMAZ. */
+let _genericNames: Set<string> | null = null;
+const genericNames = (): Set<string> =>
+  (_genericNames ??= new Set([...Object.values(QUICK_PANEL_NAME), ...Object.values(QUICK_RAIL_NAME), 'Plinth', 'Rear plinth'].map(n => n.toLowerCase())));
+/** Panele ELLE yazılmış ad (yoksa boş). */
+export function customPanelName(vf: Pick<VirtualFace, 'description' | 'quickBody'>): string {
+  const d = (vf.description ?? '').trim();
+  if (!d || d.toLowerCase() === 'panel') return '';
+  return vf.quickBody && genericNames().has(d.replace(/ \d+$/, '').toLowerCase()) ? '' : d;
+}
+/** Panelin görünen adı: elle ad → raf / dikme üyesinde grubun adı → rolün adı. Tipsiz satırda (kapak, arkalık parçası, baza seti) kayıtlı ad. */
+export function panelNameOf(vf: VirtualFace | undefined | null, st: St = useAppStore.getState()): string {
+  if (!vf) return 'Panel';
+  const group = groupOfVf(vf, st);
+  if (group) return groupName(group);
+  if (vf.doorGroupId || vf.backGroupId || vf.plinthId) return vf.description?.trim() || 'Panel';
+  return customPanelName(vf) || panelTypeLabel(panelTypeOf(vf, st));
+}
 /** Yerleştirme şeridinde seçilen tip → VF'ye yazılacak değer: o yüzeyde sunulmuyorsa ya da otomatiğe eşitse yazılmaz (panel konumunu izler). */
 export function placementTypeFor(vf: VirtualFace, picked: PanelTypeId | null, st: St = useAppStore.getState()): PanelTypeId | undefined {
   const c = picked ? panelTypeChoice({ ...vf, panelType: undefined }, st) : null;
@@ -222,7 +242,10 @@ export function setVfPanelType(vfId: string, type: PanelTypeId | null): void {
 /** Raf / dikme grubunun tipi: tüm üyeler (üyede elle seçim varsa o kalır). */
 export function setGroupPanelType(groupId: string, type: PanelTypeId | null): void {
   useAppStore.setState(s => ({ panelGroups: s.panelGroups.map(g => (g.id === groupId ? { ...g, panelType: type ?? undefined } : g)) }));
-  refreshConnectorBodies(useAppStore.getState().panelGroups.find(g => g.id === groupId)?.shapeId);
+  const g = useAppStore.getState().panelGroups.find(x => x.id === groupId);
+  // Adı role bağlı grupta üyelerin kayıtlı adı da yeni rolün adına döner.
+  if (g) renameMemberVfs(g.memberVfIds, groupName(g));
+  refreshConnectorBodies(g?.shapeId);
 }
 
 // ═════════════════════════════════════════════════ 3. KENAR ROLLERİ ═════════════════════════════════════════════════
@@ -267,11 +290,95 @@ const rulesIn = (edges: PanelTypeRule['edges'] | undefined, edge: PanelEdgeDir):
 };
 export const edgeRulesOf = (type: PanelTypeId, edge: PanelEdgeDir, cfg?: PanelTypeConfig): EdgeConnectorRule[] => rulesIn(typeRuleOf(type, cfg).edges, edge);
 const ruleHasConnector = (rule: PanelTypeRule | undefined): boolean => !!rule && (Object.keys(rule.edges ?? {}) as PanelEdgeDir[]).some(e => rulesIn(rule.edges, e).length > 0);
-/** Kenar boyunca bağlayıcı noktaları (kenarın başından mm). Kenar uç mesafelerine sığmıyorsa tek bağlayıcı ortada.
- *  'ends': baştan `start`, sondan `end`; birleşim `midFrom` boyuna ulaşınca TAM ORTAYA bir tane daha. */
-export function edgeConnectorPositions(rule: ConnectorLayout, length: number): number[] {
+/* ───────── Dizilim: 32 ızgarası + boy aralığına göre kurallar ───────── */
+export const LAYOUT_PITCH = 32, MAX_LAYOUT_STEPS = 4;
+/** 'step' kipine ilk geçişte gelen adımlar: 8 × 32 sığdığı kadar, sonra 4 × 32 ve 2 × 32 birer kez (arkaya yaklaşmak için). */
+export const DEFAULT_LAYOUT_STEPS: LayoutStep[] = [{ k: 8, n: 0 }, { k: 4, n: 1 }, { k: 2, n: 1 }];
+export const layoutPitch = (p: Pick<LayoutParams, 'pitch'>): number => (p.pitch && p.pitch > 0 ? p.pitch : LAYOUT_PITCH);
+export const layoutSteps = (p: Pick<LayoutParams, 'steps'>): LayoutStep[] =>
+  (p.steps?.length ? p.steps : DEFAULT_LAYOUT_STEPS).slice(0, MAX_LAYOUT_STEPS).map(s => ({ k: Math.max(1, Math.round(s.k) || 1), n: Math.max(0, Math.round(s.n) || 0) }));
+/** Yalnız dizilim DEĞERLERİ (aralıklar ve kenar kuralının öteki alanları olmadan); eksikler varsayılandan. Anahtarların hepsi yazılır ki
+ *  üzerine yayıldığı kayıttaki eski değer kalmasın. */
+export function layoutParams(src: Partial<LayoutParams> | undefined | null): LayoutParams {
+  const { mode, start, end, maxSpacing, count, midFrom, pitch, fill, steps } = { ...DEFAULT_CONNECTOR_LAYOUT, ...(src ?? {}) };
+  return { mode, start, end, maxSpacing, count, midFrom, pitch, fill, steps };
+}
+/** Sınırlı kurallar, sınırı küçükten büyüğe (bozuk kayıt elenir). */
+export const layoutRanges = (layout: Pick<ConnectorLayout, 'ranges'> | undefined | null): LayoutRange[] =>
+  (layout?.ranges ?? []).filter(r => !!r && r.upTo > 0).sort((a, b) => a.upTo - b.upTo);
+/** Kural listesi, boy sırasıyla: sınırlı kurallar + (sonda) hepsinden uzun birleşimlerin kuralı. `from` = aralığın alt sınırı, `upTo` null = ucu açık. */
+export function layoutRules(layout: ConnectorLayout): Array<{ from: number; upTo: number | null; params: LayoutParams }> {
+  const rs = layoutRanges(layout);
+  return [...rs.map((r, i) => ({ from: i ? rs[i - 1].upTo : 0, upTo: r.upTo as number | null, params: layoutParams(r) })),
+    { from: rs.length ? rs[rs.length - 1].upTo : 0, upTo: null, params: layoutParams(layout) }];
+}
+/** `length` boyundaki birleşime uygulanan kuralın sırası (`layoutRules` içinde). */
+export function layoutIndexAt(layout: ConnectorLayout, length: number): number {
+  const rs = layoutRanges(layout), i = rs.findIndex(r => length <= r.upTo + 1e-6);
+  return i < 0 ? rs.length : i;
+}
+export const layoutAt = (layout: ConnectorLayout, length: number): LayoutParams => layoutRules(layout)[layoutIndexAt(layout, length)].params;
+/** Kural listesinden dizilim kaydı (son kural ucu açık olandır). */
+function layoutFromRules(rules: Array<{ upTo: number | null; params: LayoutParams }>): ConnectorLayout {
+  const bounded = rules.filter(r => r.upTo != null).sort((a, b) => a.upTo! - b.upTo!), open = rules.find(r => r.upTo == null) ?? bounded.pop()!;
+  return { ...layoutParams(open.params), ranges: bounded.length ? bounded.map(r => ({ ...layoutParams(r.params), upTo: r.upTo! })) : undefined };
+}
+/** `index` sıradaki kuralın değerlerini değiştirir. */
+export function patchLayoutRule(layout: ConnectorLayout, index: number, patch: Partial<LayoutParams>): ConnectorLayout {
+  return layoutFromRules(layoutRules(layout).map((r, i) => (i === index ? { ...r, params: { ...r.params, ...patch } } : r)));
+}
+/** `length` boyuna uygulanan kuralı değiştirir (önizlemede tutamak sürükleme). */
+export const patchLayoutAt = (layout: ConnectorLayout, length: number, patch: Partial<LayoutParams>): ConnectorLayout =>
+  patchLayoutRule(layout, layoutIndexAt(layout, length), patch);
+/** YENİ boy aralığı: `length` boyuna uygulanan kural ikiye bölünür — yeni kural (aynı değerlerle) `upTo`'ya kadar olan kısmı alır.
+ *  Sınır: aralığın üst ucu varsa ortası, yoksa `length`'in bir üst yüzlüğü. Dönen `index` yeni kuralın sırası. */
+export function addLayoutRange(layout: ConnectorLayout, length: number): { layout: ConnectorLayout; index: number; upTo: number } {
+  const rules = layoutRules(layout), cur = rules[layoutIndexAt(layout, length)];
+  let upTo = cur.upTo != null ? Math.round((cur.from + cur.upTo) / 20) * 10 : Math.max(cur.from + 100, Math.ceil((length + 1) / 100) * 100);
+  while (rules.some(r => r.upTo === upTo)) upTo += 10;
+  const next = layoutFromRules([...rules, { upTo, params: { ...cur.params } }]);
+  return { layout: next, index: layoutRanges(next).findIndex(r => r.upTo === upTo), upTo };
+}
+/** Kuralı siler: boyları bir sonraki kurala kalır; ucu açık kural silinirse son sınırlı kural ucu açık olur. Tek kural silinmez. */
+export function removeLayoutRule(layout: ConnectorLayout, index: number): ConnectorLayout {
+  const rules = layoutRules(layout); if (rules.length < 2) return layout;
+  const kept = rules.filter((_, i) => i !== index);
+  if (rules[index].upTo == null) kept[kept.length - 1] = { ...kept[kept.length - 1], upTo: null };
+  return layoutFromRules(kept);
+}
+/** Sınırlı kuralın üst sınırını değiştirir (komşu sınırla çakışırsa 1 mm kaydırılır). */
+export function setLayoutRuleUpTo(layout: ConnectorLayout, index: number, upTo: number): ConnectorLayout {
+  const rules = layoutRules(layout); if (rules[index]?.upTo == null) return layout;
+  let v = Math.max(1, round1(upTo));
+  while (rules.some((r, i) => i !== index && r.upTo === v)) v += 1;
+  return layoutFromRules(rules.map((r, i) => (i === index ? { ...r, upTo: v } : r)));
+}
+/** 32 IZGARASI: ilk delik baştan `start` (tam). `limit` = son deliğin gidebileceği en uzak yer (sondan EN AZ `end`).
+ *  'steps': adımlar sırayla — her adım `k` × ızgara ilerleyip delik koyar, `n` kez (0 = sığdığı kadar); sığmayan adım atlanır, sıra bir sonrakine
+ *  geçer (kaba adımla ilerle, ince adımla arkaya yaklaş). 'middle': ön + ızgarada arkaya en yakın delik; boy `midFrom`'a ulaşınca ikisinin
+ *  ortasına en yakın ızgara deliği. */
+function stepPositions(p: LayoutParams, a: number, limit: number, length: number): number[] {
+  const pitch = layoutPitch(p), out = [a];
+  if (p.fill === 'middle') {
+    const m = Math.floor((limit - a) / pitch + 1e-6), from = p.midFrom ?? DEFAULT_CONNECTOR_LAYOUT.midFrom!;
+    if (m >= 2 && from > 0 && length >= from - 1e-6) out.push(a + Math.round(m / 2) * pitch);
+    if (m >= 1) out.push(a + m * pitch);
+    return out.map(round1);
+  }
+  let pos = a;
+  for (const s of layoutSteps(p)) {
+    const d = s.k * pitch;
+    for (let i = 0; (s.n === 0 || i < s.n) && pos + d <= limit + 1e-6 && out.length < 80; i++) { pos += d; out.push(pos); }
+  }
+  return out.map(round1);
+}
+/** Kenar boyunca bağlayıcı noktaları (kenarın başından mm): boyun düştüğü aralığın kuralıyla. Kenar uç mesafelerine sığmıyorsa tek bağlayıcı
+ *  ortada. 'ends': baştan `start`, sondan `end`; birleşim `midFrom` boyuna ulaşınca TAM ORTAYA bir tane daha. */
+export function edgeConnectorPositions(layout: ConnectorLayout, length: number): number[] {
   if (!(length > 0)) return [];
+  const rule = layoutAt(layout, length);
   const a = Math.max(0, rule.start), b = length - Math.max(0, rule.end), span = b - a;
+  if (rule.mode === 'step') return span < -1e-6 ? [round1(length / 2)] : stepPositions(rule, a, b, length);
   if (span < 1) return [round1(length / 2)];
   if (rule.mode === 'ends') {
     const mid = length / 2, from = rule.midFrom ?? DEFAULT_CONNECTOR_LAYOUT.midFrom!;
@@ -296,11 +403,13 @@ export function setEdgeRules(type: PanelTypeId, edge: PanelEdgeDir, rules: EdgeC
 /** Kenara eklenecek yeni kural: dizilim bağlayıcınınkinden. Aynı kenarda aynı yere düşen kural varsa uç mesafeleri 32 mm içeri kayar ve
  *  'Ends' kipinde orta bağlayıcı kapalı gelir (iki bağlayıcı üst üste gelmesin; değerler sonra elle / sürükleyerek düzeltilir). */
 export function newEdgeRule(conn: Connector, existing: EdgeConnectorRule[], connectors: Connector[]): EdgeConnectorRule {
-  const base = { ...DEFAULT_CONNECTOR_LAYOUT, ...(conn.layout ?? {}) };
+  const base: ConnectorLayout = { ...layoutParams(conn.layout), ranges: conn.layout?.ranges };
   const used = existing.map(r => ruleLayout(r, connectors.find(c => c.id === r.connectorId)));
-  let start = base.start, end = base.end, moved = false;
-  while (used.some(u => Math.abs(u.start - start) < 16 || Math.abs(u.end - end) < 16) && start < 400) { start += 32; end += 32; moved = true; }
-  return { ...base, connectorId: conn.id, ...(moved ? { start, end, custom: true, ...(base.mode === 'ends' ? { midFrom: 0 } : {}) } : {}) };
+  let shift = 0;
+  while (used.some(u => Math.abs(u.start - base.start - shift) < 16 || Math.abs(u.end - base.end - shift) < 16) && base.start + shift < 400) shift += 32;
+  if (!shift) return { ...base, connectorId: conn.id };
+  const moved = layoutFromRules(layoutRules(base).map(r => ({ ...r, params: { ...r.params, start: r.params.start + shift, end: r.params.end + shift, ...(r.params.mode === 'ends' ? { midFrom: 0 } : {}) } })));
+  return { ...moved, connectorId: conn.id, custom: true };
 }
 export function setSurfaceRule(surface: PanelSurface, rule: PanelSurfaceRule): Promise<void> {
   const cfg = useAppStore.getState().panelTypeConfig;
@@ -446,8 +555,8 @@ function hiddenFaceRole(type: PanelTypeId, plane: Exclude<PanelPlane, 'any'>, bo
 }
 /** Kenar kuralının geçerli dizilimi: kenara özel değilse bağlayıcının kendi dizilimi. */
 export function ruleLayout(rule: EdgeConnectorRule, conn: Connector | undefined): ConnectorLayout {
-  const { mode, start, end, maxSpacing, count, midFrom } = { ...DEFAULT_CONNECTOR_LAYOUT, ...(rule.custom ? rule : conn?.layout ?? {}) };
-  return { mode, start, end, maxSpacing, count, midFrom };
+  const src: Partial<ConnectorLayout> = rule.custom ? rule : conn?.layout ?? {};
+  return { ...layoutParams(src), ranges: layoutRanges(src).length ? layoutRanges(src) : undefined };
 }
 const _jointCache = new Map<string, { sig: string; joints: PanelJoint[] }>();
 /** Gövdenin tüm birleşimleri (kural + temas). Sonuç panel geometrileri / tipler / kütüphane değişene kadar saklanır. */

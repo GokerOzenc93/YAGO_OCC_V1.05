@@ -8,6 +8,7 @@ import {
   rebuildBodySolid, setSketchSuppressed, sketchFrameOf, sketchVarsOf, SKETCH_HIDDEN_VARS, fitDrivenBody, shiftBodyLocal, type SketchFrame,
 } from './Geometry';
 import { panelStepRotation, whenRebuildIdle } from './PanelEngine';
+import { panelNameOf } from './ConnectorService';
 import {
   type DraftIsolate, type SketchApply, type DraftPlane, type DraftFace, type BindDefault, type CircleS, type SketchBind, type Entity, type Geo, type GeoStyle, type LineS, type P2, type Shape2, type SnapKind, type V3, GROUND_PLANE, SNAP_KINDS,
   SNAP_LABEL, activatePlane, cancelCommand, closestOn, commandActive, commandById, deg, dist, enterKey, fmt, loadEntities, moveShape, pointerClick, pointerLeave,
@@ -116,7 +117,7 @@ function facePickOf(shape: Shape, hit: THREE.Intersection, shapes: Shape[]): Fac
   if (!isFinite(u0)) { u0 = v0 = u1 = v1 = 0; }
   const origin = pL.clone().addScaledVector(uL, u0).addScaledVector(vL, v0);
   const center = pL.clone().addScaledVector(uL, (u0 + u1) / 2).addScaledVector(vL, (v0 + v1) / 2).applyMatrix4(hostM);
-  const label = isPanel(shape) ? vfOfPanel(shape)?.description || 'Panel' : 'Body';
+  const label = isPanel(shape) ? panelNameOf(vfOfPanel(shape)) : 'Body';
   const r3 = (x: number) => Math.round(x * 1000) / 1000;
   return {
     plane: { kind: 'face', shapeId: shape.id, origin: origin.toArray() as V3, u: uL.toArray() as V3, v: vL.toArray() as V3, n: nL.toArray() as V3, label },
@@ -658,7 +659,7 @@ export async function editSketch(targetId: string, featureId: string) {
     if (kind === 'panel') { setSketchSuppressed(null); await rebuildTarget(targetId); } else dropBodyPreview();
     return;
   }
-  const name = isPanel(target) ? vfOfPanel(target)?.description || 'Panel' : 'Body';
+  const name = isPanel(target) ? panelNameOf(vfOfPanel(target)) : 'Body';
   const planeId = activatePlane({ kind: 'face', shapeId: targetId, origin: arr3(fr.o), u: arr3(fr.u), v: arr3(fr.v), n: arr3(fr.n), label: name }, true);
   // Parametric adım: nesneler o anki yüz ölçüsünde çözülür ve nokta bağ tercihleriyle yüklenir (formül çözülemezse saklı hâliyle).
   const param = f.mode === 'points' && !!f.pts;

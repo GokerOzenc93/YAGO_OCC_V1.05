@@ -10,7 +10,7 @@ import {
   type CavityBox, type Shape, type VirtualFace, panelOfVf, type GapSpec, useAppStore, type PanelGroup, type CavityPick, type CavityStep, shapeById,
   requestRebuild, type RefFacePick, type CornerKey, type QuickBodyConfig, type JoinPass, type BodyLegs, childPanelsOf, type QuickBodyPart, type QuickBodyPartBase,
   type QuickBodyRails, type RailSpec, type RailBackRel, railsOf, type PanelEdgeDir, PANEL_EDGE_DIRS, panelEdgeOf, type QuickBackRefKey, type BackGroup,
-  type RailStripSpec, type RailExt, type RailExtTarget, DEFAULT_QUICK_BODY, DEFAULT_RAILS,
+  type RailStripSpec, type RailExt, type RailExtTarget, type PanelTypeId, DEFAULT_QUICK_BODY, DEFAULT_RAILS,
 } from '../store';
 import { type EdgeRole, type Pt, cleanPoly, edgeRoles, pointInPoly } from './LegLayout';
 import {
@@ -18,6 +18,7 @@ import {
   deleteBackGroupWithMembers,
 } from './BackService';
 import { doorJointForBond, moveDoorJointTo, isDoorPanel } from './DoorService';
+import { panelNameOf, panelTypeLabel, surfaceRuleOf } from './ConnectorService';
 import {
   type BodyFace, type PlinthLegs, axisDirOfNormal, bodyFaceAt, bodyFaces, bodyFacesByRole, bodyFacesByRoleAll, bodyFrontAxis, plinthLegBoxes, plinthLegsOf,
   plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth, setBodyFaceRole, setBodyFrontAxis,
@@ -86,7 +87,7 @@ export function collectBoundPanels(parent: Shape, shapes: Shape[], vfs: VirtualF
     if (!p || panelHasRotation(p) || (p.parameters as any)?.curved) continue;
     const box = panelLocalBox(p, parent);
     if (!box) continue;
-    out.push({ vfId: vf.id, panelId: p.id, box, name: vf.description || 'Panel' });
+    out.push({ vfId: vf.id, panelId: p.id, box, name: panelNameOf(vf) });
   }
   return out;
 }
@@ -211,7 +212,7 @@ export function collectRotatedCuts(parent: Shape, shapes: Shape[], vfs: VirtualF
       const r = projRange(bodyPts, n);
       if (!(r.max <= dMax + 0.5 || r.min >= dMin - 0.5)) continue;
     }
-    out.push({ vfId: vf.id, name: vf.description || 'Panel', n: [n.x, n.y, n.z], dMin, dMax, box, pts });
+    out.push({ vfId: vf.id, name: panelNameOf(vf), n: [n.x, n.y, n.z], dMin, dMax, box, pts });
   }
   return out;
 }
@@ -2517,13 +2518,21 @@ export async function equalizeGroupGaps(groupId: string, _opts: { keepTargetGap?
   await requestRebuild(group.shapeId);
 }
 
-export const groupName = (g: Pick<PanelGroup, 'name' | 'kind'>) => (g.name ?? groupKindLabel(g.kind));
+/** Gruba ELLE yazılmış ad (boş / eski varsayılan "Shelf" · "Divider" sayılmaz). */
+export const customGroupName = (g: Pick<PanelGroup, 'name' | 'kind'>): string => {
+  const n = (g.name ?? '').trim();
+  return n && n !== groupKindLabel(g.kind) ? n : '';
+};
+/** Grubun rolü (panel tipi): elle seçim, yoksa aracın varsayılanı (Accessories › Types). */
+export const groupPanelType = (g: Pick<PanelGroup, 'kind' | 'panelType'>): PanelTypeId => g.panelType ?? surfaceRuleOf(g.kind === 'divider' ? 'divider' : 'shelf').def;
+/** Grubun adı: elle ad yoksa ROLÜN adı ("Fixed shelf" · "Adjustable shelf" · "Divider") — rol değişince ad da değişir. */
+export const groupName = (g: Pick<PanelGroup, 'name' | 'kind' | 'panelType'>): string => customGroupName(g) || panelTypeLabel(groupPanelType(g));
 
 export function renamePanelGroup(groupId: string, name: string): void {
   const group = groupById(groupId);
   if (!group) return;
   useAppStore.getState().updatePanelGroup(groupId, { name });
-  renameMemberVfs(group.memberVfIds, name);
+  renameMemberVfs(group.memberVfIds, groupName({ ...group, name }));
 }
 
 export function deletePanelGroupWithMembers(groupId: string): void {

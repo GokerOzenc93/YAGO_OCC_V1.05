@@ -458,10 +458,23 @@ export type PanelTypeId =
   | 'frontPlinth' | 'rearPlinth' | 'columnSide' | 'columnFront' | 'beamFront' | 'beamHoriz' | 'free';
 /** Panelin yerleştiği yüzey: gövde yüzü rolü, yüzün özel görevi (kolon / kiriş — LegLayout.FaceKind) ya da iç panel aracı (raf / dikme / arkalık). */
 export type PanelSurface = PanelEdgeDir | 'shelf' | 'divider' | 'back' | 'columnSide' | 'columnFront' | 'beamFront' | 'beamHoriz';
-/** Kenar boyunca dizilim: 'ends' = baştan + sondan birer tane, birleşim `midFrom` boyuna ulaşınca ortaya bir tane daha ·
- *  'spacing' = uçlardan mesafe + azami aralık (adet otomatik) · 'count' = sabit adet, eşit dağıtılır. */
-export type EdgeLayoutMode = 'ends' | 'spacing' | 'count';
-export interface ConnectorLayout { mode: EdgeLayoutMode; start: number; end: number; maxSpacing: number; count: number; midFrom?: number }
+/** Kenar boyunca dizilim — arayüzde ÜÇ seçenek:
+ *  'ends' = baştan + sondan birer tane, birleşim `midFrom` boyuna ulaşınca ortaya bir tane daha ·
+ *  'step' = 32 ızgarası: baştan `start` (tam), sonra ızgaranın katı adımlarla; sondaki `end` EN AZ mesafedir (delik ızgaraya oturur) ·
+ *  'spacing' / 'count' = eşit dağıtım: uçlardan mesafe + azami aralık (adet otomatik) ya da sabit adet. */
+export type EdgeLayoutMode = 'ends' | 'step' | 'spacing' | 'count';
+/** 'step' kipinin adımı: `k` × ızgara (mm) ileri gider, `n` delik koyar (0 = sığdığı kadar). Adımlar sırayla işlenir. */
+export interface LayoutStep { k: number; n: number }
+/** Tek kuralın dizilim değerleri. 'step' kipi: `pitch` ızgara (32) · `fill` 'steps' = adımlarla ilerle, 'middle' = ön + arka (ızgarada) ve
+ *  `midFrom` boyundan sonra ortaya (ızgarada) bir tane. */
+export interface LayoutParams {
+  mode: EdgeLayoutMode; start: number; end: number; maxSpacing: number; count: number; midFrom?: number;
+  pitch?: number; fill?: 'steps' | 'middle'; steps?: LayoutStep[];
+}
+/** Boy aralığına özel kural: birleşim boyu ≤ `upTo` ise (ve daha küçük sınırlı bir kural yoksa) bu değerler geçerli. */
+export interface LayoutRange extends LayoutParams { upTo: number }
+/** Dizilim: kendi değerleri = `ranges` sınırlarının HEPSİNDEN uzun birleşimlerin kuralı (aralık yoksa tek kural). */
+export interface ConnectorLayout extends LayoutParams { ranges?: LayoutRange[] }
 /** Kenar kuralı. Dizilim normalde BAĞLAYICININ kendi diziliminden gelir; `custom` → bu kenara özel (alttaki alanlar).
  *  `flipFace` → B yüzündeki işlemler panelin öteki geniş yüzüne (varsayılan: görünmeyen yüz — bkz. ConnectorService.hiddenFaceRole). */
 export interface EdgeConnectorRule extends ConnectorLayout { connectorId: string | null; custom?: boolean; flipFace?: boolean }
