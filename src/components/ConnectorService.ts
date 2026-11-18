@@ -4,8 +4,9 @@
       aynı rolleri kullanır. 3) Kenar kuralı → kenar boyunca bağlayıcı noktaları.
    4) Bağlayıcı = delikler + çizilmiş operasyonlar (pocket / line) + modeller; hepsi TEMSİLİ BİRLEŞİM çerçevesinde (B paneli ucuyla A'nın
       yüzüne dayanır). 5) Birleşimler: kurallar gerçek panellere işlenir. Kayıt AccessoryService veritabanında (IndexedDB).
-   KİM NEYİ SÖYLER: panel tipinin kenarı → bağlayıcı GRUBU (sabit · hareketli) · panel → o grubun hangi SETİ (seçilmezse varsayılan) ·
-   set → hangi bağlayıcı, hangi ölçüyle. */
+   KİM NEYİ SÖYLER: panel tipinin kenarı → bağlayıcı GRUBU (sabit · hareketli) + DELİK YÜZÜ (yüz deliklerinin panelin hangi geniş yüzüne
+   delineceği) · panel → o grubun hangi SETİ (seçilmezse varsayılan) + istenirse delik yüzünü kendisi için değiştirir · set → hangi
+   bağlayıcı, hangi ölçüyle. */
 import * as THREE from 'three';
 import {
   type CavityBox, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector, type ConnectorGroup, type ConnectorLayoutSet,
@@ -328,6 +329,42 @@ export function setVfConnectorSet(vfId: string, group: ConnectorGroup, id: strin
   st.updateVirtualFace(vfId, { connectorSets: withSet(vf.connectorSets, group, id) });
   refreshConnectorBodies(vf.shapeId);
 }
+/* ───────── DELİK YÜZÜ (bağlayıcının yönü) ─────────
+   Yüz delikleri (bağlayıcının "B face" işlemleri — ör. kam yuvası) dayanan panelin iki geniş yüzünden birine delinir. Tipin kenarı yüzü söyler
+   (`flipFace`: false = varsayılan / görünmeyen yüz, bkz. hiddenFaceRole); panel kendi kaydıyla (`connectorFlip`) bütün kenarları için değiştirir. */
+export interface HoleFaceOption { flip: boolean; label: string }
+/** Tipin iki geniş yüzü, doğal sırayla (üst / alt · dış / iç · ön / arka) + her birinin `flipFace` karşılığı. */
+export function holeFaceOptions(type: PanelTypeId, plane: Exclude<PanelPlane, 'any'>): [HoleFaceOption, HoleFaceOption] {
+  if (TYPE_BY_ID.get(type)?.group === 'boxing') return [{ flip: true, label: 'Visible face' }, { flip: false, label: 'Hidden face' }];
+  if (plane === 'horizontal') { const top = type === 'top' || type.startsWith('top'); return [{ flip: !top, label: 'Top face' }, { flip: top, label: 'Underside' }]; }
+  if (plane === 'frontal') return [{ flip: true, label: 'Front face' }, { flip: false, label: 'Rear face' }];
+  return [{ flip: false, label: 'Outer face' }, { flip: true, label: 'Inner face' }];
+}
+/** Yüz adının açıklaması (ipucu) — yalnız adın açıklama istediği yerde (dış / iç · görünmeyen / görünen); üst / alt ve ön / arka kendini anlatır. */
+export function holeFaceHint(type: PanelTypeId, plane: Exclude<PanelPlane, 'any'>): string {
+  if (TYPE_BY_ID.get(type)?.group === 'boxing') return 'Hidden face = the face that looks at the column / beam.';
+  return plane === 'side' ? 'Outer face = the face that looks away from the middle of the cabinet (on a divider standing exactly in the middle: its left face).' : '';
+}
+/** Tipin bağlayıcılı kenarlarındaki yüz ayarı: hepsi aynıysa o değer · karışıksa null · bağlayıcılı kenar yoksa undefined. */
+export function typeFlipOf(type: PanelTypeId | null | undefined, cfg?: PanelTypeConfig): boolean | null | undefined {
+  const edges = type ? typeRuleOf(type, cfg).edges : {};
+  const flips = (Object.keys(edges) as PanelEdgeDir[]).flatMap(e => rulesIn(edges, e).map(r => !!r.flipFace));
+  return !flips.length ? undefined : flips.every(f => f === flips[0]) ? flips[0] : null;
+}
+/** Panelin ELLE seçtiği delik yüzü: panelin kendi kaydı → raf / dikme grubunun kaydı; yoksa undefined (tipin kenar ayarı geçerli). */
+export const panelFlipPick = (vf: VirtualFace, st: St = useAppStore.getState()): boolean | undefined =>
+  (vf.connectorFlip !== undefined ? vf.connectorFlip : groupOfVf(vf, st)?.connectorFlip);
+/** Panelin delik yüzü: true / false = bu panelin bütün bağlayıcılı kenarlarında o yüz · undefined = kayıt silinir (tipin ayarı). */
+export function setVfConnectorFlip(vfId: string, flip: boolean | undefined): void {
+  const st = useAppStore.getState(), vf = st.virtualFaces.find(f => f.id === vfId); if (!vf) return;
+  st.updateVirtualFace(vfId, { connectorFlip: flip });
+  refreshConnectorBodies(vf.shapeId);
+}
+/** Raf / dikme grubunun delik yüzü: tüm üyeler (üyede elle seçim varsa o kalır). */
+export function setGroupConnectorFlip(groupId: string, flip: boolean | undefined): void {
+  useAppStore.setState(s => ({ panelGroups: s.panelGroups.map(g => (g.id === groupId ? { ...g, connectorFlip: flip } : g)) }));
+  refreshConnectorBodies(useAppStore.getState().panelGroups.find(x => x.id === groupId)?.shapeId);
+}
 /** Raf / dikme grubunun seti: tüm üyeler (üyede elle seçim varsa o kalır). */
 export function setGroupConnectorSet(groupId: string, group: ConnectorGroup, id: string | null | undefined): void {
   useAppStore.setState(s => ({ panelGroups: s.panelGroups.map(g => (g.id === groupId ? { ...g, connectorSets: withSet(g.connectorSets, group, id) } : g)) }));
@@ -443,10 +480,12 @@ async function savePanelTypeConfig(cfg: PanelTypeConfig): Promise<void> {
   refreshConnectorBodies();
   await libraryPut('settings', { id: PANEL_TYPE_CONFIG_ID, ...cfg });
 }
-/** Kenarın bağlayıcı grubu (`group` null → kenardan bağlayıcılar kalkar). */
-export function setEdgeGroup(type: PanelTypeId, edge: PanelEdgeDir, group: ConnectorGroup | null, flipFace = false): Promise<void> {
-  const cfg = useAppStore.getState().panelTypeConfig, edges = { ...typeRuleOf(type, cfg).edges };
-  if (group) edges[edge] = [{ group, ...(flipFace ? { flipFace: true } : {}) }]; else delete edges[edge];
+/** Kenarın bağlayıcı grubu (`group` null → kenardan bağlayıcılar kalkar) + delik yüzü. `flipFace` verilmezse kenarın kendi ayarı korunur;
+ *  ilk kez bağlayıcı alan kenar tipin öteki kenarlarının yüzünü alır (hepsi öteki yüzdeyse o da öyle başlar). */
+export function setEdgeGroup(type: PanelTypeId, edge: PanelEdgeDir, group: ConnectorGroup | null, flipFace?: boolean): Promise<void> {
+  const cfg = useAppStore.getState().panelTypeConfig, edges = { ...typeRuleOf(type, cfg).edges }, cur = rulesIn(edges, edge)[0];
+  const flip = flipFace ?? (cur ? !!cur.flipFace : typeFlipOf(type, cfg) === true);
+  if (group) edges[edge] = [{ group, ...(flip ? { flipFace: true } : {}) }]; else delete edges[edge];
   return savePanelTypeConfig({ ...cfg, rules: { ...cfg.rules, [type]: { edges } } });
 }
 export function setSurfaceRule(surface: PanelSurface, rule: PanelSurfaceRule): Promise<void> {
@@ -579,7 +618,8 @@ function slabInfo(geo: THREE.BufferGeometry | undefined): SlabInfo | null {
 const unit = (axis: number, sign: number): Vec3 => { const v: Vec3 = [0, 0, 0]; v[axis] = sign; return v; };
 const overlap = (a0: number, a1: number, b0: number, b1: number): [number, number] => [Math.max(a0, b0), Math.min(a1, b1)];
 /** B yüzü işlemlerinin varsayılan tarafı = GÖRÜNMEYEN yüz: üst panel / üst kayıtta üst · öteki yataylarda alt · önsel panellerde arka;
- *  yan panellerde gövdenin dışına bakan yüz (dikme: sol). Kenar kuralındaki `flipFace` öteki yüze çevirir. */
+ *  yan panellerde gövdenin dışına bakan yüz (tam ortadaki dikme: sol). Kenar kuralındaki `flipFace` — ya da panelin kendi `connectorFlip`
+ *  kaydı — öteki yüze çevirir. Arayüzdeki yüz adları buna göre verilir (holeFaceOptions). */
 function hiddenFaceRole(type: PanelTypeId, plane: Exclude<PanelPlane, 'any'>, body: Shape, box: THREE.Box3, thin: number, st: St): PanelEdgeDir {
   if (plane === 'horizontal') return type === 'top' || type.startsWith('top') ? 'top' : 'bottom';
   if (plane === 'frontal') return 'rear';
@@ -601,7 +641,7 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
       return { p, vf, info, thin, uuid: geo!.uuid, type: panelTypeOf(vf, st) };
     }).filter((x): x is NonNullable<typeof x> => !!x);
   // İmzada panelin elle set seçimi de var (setlerin içeriği ve varsayılanı `connectorLayouts` ile zaten imzada).
-  const picks = (vf: VirtualFace) => CONNECTOR_GROUPS.map(g => panelSetPick(vf, g.key, st) ?? (panelSetPick(vf, g.key, st) === null ? '-' : '')).join('/');
+  const picks = (vf: VirtualFace) => `${CONNECTOR_GROUPS.map(g => panelSetPick(vf, g.key, st) ?? (panelSetPick(vf, g.key, st) === null ? '-' : '')).join('/')}/${panelFlipPick(vf, st) ?? ''}`;
   const sig = `${slabs.map(s => `${s.p.id}:${s.uuid}:${s.type}:${picks(s.vf)}`).join('|')}#${JSON.stringify(cfg.rules ?? {})}#${st.connectors.map(c => c.id).join(',')}#${JSON.stringify(st.connectorLayouts)}#${bodyFrontAxis(body, st).facing}`;
   const hit = _jointCache.get(bodyId);
   if (hit && hit.sig === sig) {
@@ -628,7 +668,7 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
       const endRole = EDGE_ENDS[plane][role]?.[1];
       const aSign = roleOfDir(body, unit(a, 1), st) === endRole ? 1 : roleOfDir(body, unit(a, -1), st) === endRole ? -1 : 1;
       // Kolon / kiriş panelinde görünmeyen yüz = kolona / kirişe bakan yüz (panelin oturduğu gövde yüzünün dış yönü).
-      const want = hiddenFaceRole(B.type, plane, body, B.info.box, B.thin, st);
+      const want = hiddenFaceRole(B.type, plane, body, B.info.box, B.thin, st), flipPick = panelFlipPick(B.vf, st);
       const hidden = TYPE_BY_ID.get(B.type)?.group === 'boxing' ? (B.vf.normal[B.thin] >= 0 ? 1 : -1) : faceRoles[0] === want ? 1 : faceRoles[1] === want ? -1 : 1;
       for (const A of slabs) {
         if (A === B || A.thin !== i) continue;
@@ -645,7 +685,7 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
           const positions = linePositions(line, length); if (!positions.length) continue;
           joints.push({
             key: `${B.p.id}|${role}|${A.p.id}|${line.id}`, bId: B.p.id, aId: A.p.id, connector: conn!, o, along: unit(a, aSign), nIn: unit(i, -s),
-            t: unit(B.thin, hidden * (rule.flipFace ? -1 : 1)), length, tB: round1(tB), tA: round1(A.info.size[i]), positions,
+            t: unit(B.thin, hidden * ((flipPick ?? !!rule.flipFace) ? -1 : 1)), length, tB: round1(tB), tA: round1(A.info.size[i]), positions,
           });
         }
       }

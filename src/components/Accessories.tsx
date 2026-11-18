@@ -30,7 +30,7 @@ import {
   connOpSummary, connShapeClosed, connShapePoints, connSurfaceCoords, connSurfaceDepth, connSurfaceExtent, connSurfacePoint, connThickness, connectorUseCount, deleteConnector, addSampleConnector,
   edgeRulesOf, newConnHole, newConnOp, newConnPart, newConnector, panelTypeDef, panelTypeLabel, panelTypeShort, saveConnector, setEdgeGroup, setSurfaceRule,
   surfaceLabel, surfaceRuleOf, typeEdgeCount, LAYOUT_KINDS, MAX_LAYOUT_POINTS, MAX_LAYOUT_STEPS, cloneLayoutSet, deleteLayoutSet, layoutKindLabel, layoutUseCount, lineApplies,
-  linePositions, lineRangeText, lineSummary, newLayoutLine, newLayoutSet, saveLayoutSet, CONNECTOR_GROUPS, defaultSetOf, groupLabel, newRuleLine, ruleIdOf, setDefaultLayout, setGroupOf, setsOfGroup,
+  linePositions, lineRangeText, lineSummary, newLayoutLine, newLayoutSet, saveLayoutSet, holeFaceHint, holeFaceOptions, CONNECTOR_GROUPS, defaultSetOf, groupLabel, newRuleLine, ruleIdOf, setDefaultLayout, setGroupOf, setsOfGroup,
 } from './ConnectorService';
 import { standardLegRules } from './LegLayout';
 import { syncPlinthSetsUsingPreset } from './PlinthService';
@@ -1638,6 +1638,7 @@ function PanelTypesPanel({ onEditLayout }: { /** dizilimi Layout bölümünde d�
   const ends = (cur ? EDGE_ENDS[plane][cur] : undefined) ?? (['left', 'right'] as [PanelEdgeDir, PanelEdgeDir]);
   const n = PLANE_EDGES[plane].filter(e => !!ruleOf(e)).length;
   const total = rows.reduce((k, r) => k + linePositions(r.line, length).length, 0);
+  const faces = holeFaceOptions(sel, plane);
   return (
     <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" style={{ fontFamily: UI_FONT }}>
       <QbSection title="Panel types" sub="click a panel on the cabinet, or pick from the list">
@@ -1653,7 +1654,7 @@ function PanelTypesPanel({ onEditLayout }: { /** dizilimi Layout bölümünde d�
             <PanelFaceView type={sel} plane={plane} size={size} cur={cur} rowsOf={rowsOf} onEdge={onEdge} />
           </div>
           {!cur ? (
-            <div className="yago-hint px-1">Click an edge and say whether its connectors are Fixed or Movable. Which connector set a panel uses is chosen on the panel itself (Assembly); until then it uses the default set of that group.</div>
+            <div className="yago-hint px-1">Click an edge and say whether its connectors are Fixed or Movable, and which face of the panel their holes go into. Which connector set a panel uses is chosen on the panel itself (Assembly); until then it uses the default set of that group.</div>
           ) : (
             <>
               <div className="flex items-center gap-1.5 min-h-[28px]">
@@ -1661,9 +1662,21 @@ function PanelTypesPanel({ onEditLayout }: { /** dizilimi Layout bölümünde d�
                 <span className="yago-label shrink-0 pl-1">Connectors</span>
                 <div className="flex-1 min-w-0" title="Connector group of this edge — the panel then chooses among the sets of this group">
                   <Segmented items={EDGE_GROUP_SEG} active={rule?.group ?? 'none'} height={22}
-                    onPick={k => { setActive(0); void setEdgeGroup(sel, cur, k === 'none' ? null : (k as ConnectorGroup), !!rule?.flipFace); }} />
+                    onPick={k => { setActive(0); void setEdgeGroup(sel, cur, k === 'none' ? null : (k as ConnectorGroup)); }} />
                 </div>
               </div>
+              {rule?.group && (
+                <>
+                  <div className="flex items-center gap-1.5 min-h-[28px]" data-hole-face="type">
+                    <span className="yago-label shrink-0 pl-1 w-[96px]">Holes on</span>
+                    <div className="flex-1 min-w-0" title={`Which wide face of the panel gets the face holes of this edge (e.g. the cam housing). ${holeFaceHint(sel, plane)}`}>
+                      <Segmented items={faces.map(f => ({ key: f.flip ? 'flip' : 'def', label: f.label, title: `Face holes of this edge are drilled into the ${f.label.toLowerCase()} of the panel` }))}
+                        active={rule.flipFace ? 'flip' : 'def'} height={22} onPick={k => void setEdgeGroup(sel, cur, rule.group!, k === 'flip')} />
+                    </div>
+                  </div>
+                  <div className="yago-hint px-1">Face holes of this edge (e.g. the cam housing) go into the <b className="font-semibold text-stone-700">{faces.find(f => f.flip === !!rule.flipFace)!.label.toLowerCase()}</b> of the panel. {holeFaceHint(sel, plane)} A single panel can reverse this under Assembly.</div>
+                </>
+              )}
               {rule?.group && !set && (
                 <div className="yago-hint px-1 flex items-center gap-1">
                   <span>No {groupLabel(rule.group).toLowerCase()} set in the library yet — nothing is placed on this edge.</span>
@@ -1698,14 +1711,7 @@ function PanelTypesPanel({ onEditLayout }: { /** dizilimi Layout bölümünde d�
                   </div>
                 </>
               )}
-              {rule?.group && (
-                <div className="flex items-center gap-2 h-[22px] pl-1">
-                  <label className="shrink-0 flex items-center gap-1.5 cursor-pointer" title="Machine the panel-face holes on the other wide face of this panel (default: the hidden face — underside, top of a top panel, outside of a side)">
-                    <QbSwitch on={!!rule.flipFace} onToggle={() => void setEdgeGroup(sel, cur, rule.group!, !rule.flipFace)} /><span className="yago-label">Other face</span>
-                  </label>
-                  {set && <span className="flex-1 min-w-0 truncate yago-hint text-right">{total} connector{total === 1 ? '' : 's'} on a {fmt1(length)} mm joint</span>}
-                </div>
-              )}
+              {rule?.group && set && <div className="h-[18px] pr-1 truncate yago-hint text-right">{total} connector{total === 1 ? '' : 's'} on a {fmt1(length)} mm joint</div>}
             </>
           )}
         </div>

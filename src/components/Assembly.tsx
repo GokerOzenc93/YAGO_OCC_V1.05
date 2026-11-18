@@ -50,6 +50,7 @@ import { confirmBodyPanelPlacement } from './Scene';
 import {
   bodyJoints, customPanelName, edgeConnectorNames, panelNameOf, panelOrientation, panelTypeChoice, panelTypeCode, panelTypeLabel, panelTypeShort, setGroupPanelType, setVfPanelType,
   surfaceRuleOf, defaultSetOf, groupLabel, setGroupConnectorSet, setVfConnectorSet, setsOfGroup, typeGroupsOf,
+  type PanelPlane, holeFaceHint, holeFaceOptions, panelTypeDef, setGroupConnectorFlip, setVfConnectorFlip, typeFlipOf,
 } from './ConnectorService';
 import { useDraft as useSketch } from './Draft';
 import { beginFacePick, deleteSketch, editSketch, exitFace, sketchFeaturesOf } from './DraftView';
@@ -2350,7 +2351,27 @@ export function ConnectorSetSelect({ group, pick, onChange, scope = 'this panel'
       title={`Connector set used on the ${name.toLowerCase()} edges of ${scope} — only ${name.toLowerCase()} sets are listed (made under Accessories › Layout). Which edges are ${name.toLowerCase()} comes from the panel type (Accessories › Types).`} />
   );
 }
-/** Açık panel satırında: tip seçimi (yalnız o yüzeyde sunulan tipler) + panelin kenar rolleri (bağlayıcılı kenar turuncu, adetle). */
+/** PANELİN DELİK YÜZÜ: bağlayıcıların yüz delikleri (ör. kam yuvası) panelin hangi geniş yüzüne delinecek. Tipin ayarını (Accessories › Types)
+ *  gösterir; öteki yüze tık = bu panel için TERSİNE çevir (turuncu çerçeve + geri al düğmesi). Tipin kenarları karışıksa hiçbiri seçili görünmez. */
+export function HoleFaceSelect({ type, plane, pick, onChange, scope = 'this panel' }: {
+  type: PanelTypeId; plane: Exclude<PanelPlane, 'any'>; pick: boolean | undefined; onChange: (flip: boolean | undefined) => void; scope?: string;
+}) {
+  const { panelTypeConfig } = useStoreFields('panelTypeConfig');
+  const faces = holeFaceOptions(type, plane), fromType = typeFlipOf(type, panelTypeConfig), eff = pick ?? fromType;
+  return (
+    <div data-hole-face="panel" className={`yago-cell flex-1 min-w-0 h-[28px] pl-2 pr-1 flex items-center gap-1.5 ${pick !== undefined ? 'is-accent' : ''}`} onClick={stop}
+      title={`Which wide face of ${scope} gets the connectors' face holes (e.g. the cam housing). ${pick !== undefined ? 'Reversed by hand for ' + scope + '.' : 'Follows the panel type (Accessories › Types) — click the other face to reverse it for ' + scope + '.'} ${holeFaceHint(type, plane)}`}>
+      <span className={`shrink-0 ${CELL_LABEL}`}>Holes on</span>
+      <div className="flex-1 min-w-0">
+        <Segmented items={faces.map(f => ({ key: f.flip ? 'flip' : 'def', label: f.label }))} active={eff == null ? null : eff ? 'flip' : 'def'} height={20}
+          onPick={k => { const flip = k === 'flip'; onChange(flip === fromType ? undefined : flip); }} />
+      </div>
+      {pick !== undefined && <ClearBtn title="Back to the panel type's setting" label="Reset hole face" onClick={() => onChange(undefined)} />}
+    </div>
+  );
+}
+/** Açık panel satırında: tip seçimi (yalnız o yüzeyde sunulan tipler) + panelin kenar rolleri (bağlayıcılı kenar turuncu, adetle) + panelin
+ *  bağlayıcı seti (grup başına) + delik yüzü. */
 function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefined }) {
   // Kural / dizilim / bağlayıcı değişince satır yenilensin.
   useStoreFields('panelTypeConfig', 'connectors', 'connectorLayouts');
@@ -2391,8 +2412,10 @@ function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefin
       )}
     </div>
     {groups.length > 0 && (
-      <div className="flex items-center gap-1 mt-1" onClick={stop}>
+      <div className="flex items-center flex-wrap gap-1 mt-1" onClick={stop}>
         {groups.map(g => <ConnectorSetSelect key={g} group={g} pick={vf.connectorSets?.[g]} onChange={id => setVfConnectorSet(vf.id, g, id)} />)}
+        {o && <div className="flex basis-full">
+          <HoleFaceSelect type={c.current} plane={o.plane} pick={vf.connectorFlip} onChange={flip => setVfConnectorFlip(vf.id, flip)} /></div>}
       </div>
     )}
     </>
@@ -3395,9 +3418,12 @@ export function AssemblyPanel() {
               </FieldBox>
             </div>
             {typeGroupsOf(groupPanelType(g)).length > 0 && (
-              <div className="flex items-center gap-1 mb-1.5">
+              <div className="flex items-center flex-wrap gap-1 mb-1.5">
                 {typeGroupsOf(groupPanelType(g)).map(cg => <ConnectorSetSelect key={cg} group={cg} pick={g.connectorSets?.[cg]} scope={`every ${g.kind === 'divider' ? 'divider' : 'shelf'} of this group`}
                   onChange={id => setGroupConnectorSet(g.id, cg, id)} />)}
+                <div className="flex basis-full">
+                  <HoleFaceSelect type={groupPanelType(g)} plane={panelTypeDef(groupPanelType(g))?.plane === 'side' ? 'side' : 'horizontal'} pick={g.connectorFlip}
+                    scope={`every ${g.kind === 'divider' ? 'divider' : 'shelf'} of this group`} onChange={flip => setGroupConnectorFlip(g.id, flip)} /></div>
               </div>
             )}
             <GroupSchematic group={g} selectedIndex={selIdx(g.memberVfIds)} memberLabels={memberLabels(label, members, g.memberVfIds)}

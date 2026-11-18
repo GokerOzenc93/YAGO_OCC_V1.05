@@ -115,6 +115,9 @@ export interface VirtualFace {
   /** BAĞLAYICI SETİ (elle seçilmiş, grup başına): set kimliği · null = bu panelde o grubun bağlayıcısı yok. Yoksa raf / dikme grubunun seçimi,
    *  o da yoksa grubun varsayılan seti (ConnectorService.panelSetOf). */
   connectorSets?: Partial<Record<ConnectorGroup, string | null>>;
+  /** DELİK YÜZÜ (elle, panelin bütün bağlayıcılı kenarları için): false = tipin varsayılan (görünmeyen) yüzü · true = öteki geniş yüz. Yoksa
+   *  raf / dikme grubunun seçimi, o da yoksa panel tipinin kenar ayarı (EdgeConnectorRule.flipFace). */
+  connectorFlip?: boolean;
 }
 /** İç köşe uzatmasının hedefi: dış normali `n` olan gövde yüzü; uzatma o düzlemden `depth` önce biter. Her regen'de yeniden ölçülür. */
 export interface RailExtTarget { n: Vec3; depth: number }
@@ -334,6 +337,8 @@ export interface PanelGroup {
   panelType?: PanelTypeId;
   /** Üyelerin bağlayıcı seti (grup başına; bkz. VirtualFace.connectorSets). */
   connectorSets?: Partial<Record<ConnectorGroup, string | null>>;
+  /** Üyelerin delik yüzü (bkz. VirtualFace.connectorFlip). */
+  connectorFlip?: boolean;
   createdAt: number;
 }
 
@@ -496,8 +501,8 @@ export interface ConnectorLayoutSet {
   /** Grubu (yoksa 'fixed') · grubunun VARSAYILAN seti mi (grupta işaretli yoksa ilk set varsayılandır). */
   group?: ConnectorGroup; isDefault?: boolean;
 }
-/** Kenar kuralı: o kenara atılacak bağlayıcı GRUBU. `flipFace` → B yüzündeki işlemler panelin öteki geniş yüzüne (varsayılan: görünmeyen yüz —
- *  bkz. ConnectorService.hiddenFaceRole). `layoutId`: ESKİ (7. – 8. tur, kenara atanmış dizilim) — açılışta gruba çevrilir. */
+/** Kenar kuralı: o kenara atılacak bağlayıcı GRUBU + DELİK YÜZÜ: `flipFace` → B yüzündeki işlemler (ör. kam yuvası) panelin öteki geniş yüzüne
+ *  (varsayılan: görünmeyen yüz — bkz. ConnectorService.hiddenFaceRole / holeFaceOptions). Panel bunu kendi kaydıyla ezebilir (connectorFlip). `layoutId`: ESKİ (7. – 8. tur, kenara atanmış dizilim) — açılışta gruba çevrilir. */
 export interface EdgeConnectorRule { group?: ConnectorGroup; flipFace?: boolean; layoutId?: string }
 /** ESKİ kayıt (6. tura kadar): dizilim bağlayıcının / kenar kuralının içindeydi. Yalnız açılışta yeni dizilimlere çevrilirken okunur
  *  (ConnectorService.migrateLegacyLayouts). */
