@@ -461,6 +461,8 @@ export type PanelSurface = PanelEdgeDir | 'shelf' | 'divider' | 'back' | 'column
 /* BAĞLAYICI DİZİLİMİ (Accessories › Layout) — bağlayıcıdan ve panel tipinden BAĞIMSIZ kütüphane kaydı: birleşim boyunca bağlayıcıların nereye
    geleceği. Dizilim = SATIRLAR; her satır = bir bağlayıcı + geçerli olduğu birleşim boyu aralığı + dört kuraldan biri. Bir boya denk gelen
    satırların HEPSİ uygulanır (aynı dizilimde birden çok bağlayıcı, aynı bağlayıcıya farklı boylarda farklı kural).
+   Satır İKİ bağlayıcı taşıyabilir (`connector2Id`): o zaman kuralın her noktasında hangisinin geleceği seçilir (`ConnUse`: 1 · 2 · ikisi) —
+   'ends' / 'grid'de baş · orta · son (`use`), 'steps'te baş + her adım, 'list'te her nokta.
    Kurallar — `start` her zaman baştan (önden) TAM mesafe:
    'ends'  = baştan `start` + sondan `end`; boy `midFrom`'a ulaşınca tam ortaya bir tane daha ·
    'grid'  = 32 ızgarası: sonda `end` EN AZ mesafedir, delik ızgarada ona en yakın deliğe oturur (kalan pay sonda kalır); boy `midFrom`'a
@@ -468,12 +470,19 @@ export type PanelSurface = PanelEdgeDir | 'shelf' | 'divider' | 'back' | 'column
    'steps' = verilen adımlarla sırayla ilerler (1. adım, 2. adım …), sonda `end` yine EN AZ mesafe ·
    'list'  = doğrudan liste: her nokta baştan ya da sondan verilen mesafede. */
 export type LayoutKind = 'ends' | 'grid' | 'steps' | 'list';
-/** 'steps' adımı: `d` mm ilerleyip delik koyar, `n` kez (0 = sığdığı kadar). */
-export interface LayoutStep { d: number; n: number }
-/** 'list' noktası: baştan ya da sondan `d` mm. */
-export interface LayoutPoint { from: 'start' | 'end'; d: number }
+/** Noktaya gelen bağlayıcı: 1 = satırın 1. bağlayıcısı · 2 = 2. bağlayıcısı · 3 = ikisi birden (bit maskesi). Kayıtta yoksa 1. */
+export type ConnUse = 1 | 2 | 3;
+/** 'steps' adımı: `d` mm ilerleyip delik koyar, `n` kez (0 = sığdığı kadar); `c` = bu adımın koyduğu bağlayıcı. */
+export interface LayoutStep { d: number; n: number; c?: ConnUse }
+/** 'list' noktası: baştan ya da sondan `d` mm; `c` = bu noktaya gelen bağlayıcı. */
+export interface LayoutPoint { from: 'start' | 'end'; d: number; c?: ConnUse }
 export interface LayoutLine {
   id: string; connectorId: string | null; kind: LayoutKind;
+  /** 2. bağlayıcı: anahtar YOKSA satır tek bağlayıcılıdır (bütün noktalar 1.'ye gider, seçimler okunmaz); null = 2. yuva açık ama bağlayıcısı
+   *  seçilmemiş / silinmiş (2.'ye ayrılan noktalar boş kalır). */
+  connector2Id?: string | null;
+  /** Baş · orta · son noktasına gelen bağlayıcı ('ends' / 'grid'; 'steps'te yalnız `start` = ilk bağlayıcı). */
+  use?: { start?: ConnUse; mid?: ConnUse; end?: ConnUse };
   /** Geçerli olduğu birleşim boyu (mm, ikisi de dahil; boy tam mm'ye yuvarlanarak bakılır). `max` 0 = üst sınır yok. */
   min: number; max: number;
   start: number; end: number; midFrom: number; pitch: number; steps: LayoutStep[]; points: LayoutPoint[];

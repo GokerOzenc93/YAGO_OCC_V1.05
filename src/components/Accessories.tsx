@@ -7,9 +7,9 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import * as THREE from 'three';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { ContactShadows, GizmoHelper, Grid, Html, Line, OrbitControls, useGizmoContext } from '@react-three/drei';
-import { Plus, Trash2, Upload, Pencil, RotateCcw, Drill, Check, ChevronDown, Copy, FlaskConical, Crosshair, Magnet, Maximize2, Minus, MousePointer2, PenLine, Spline, Square, BoxSelect, Circle as CircleIcon } from 'lucide-react';
+import { Plus, Trash2, Upload, Pencil, RotateCcw, Drill, Check, ChevronDown, Copy, FlaskConical, Crosshair, Magnet, Maximize2, Minus, MousePointer2, PenLine, Spline, Square, BoxSelect, X, Circle as CircleIcon } from 'lucide-react';
 import {
-  type AccessoryLayer, type AccessoryUnit, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector, type ConnectorLayoutSet,
+  type AccessoryLayer, type AccessoryUnit, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type ConnUse, type Connector, type ConnectorLayoutSet,
   type HoleSpec, type LayoutKind, type LayoutLine, type LegModel, type LegModelPart, type LegPartRole, type LegPreset, type PanelEdgeDir, type PanelSurface,
   type PanelTypeConfig, type PanelTypeId, useAppStore, useStoreFields,
 } from '../store';
@@ -30,7 +30,7 @@ import {
   connOpSummary, connShapeClosed, connShapePoints, connSurfaceCoords, connSurfaceDepth, connSurfaceExtent, connSurfacePoint, connThickness, connectorUseCount, deleteConnector, addSampleConnector,
   edgeRulesOf, newConnHole, newConnOp, newConnPart, newConnector, panelTypeDef, panelTypeLabel, panelTypeShort, saveConnector, setEdgeLayout, setSurfaceRule,
   surfaceLabel, surfaceRuleOf, typeEdgeCount, LAYOUT_KINDS, MAX_LAYOUT_POINTS, MAX_LAYOUT_STEPS, cloneLayoutSet, deleteLayoutSet, layoutKindLabel, layoutUseCount, lineApplies,
-  linePositions, lineRangeText, lineSummary, newLayoutLine, newLayoutSet, saveLayoutSet,
+  lineConnectorIds, lineHasSecond, linePoints, lineRangeText, lineSummary, newLayoutLine, newLayoutSet, saveLayoutSet, secondConnectorPatch,
 } from './ConnectorService';
 import { standardLegRules } from './LegLayout';
 import { syncPlinthSetsUsingPreset } from './PlinthService';
@@ -889,17 +889,31 @@ function sampleSizeOf(type: PanelTypeId, plane: Exclude<PanelPlane, 'any'>): [nu
   if (plane === 'horizontal') return [864, rail ? 110 : def?.group === 'interior' ? 500 : CAB.D];
   return [864, rail ? 90 : def?.group === 'plinth' ? CAB.PL : 520];
 }
-/** Çizime hazır dizilim satırı: bağlayıcısı + rengi (renk bağlayıcıya göre — aynı bağlayıcının farklı boy kuralları aynı renkte). */
-type LineView = { line: LayoutLine; conn: Connector | undefined; color: string };
+/** Çizime hazır dizilim satırı: bağlayıcıları (1. + iki bağlayıcılı kuralda 2.) ve renkleri (renk bağlayıcıya göre — aynı bağlayıcının farklı
+ *  boy kuralları aynı renkte). `two` = 2. yuva açık (bağlayıcısı seçilmemiş de olabilir). */
+type LineView = { line: LayoutLine; conn: Connector | undefined; color: string; two: boolean; conn2: Connector | undefined; color2: string };
 const NO_CONN_COLOR = '#a8a29e';
 function lineViews(set: ConnectorLayoutSet | undefined | null, connectors: Connector[]): LineView[] {
   const order: string[] = [];
+  const colorOf = (c: Connector | undefined): string => {
+    if (!c) return NO_CONN_COLOR;
+    if (!order.includes(c.id)) order.push(c.id);
+    return RULE_COLORS[order.indexOf(c.id) % RULE_COLORS.length];
+  };
   return (set?.lines ?? []).map(line => {
-    const conn = connectors.find(c => c.id === line.connectorId);
-    if (conn && !order.includes(conn.id)) order.push(conn.id);
-    return { line, conn, color: conn ? RULE_COLORS[order.indexOf(conn.id) % RULE_COLORS.length] : NO_CONN_COLOR };
+    const [id1, id2] = lineConnectorIds(line), conn = connectors.find(c => c.id === id1), conn2 = id2 ? connectors.find(c => c.id === id2) : undefined;
+    return { line, conn, color: colorOf(conn), two: lineHasSecond(line), conn2, color2: colorOf(conn2) };
   });
 }
+type SlotView = { slot: 1 | 2; conn: Connector; color: string };
+/** Satırın DOLU bağlayıcı yuvaları; `use` verilirse yalnız o noktaya gelenler (bağlayıcısı seçilmemiş yuva atlanır). */
+const viewSlots = (v: LineView, use: ConnUse = 3): SlotView[] => [
+  ...(v.conn && use & 1 ? [{ slot: 1 as const, conn: v.conn, color: v.color }] : []),
+  ...(v.conn2 && use & 2 ? [{ slot: 2 as const, conn: v.conn2, color: v.color2 }] : []),
+];
+const viewNames = (v: LineView): string => viewSlots(v).map(sv => sv.conn.name).join(' + ');
+/** Satırın o boyda attığı bağlayıcı adedi (1+2 seçili noktada iki tane). */
+const viewCount = (v: LineView, length: number): number => linePoints(v.line, length).reduce((n, p) => n + viewSlots(v, p.use).length, 0);
 type EdgeGeom = { role: PanelEdgeDir; x1: number; y1: number; x2: number; y2: number; nx: number; ny: number; length: number; fromStart: boolean };
 /** PANELİN ÜSTTEN GÖRÜNÜŞÜ (geniş yüzüne dik bakış): dört kenar rolüyle etiketli; her kenarda atanmış dizilimin o boyda geçerli satırları
  *  gerçek delik iziyle (yüz deliği = halka, uç deliği = kenardan içeri çizgi), her bağlayıcı kendi renginde. Kenara tık → o kenar seçilir. */
@@ -929,31 +943,37 @@ function PanelFaceView({ type, plane, size, cur, rowsOf, onEdge }: {
       <text x={8} y={14} fontSize={8} fontWeight={600} fill={PT.mute} style={{ letterSpacing: '0.09em' }}>{PLANE_LABEL[plane].toUpperCase()} OF THE PANEL</text>
       {edges.map(e => {
         const all = rowsOf(e.role), has = !!all, on = cur === e.role, hv = hover === e.role;
-        const rows = (all ?? []).filter(r => !!r.conn && lineApplies(r.line, e.length)), dots = [...new Set((all ?? []).filter(r => !!r.conn).map(r => r.color))];
-        const ux = (e.x2 - e.x1) / e.length, uy = (e.y2 - e.y1) / e.length;
+        const rows = (all ?? []).filter(r => viewSlots(r).length > 0 && lineApplies(r.line, e.length)), dots = [...new Set((all ?? []).flatMap(r => viewSlots(r).map(sv => sv.color)))];
+        const ux = (e.x2 - e.x1) / e.length, uy = (e.y2 - e.y1) / e.length, el = Math.hypot(e.x2 - e.x1, e.y2 - e.y1) || 1, tx = (e.x2 - e.x1) / el, ty = (e.y2 - e.y1) / el;
         const at = (d: number, inward = 0) => { const t = e.fromStart ? d : e.length - d; return { x: e.x1 + ux * t - e.nx * inward * k, y: e.y1 + uy * t - e.ny * inward * k }; };
         const mx = (e.x1 + e.x2) / 2, my = (e.y1 + e.y2) / 2;
         const label = EDGE_LABEL[e.role].toUpperCase(), lw = label.length * 5.6 + (dots.length ? 24 + dots.length * 5.5 : 16);
         const lx = mx + e.nx * (lw / 2 + 12), ly = my + e.ny * 21;
         return (
           <g key={e.role} onClick={ev => { stop(ev); onEdge(e.role); }} onMouseEnter={() => setHover(e.role)} onMouseLeave={() => setHover(null)} style={{ cursor: 'pointer' }}>
-            <title>{`${EDGE_LABEL[e.role]} edge — ${has ? `${[...new Set((all ?? []).map(r => r.conn?.name).filter(Boolean))].join(' + ') || 'layout without a connector'} · click to ${on ? 'close' : 'open'}` : 'click to choose a connector layout for this edge'}`}</title>
+            <title>{`${EDGE_LABEL[e.role]} edge — ${has ? `${[...new Set((all ?? []).flatMap(r => viewSlots(r).map(sv => sv.conn.name)))].join(' + ') || 'layout without a connector'} · click to ${on ? 'close' : 'open'}` : 'click to choose a connector layout for this edge'}`}</title>
             <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} stroke="transparent" strokeWidth={24} />
             {(on || has || hv) && <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} stroke={on ? PT.dark : has ? '#b5a998' : '#7d756b'} strokeWidth={on ? 3.2 : 2}
               strokeLinecap="round" strokeDasharray={on || has ? undefined : '4 3'} />}
-            {rows.map((r, ri) => linePositions(r.line, e.length).map((d, i) => {
-              const holes = r.conn?.holes ?? [], p = at(d);
+            {rows.map((r, ri) => linePoints(r.line, e.length).map(({ d, use }, i) => {
+              const slots = viewSlots(r, use), p = at(d);
               return (
                 <g key={`${ri}-${i}`}>
-                  {holes.filter(hh => hh.surface === 'bEdge').map(hh => {
-                    const a = at(d + hh.along), b = at(d + hh.along, Math.min(hh.depth, 60));
-                    return <line key={hh.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={r.color} strokeWidth={Math.max(1.2, hh.diameter * k * 0.5)} strokeOpacity={0.45} />;
-                  })}
-                  {holes.filter(hh => hh.surface === 'bFace').map(hh => {
-                    const c = at(d + hh.along, hh.across);
-                    return <circle key={hh.id} cx={c.x} cy={c.y} r={Math.max(1.8, (hh.diameter / 2) * k)} fill="#fff" stroke={r.color} strokeWidth={1.3} />;
-                  })}
-                  <circle cx={p.x} cy={p.y} r={2.3} fill={r.color} stroke="#fff" strokeWidth={0.8} />
+                  {slots.map(sv => (
+                    <g key={sv.slot}>
+                      {sv.conn.holes.filter(hh => hh.surface === 'bEdge').map(hh => {
+                        const a = at(d + hh.along), b = at(d + hh.along, Math.min(hh.depth, 60));
+                        return <line key={hh.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={sv.color} strokeWidth={Math.max(1.2, hh.diameter * k * 0.5)} strokeOpacity={0.45} />;
+                      })}
+                      {sv.conn.holes.filter(hh => hh.surface === 'bFace').map(hh => {
+                        const c = at(d + hh.along, hh.across);
+                        return <circle key={hh.id} cx={c.x} cy={c.y} r={Math.max(1.8, (hh.diameter / 2) * k)} fill="#fff" stroke={sv.color} strokeWidth={1.3} />;
+                      })}
+                    </g>
+                  ))}
+                  {/* 1+2 noktasında iki renk yan yana */}
+                  {slots.map((sv, si) => { const o = slots.length > 1 ? (si ? 2 : -2) : 0;
+                    return <circle key={`d${sv.slot}`} cx={p.x + tx * o} cy={p.y + ty * o} r={2.3} fill={sv.color} stroke="#fff" strokeWidth={0.8} />; })}
                 </g>
               );
             }))}
@@ -986,7 +1006,8 @@ function BlankNum({ value, onCommit, title, placeholder, limit = 9999, w = 30 }:
 type BandRow = LineView;
 const BAND = { VW: 480, VH: 140, X0: 24, X1: 456, yA: 22, hA: 13, hB: 54, ky: 0.82 } as const;
 /** KENAR ŞERİDİ — birleşime üstten bakış: üstte dayandığı panel (taralı), altında bu panelin kenar bandı; o boyda geçerli her satır kendi
- *  bağlayıcısının renginde, gerçek delik iziyle. Etkin satırın ölçü zinciri altta (baştaki ve sondaki ölçünün altında "fixed" / "min …").
+ *  bağlayıcısının renginde, gerçek delik iziyle (iki bağlayıcılı kuralda her nokta kendi bağlayıcısının renginde; etkin satırda noktanın
+ *  altında 1 / 2 rozeti). Etkin satırın ölçü zinciri altta (baştaki ve sondaki ölçünün altında "fixed" / "min …").
  *  `onDrag` verilirse tutamaklar SÜRÜKLENİR: ilk / son bağlayıcı (baş mesafesi · son mesafesi ya da EN AZ mesafe), listede her nokta.
  *  '32 grid'de ızgara çentikleri; 'grid' / 'steps'te sondaki EN AZ mesafe bölgesi taralı (delik oraya giremez). */
 function LayoutBand({ length, ends, rows, active, onPick, onDrag }: {
@@ -996,11 +1017,13 @@ function LayoutBand({ length, ends, rows, active, onPick, onDrag }: {
   const drag = useRef<string | null>(null);
   const [grab, setGrab] = useState(false);
   const { VW, VH, X0, X1, yA, hA, hB, ky } = BAND, yJ = yA + hA, kx = (X1 - X0) / Math.max(1, length), xOf = (d: number) => X0 + d * kx;
-  const pos = rows.map(r => linePositions(r.line, length));
-  const act = rows[active], actPos = pos[active] ?? [], L = act?.line;
+  const pts = rows.map(r => linePoints(r.line, length)), pos = pts.map(list => list.map(p => p.d));
+  const act = rows[active], actPts = pts[active] ?? [], actPos = pos[active] ?? [], L = act?.line;
   // Farklı satırların üst üste gelen noktaları (≤ 9 mm): kırmızı halka.
   const clash = pos.flatMap((list, i) => list.filter(d => pos.some((o, j) => j !== i && o.some(x => Math.abs(x - d) < 9))));
   const clampI = (v: number, hi: number) => Math.round(Math.min(Math.max(0, hi), Math.max(0, v)));
+  /** Noktanın rengi: yalnız 2. bağlayıcıya ayrılmışsa onun rengi, değilse satırın (1. bağlayıcının) rengi. */
+  const colorAt = (d: number): string => (act && actPts.find(p => Math.abs(p.d - d) < 0.06)?.use === 2 ? act.color2 : act?.color ?? NO_CONN_COLOR);
   const handles: Array<{ key: string; d: number; title: string; apply: (mm: number) => Partial<LayoutLine> }> = !L || !onDrag ? []
     : L.kind === 'list'
       ? L.points.map((p, i) => ({
@@ -1020,11 +1043,13 @@ function LayoutBand({ length, ends, rows, active, onPick, onDrag }: {
   const minZone = L && (L.kind === 'grid' || L.kind === 'steps') && actPos.length ? Math.min(Math.max(0, L.end), length) : 0;
   const pitch = L?.kind === 'grid' ? (L.pitch > 0 ? L.pitch : 32) : 0;
   const ticks = L && pitch && actPos.length && pitch * kx >= 3 ? Array.from({ length: Math.floor((length - L.start) / pitch + 1e-6) + 1 }, (_, i) => L.start + i * pitch) : [];
-  const total = pos.reduce((n, list) => n + list.length, 0), rear = actPos.length ? length - actPos[actPos.length - 1] : 0;
+  const total = rows.reduce((n, r) => n + viewCount(r, length), 0), rear = actPos.length ? length - actPos[actPos.length - 1] : 0;
+  // Etkin satırın adetleri, bağlayıcı başına ("2 × Minifix + 1 × Dowel").
+  const actText = act ? viewSlots(act).map(sv => `${actPts.filter(p => p.use & sv.slot).length} × ${sv.conn.name}`).join(' + ') || `${actPos.length} × connector` : '';
   const note = !rows.length ? 'no rule applies to this joint length'
     : clash.length ? 'two connectors overlap'
       : !act ? `${total} connector${total === 1 ? '' : 's'} · ${rows.length} rule${rows.length === 1 ? '' : 's'} at this length`
-        : `${actPos.length} × ${act.conn?.name ?? 'connector'}${minZone ? ` · ${fmt1(rear)} from ${ends[1]} (min ${fmt1(L!.end)})` : ''}${mid ? (mid.on ? ' · middle added' : mid.from > 0 ? ` · middle from ${fmt1(mid.from)} mm` : '') : ''}`;
+        : `${actText}${minZone ? ` · ${fmt1(rear)} from ${ends[1]} (min ${fmt1(L!.end)})` : ''}${mid ? (mid.on ? ' · middle added' : mid.from > 0 ? ` · middle from ${fmt1(mid.from)} mm` : '') : ''}`;
   const yC = yJ + hB + 16;
   const cap = (i: number): string => (!L || L.kind === 'list' ? '' : i === 0 ? 'fixed' : L.kind === 'ends' ? 'fixed' : `min ${fmt1(L.end)}`);
   return (
@@ -1054,19 +1079,25 @@ function LayoutBand({ length, ends, rows, active, onPick, onDrag }: {
         const on = ri === active || active < 0;
         return (
           <g key={r.line.id} opacity={on ? 1 : 0.45} onClick={e => { stop(e); onPick?.(ri); }} style={{ cursor: !onPick || ri === active ? undefined : 'pointer' }}>
-            {pos[ri].map((d, i) => {
-              const holes = r.conn?.holes ?? [];
+            {pts[ri].map(({ d, use }, i) => {
+              // Noktaya gelen bağlayıcı(lar): her biri kendi renginde; bağlayıcısı seçilmemiş yuvaya ayrılan nokta boş halka.
+              const slots = viewSlots(r, use);
               const scale = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v * ky));
               return (
                 <g key={i}>
-                  {holes.filter(h => h.surface === 'aFace').map(h => { const wv = scale(h.diameter, 1.6, 8), dv = Math.min(h.depth * ky, hA - 2);
-                    return <rect key={h.id} x={xOf(d + h.along) - wv / 2} y={yJ - dv} width={wv} height={dv} fill={r.color} fillOpacity={0.55} />; })}
-                  {holes.filter(h => h.surface === 'bEdge').map(h => { const wv = scale(h.diameter, 1.6, 8), dv = Math.min(h.depth * ky, hB - 10);
-                    return <rect key={h.id} x={xOf(d + h.along) - wv / 2} y={yJ} width={wv} height={dv} fill={r.color} fillOpacity={0.16} stroke={r.color} strokeWidth={0.8} strokeDasharray="2.5 1.8" />; })}
-                  {holes.filter(h => h.surface === 'bFace').map(h => { const rr = scale(h.diameter / 2, 2.2, 9.5);
-                    return <circle key={h.id} cx={xOf(d + h.along)} cy={yJ + Math.max(rr + 1.5, Math.min(hB - rr - 8, h.across * ky))} r={rr} fill="#fff" stroke={r.color} strokeWidth={ri === active ? 1.6 : 1.2} />; })}
-                  {!holes.length && <path d={`M${xOf(d)} ${yJ + 5}l5 6l-5 6l-5 -6z`} fill="#fff" stroke={r.color} strokeWidth={1.3} />}
-                  <circle cx={xOf(d)} cy={yJ} r={2.6} fill={r.color} stroke="#fff" strokeWidth={0.9} />
+                  {slots.map(sv => (
+                    <g key={sv.slot}>
+                      {sv.conn.holes.filter(h => h.surface === 'aFace').map(h => { const wv = scale(h.diameter, 1.6, 8), dv = Math.min(h.depth * ky, hA - 2);
+                        return <rect key={h.id} x={xOf(d + h.along) - wv / 2} y={yJ - dv} width={wv} height={dv} fill={sv.color} fillOpacity={0.55} />; })}
+                      {sv.conn.holes.filter(h => h.surface === 'bEdge').map(h => { const wv = scale(h.diameter, 1.6, 8), dv = Math.min(h.depth * ky, hB - 10);
+                        return <rect key={h.id} x={xOf(d + h.along) - wv / 2} y={yJ} width={wv} height={dv} fill={sv.color} fillOpacity={0.16} stroke={sv.color} strokeWidth={0.8} strokeDasharray="2.5 1.8" />; })}
+                      {sv.conn.holes.filter(h => h.surface === 'bFace').map(h => { const rr = scale(h.diameter / 2, 2.2, 9.5);
+                        return <circle key={h.id} cx={xOf(d + h.along)} cy={yJ + Math.max(rr + 1.5, Math.min(hB - rr - 8, h.across * ky))} r={rr} fill="#fff" stroke={sv.color} strokeWidth={ri === active ? 1.6 : 1.2} />; })}
+                    </g>
+                  ))}
+                  {slots.length > 0 && !slots.some(sv => sv.conn.holes.length) && <path d={`M${xOf(d)} ${yJ + 5}l5 6l-5 6l-5 -6z`} fill="#fff" stroke={slots[0].color} strokeWidth={1.3} />}
+                  {!slots.length && <circle cx={xOf(d)} cy={yJ} r={2.8} fill="#fff" stroke={NO_CONN_COLOR} strokeWidth={1.1} strokeDasharray="1.6 1.4" />}
+                  {slots.map((sv, si) => <circle key={`d${sv.slot}`} cx={xOf(d) + (slots.length > 1 ? (si ? 2.4 : -2.4) : 0)} cy={yJ} r={2.6} fill={sv.color} stroke="#fff" strokeWidth={0.9} />)}
                 </g>
               );
             })}
@@ -1090,12 +1121,22 @@ function LayoutBand({ length, ends, rows, active, onPick, onDrag }: {
           </g>
         );
       })}
+      {/* iki bağlayıcılı etkin satır: her noktanın altında hangi bağlayıcı(lar) — 1 · 2 · 1 + 2 */}
+      {act?.two && actPts.map((p, i) => {
+        const ks = ([1, 2] as const).filter(k => p.use & k);
+        return ks.map((k, ki) => (
+          <g key={`u${i}-${k}`} transform={`translate(${xOf(p.d) + (ks.length > 1 ? (ki ? 5.2 : -5.2) : 0)} ${yJ + hB + 3})`}>
+            <circle r={4.9} fill={k === 1 ? act.color : act.color2} stroke="#fff" strokeWidth={1} />
+            <text y={2.6} textAnchor="middle" fontSize={7.2} fontWeight={700} fill="#fff">{k}</text>
+          </g>
+        ));
+      })}
       {handles.map(hd => (
         <g key={hd.key} style={{ cursor: grab ? 'grabbing' : 'ew-resize' }}
           onPointerDown={e => { stop(e); e.preventDefault(); (e.currentTarget as Element).setPointerCapture(e.pointerId); drag.current = hd.key; setGrab(true); }}>
           <title>{hd.title}</title>
           <rect x={xOf(hd.d) - 9} y={yA - 4} width={18} height={hA + hB + 6} fill="transparent" />
-          <path d={`M${xOf(hd.d) - 6} ${yJ - 15}h12v8l-6 7l-6 -7z`} fill={act!.color} stroke="#fff" strokeWidth={1} />
+          <path d={`M${xOf(hd.d) - 6} ${yJ - 15}h12v8l-6 7l-6 -7z`} fill={colorAt(hd.d)} stroke="#fff" strokeWidth={1} />
           <path d={`M${xOf(hd.d) - 2.2} ${yJ - 12.5}v4M${xOf(hd.d) + 2.2} ${yJ - 12.5}v4`} stroke="#fff" strokeWidth={1} strokeLinecap="round" />
         </g>
       ))}
@@ -1123,7 +1164,7 @@ function LengthSlider({ value, onChange, marks = [] }: { value: number; onChange
 }
 const setMarks = (set: ConnectorLayoutSet | undefined | null): number[] => (set?.lines ?? []).flatMap(l => [l.min, l.max]).filter(v => v > 0);
 /** BOY ARALIĞI HARİTASI — hangi kural hangi birleşim boyunda geçerli, tek bakışta: her satır bir çubuk (bağlayıcının renginde, `min`'den
- *  `max`'a; üst sınırsız çubuk sağa açık biter). Dikey imleç = önizleme boyu: haritaya tık / sürükle boyu değiştirir, çubuğa tık o kuralı
+ *  `max`'a; üst sınırsız çubuk sağa açık biter; iki bağlayıcılı kuralda çubuğun alt şeridi 2. bağlayıcının renginde). Dikey imleç = önizleme boyu: haritaya tık / sürükle boyu değiştirir, çubuğa tık o kuralı
  *  da açar. Eksen karekök ölçekli: kısa boylar (40 – 100 mm) da okunur genişlikte. */
 function LayoutRangeMap({ rows, length, onLength, activeId, onPick }: {
   rows: LineView[]; length: number; onLength: (v: number) => void; activeId: string | null; onPick: (id: string) => void;
@@ -1155,13 +1196,14 @@ function LayoutRangeMap({ rows, length, onLength, activeId, onPick }: {
       {rows.map((r, i) => {
         const y = top + i * RH + 2, hh = RH - 5, xa = xOf(r.line.min || 0), open = !(r.line.max > 0), xb = Math.max(xa + 4, open ? X1 : xOf(r.line.max));
         const on = r.line.id === activeId, hit = lineApplies(r.line, length);
-        const text = `${r.conn?.name ?? 'no connector'} · ${layoutKindLabel(r.line.kind)}`, tw = text.length * 4.5 + 8;
+        const text = `${viewNames(r) || 'no connector'} · ${layoutKindLabel(r.line.kind)}`, tw = text.length * 4.5 + 8;
         const inside = xb - xa > tw + 4, right = !inside && xb + tw < X1;
         return (
           <g key={r.line.id} onPointerDown={() => onPick(r.line.id)} style={{ cursor: 'pointer' }}>
             <rect x={X0} y={y - 2} width={X1 - X0} height={RH - 1} fill={on ? '#f3ede4' : 'transparent'} rx={3} />
             <path d={open ? `M${xa} ${y}H${xb - 5}l5 ${hh / 2}l-5 ${hh / 2}H${xa}Z` : `M${xa} ${y}H${xb}V${y + hh}H${xa}Z`} fill={r.color} fillOpacity={hit ? 0.92 : 0.3}
               stroke={on ? PT.dark : 'none'} strokeWidth={1.1} strokeLinejoin="round" />
+            {r.conn2 && <rect x={xa + 0.6} y={y + hh - 3.6} width={Math.max(2, (open ? xb - 5 : xb) - xa - 1.2)} height={3} fill={r.color2} fillOpacity={hit ? 1 : 0.4} style={{ pointerEvents: 'none' }} />}
             <text x={inside ? xa + 5 : right ? xb + 5 : xa - 5} y={y + hh / 2 + 3} textAnchor={inside || right ? 'start' : 'end'} fontSize={8.2} fontWeight={600}
               fill={inside ? (hit ? '#fff' : PT.ink) : PT.ink} style={{ pointerEvents: 'none' }}>{text}</text>
           </g>
@@ -1235,12 +1277,44 @@ function LayoutKindCards({ value, onPick }: { value: LayoutKind; onPick: (k: Lay
 }
 const SMALL_SELECT = 'h-[22px] pl-1 pr-5 rounded-[5px] bg-transparent text-[12px] font-semibold text-stone-800 appearance-none outline-none cursor-pointer hover:bg-[#f6f3ee] transition-colors duration-150 max-w-full truncate';
 const POINT_SEG: SegItem[] = [{ key: 'start', label: 'From front', title: 'Measured from the front (start) of the joint' }, { key: 'end', label: 'From rear', title: 'Measured from the rear (end) of the joint' }];
-/** DİZİLİM SATIRI (kural): renk · bağlayıcı · boy aralığı · özet · kopya · sil. Açıkken: boy aralığı → dört kural kartı → o kuralın değerleri. */
+const USE_SLOTS: Array<{ k: 'start' | 'mid' | 'end'; label: string; what: string }> = [
+  { k: 'start', label: 'Front', what: 'Connector at the front' }, { k: 'mid', label: 'Middle', what: 'Connector in the middle' }, { k: 'end', label: 'Rear', what: 'Connector at the rear' },
+];
+/** Kuralın nokta seçimleri (kuralın türüne göre: baş · orta · son / baş + adımlar / liste noktaları). */
+const lineUses = (l: LayoutLine): ConnUse[] => (l.kind === 'list' ? l.points.map(p => p.c ?? 1)
+  : l.kind === 'steps' ? [l.use?.start ?? 1, ...l.steps.map(st => st.c ?? 1)] : [l.use?.start ?? 1, l.use?.mid ?? 1, l.use?.end ?? 1]);
+/** NOKTAYA GELEN BAĞLAYICI (iki bağlayıcılı kuralda): 1 · 2 · 1+2. Seçili düğme o bağlayıcının renginde, 1+2 iki renkli. */
+function UsePick({ value, view, what, onPick }: { value: ConnUse | undefined; view: LineView; what: string; onPick: (u: ConnUse) => void }) {
+  const cur = value ?? 1, n1 = view.conn?.name ?? 'connector 1 (not picked)', n2 = view.conn2?.name ?? 'connector 2 (not picked)';
+  const opts: Array<{ u: ConnUse; label: string; bg: string; title: string }> = [
+    { u: 1, label: '1', bg: view.color, title: `${what}: ${n1}` },
+    { u: 2, label: '2', bg: view.color2, title: `${what}: ${n2}` },
+    { u: 3, label: '1+2', bg: `linear-gradient(90deg, ${view.color} 50%, ${view.color2} 50%)`, title: `${what}: both — ${n1} and ${n2}` },
+  ];
+  return (
+    <div className="shrink-0 flex items-center gap-[2px] p-[2px] rounded-[7px]" style={{ background: '#ece8e1' }} onClick={stop}>
+      {opts.map(o => {
+        const on = o.u === cur;
+        return (
+          <button key={o.u} type="button" title={o.title} aria-label={o.title} aria-pressed={on} onClick={e => { stop(e); onPick(o.u); }}
+            className={`h-[20px] rounded-[5px] text-[10.5px] font-bold tabular-nums transition-colors duration-150 ${on ? 'text-white' : 'text-stone-600 hover:bg-white hover:text-stone-900'}`}
+            style={{ minWidth: o.u === 3 ? 32 : 22, padding: '0 5px', background: on ? o.bg : undefined, fontFamily: UI_FONT }}>{o.label}</button>
+        );
+      })}
+    </div>
+  );
+}
+/** DİZİLİM SATIRI (kural): sıra · bağlayıcı (+ 2. bağlayıcı) · boy aralığı · özet · kopya · sil. Açıkken: boy aralığı → dört kural kartı → o
+ *  kuralın değerleri; iki bağlayıcılı kuralda her noktanın yanında hangi bağlayıcının geleceği (1 · 2 · 1+2). */
 function LayoutLineRow({ view, index, open, length, connectors, onOpen, onPatch, onCopy, onRemove }: {
   view: LineView; index: number; open: boolean; length: number; connectors: Connector[];
   onOpen: () => void; onPatch: (p: Partial<LayoutLine>) => void; onCopy: () => void; onRemove: () => void;
 }) {
-  const l = view.line, hit = lineApplies(l, length), n = hit && view.conn ? linePositions(l, length).length : 0;
+  const l = view.line, hit = lineApplies(l, length), n = hit ? viewCount(view, length) : 0;
+  const others = connectors.filter(c => c.id !== l.connectorId), uses = lineUses(l);
+  const mark = (k: 1 | 2, color: string) => (view.two
+    ? <span className="shrink-0 w-[15px] h-[15px] rounded-full flex items-center justify-center text-[9.5px] font-bold text-white tabular-nums" style={{ background: color }}>{k}</span>
+    : <span className="shrink-0 w-[10px] h-[10px] rounded-full ring-2 ring-white" style={{ background: color, boxShadow: `0 0 0 1px ${color}` }} />);
   const mm = (v: number, on: (v: number) => void, min = 0, w = 38) => <><QbNum value={v} min={min} w={w} onCommit={on} /><Unit /></>;
   const front = <EditCell label="From front" title="Exact distance of the first connector from the front (start) of the joint (mm)">{mm(l.start, v => onPatch({ start: v }))}</EditCell>;
   const rearMin = <EditCell label="Rear min" title="Smallest allowed distance of the last connector from the rear (end) of the joint (mm) — the real distance is this or a little more">{mm(l.end, v => onPatch({ end: v }))}</EditCell>;
@@ -1249,18 +1323,42 @@ function LayoutLineRow({ view, index, open, length, connectors, onOpen, onPatch,
     <div className={rowCardClass(open, false, false)} style={{ opacity: hit || open ? 1 : 0.62 }}>
       <div onClick={e => { stop(e); onOpen(); }} className={`relative h-[32px] pl-2.5 pr-1 flex items-center gap-2 cursor-pointer transition-colors duration-150 hover:bg-[#faf8f5] ${open ? ROW_SEL_HEAD : ''}`}>
         {open && <span className={ROW_SEL_BAR} />}
-        <span className="shrink-0 w-[10px] h-[10px] rounded-full ring-2 ring-white" style={{ background: view.color, boxShadow: `0 0 0 1px ${view.color}` }} />
         <span className="shrink-0 text-[10.5px] font-semibold tabular-nums text-stone-400">{index + 1}</span>
-        <div className="relative shrink min-w-0" onClick={stop} title="Connector placed by this rule">
-          <select value={l.connectorId ?? ''} onChange={e => onPatch({ connectorId: e.target.value || null })} className={SMALL_SELECT} style={{ fontFamily: UI_FONT }}>
+        {mark(1, view.color)}
+        <div className="relative shrink min-w-0" onClick={stop} title={view.two ? 'Connector 1 of this rule' : 'Connector placed by this rule'}>
+          <select aria-label="Connector 1" value={l.connectorId ?? ''} onChange={e => onPatch({ connectorId: e.target.value || null })} className={SMALL_SELECT} style={{ fontFamily: UI_FONT }}>
             {!view.conn && <option value="">Pick a connector</option>}
-            {connectors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            {connectors.filter(c => !view.two || c.id !== l.connector2Id).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
           <ChevronDown size={11} strokeWidth={2.2} className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-stone-400" />
         </div>
+        {view.two ? (
+          <>
+            {mark(2, view.color2)}
+            <div className="relative shrink min-w-0" onClick={stop} title="Connector 2 of this rule — every point below chooses 1, 2 or both">
+              <select aria-label="Connector 2" value={l.connector2Id ?? ''} className={SMALL_SELECT} style={{ fontFamily: UI_FONT }}
+                onChange={e => onPatch(secondConnectorPatch(l, e.target.value || null))}>
+                {!view.conn2 && <option value="">Pick a connector</option>}
+                {others.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <ChevronDown size={11} strokeWidth={2.2} className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-stone-400" />
+            </div>
+            <button type="button" title="Remove the second connector — every point goes back to connector 1" aria-label="Remove the second connector"
+              onClick={e => { stop(e); onPatch(secondConnectorPatch(l, undefined)); }}
+              className="shrink-0 -ml-1.5 w-[16px] h-[16px] rounded-full flex items-center justify-center text-stone-400 hover:text-stone-900 hover:bg-[#ece7e0] transition-colors"><X size={10} strokeWidth={2.4} /></button>
+          </>
+        ) : (
+          <button type="button" disabled={!others.length} onClick={e => { stop(e); onPatch(secondConnectorPatch(l, others[0]?.id ?? null)); if (!open) onOpen(); }}
+            title={others.length ? 'Add a second connector to this rule — then choose for every point which connector goes there: 1, 2 or both'
+              : 'A second connector needs another connector in the library — create one under Connect first'}
+            className={`shrink-0 h-[20px] pl-1 pr-1.5 rounded-full text-[10px] font-semibold whitespace-nowrap flex items-center gap-[2px] border border-dashed transition-colors duration-150
+              ${others.length ? 'border-[#cfc7bc] text-stone-500 hover:text-stone-900 hover:border-[#a89f92] hover:bg-white' : 'border-[#e3ddd4] text-stone-300 cursor-not-allowed'}`}>
+            <Plus size={10} strokeWidth={2.4} />2nd
+          </button>
+        )}
         <span className={`shrink-0 h-[18px] px-1.5 rounded-full text-[10px] font-semibold tabular-nums flex items-center ${hit ? 'bg-[#292524] text-white' : 'bg-[#ece7e0] text-stone-500'}`}
           title={hit ? `Applies to the previewed joint (${fmt1(length)} mm)` : `Not used on the previewed joint (${fmt1(length)} mm)`}>{lineRangeText(l)}</span>
-        <span className={`flex-1 min-w-0 truncate text-right ${MUTED}`} title="Rule · values">{layoutKindLabel(l.kind)} · {lineSummary(l)}{hit && view.conn ? ` · ${n} ×` : ''}</span>
+        <span className={`flex-1 min-w-0 truncate text-right ${MUTED}`} title="Rule · values">{layoutKindLabel(l.kind)} · {lineSummary(l)}{n ? ` · ${n} ×` : ''}</span>
         <button type="button" title="Duplicate this rule — e.g. to give another length range its own values" onClick={e => { stop(e); onCopy(); }} className={ICON_BTN}><Copy size={12} strokeWidth={1.9} /></button>
         <RowTrash title="Remove this rule" onClick={onRemove} />
       </div>
@@ -1274,6 +1372,14 @@ function LayoutLineRow({ view, index, open, length, connectors, onOpen, onPatch,
           {l.max > 0 && l.max < l.min && <div className="text-[10.5px] font-medium text-red-600 px-1">“Joint to” is smaller than “Joint from” — this rule never applies.</div>}
           <LayoutKindCards value={l.kind} onPick={k => onPatch({ kind: k })} />
           <div className="yago-hint px-1">{KIND_HELP[l.kind]}</div>
+          {view.two && (
+            <div className="yago-hint px-1" style={!view.conn2 || !uses.some(u => u & 2) || !uses.some(u => u & 1) ? { color: '#c2410c' } : undefined}>
+              {!view.conn2 ? 'Connector 2 is not picked — the points set to 2 stay empty until you pick one.'
+                : !uses.some(u => u & 2) ? 'Connector 2 is not used yet — set a point below to 2 or 1+2.'
+                : !uses.some(u => u & 1) ? 'Connector 1 is not used at any point — set a point below to 1 or 1+2.'
+                  : 'Two connectors on this rule: every point below chooses connector 1, connector 2 or both (1+2).'}
+            </div>
+          )}
           {l.kind === 'ends' && (
             <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
               {front}
@@ -1288,10 +1394,27 @@ function LayoutLineRow({ view, index, open, length, connectors, onOpen, onPatch,
               {middle}
             </div>
           )}
+          {view.two && (l.kind === 'ends' || l.kind === 'grid') && (
+            <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
+              {USE_SLOTS.map(sl => (
+                <EditCell key={sl.k} label={sl.label} title={`${sl.what} — connector 1, connector 2 or both`}>
+                  <UsePick value={l.use?.[sl.k]} view={view} what={sl.what} onPick={u => onPatch({ use: { ...l.use, [sl.k]: u } })} />
+                </EditCell>
+              ))}
+            </div>
+          )}
           {l.kind === 'steps' && (
             <>
               <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>{front}{rearMin}</div>
               <div className="flex flex-col" style={{ rowGap: QB_CELL_ROW.rowGap }}>
+                {view.two && (
+                  <div className="yago-cell h-[28px] pl-2 pr-1 flex items-center gap-1" onClick={stop} title="Which connector the first position gets (the one at the front distance)">
+                    <span className="yago-label shrink-0 w-[48px]">First</span>
+                    <span className="flex-1 min-w-0 truncate yago-hint">at the front distance</span>
+                    <UsePick value={l.use?.start} view={view} what="First connector" onPick={u => onPatch({ use: { ...l.use, start: u } })} />
+                    <span className="shrink-0 w-[22px]" />
+                  </div>
+                )}
                 {l.steps.map((s, i) => (
                   <div key={i} className="yago-cell h-[28px] pl-2 pr-1 flex items-center gap-1" onClick={stop}
                     title={`Step ${i + 1}: move ${fmt1(s.d)} mm from the previous connector and put one — ${s.n > 0 ? `${s.n} time${s.n === 1 ? '' : 's'}` : 'as many times as fit'}`}>
@@ -1301,6 +1424,7 @@ function LayoutLineRow({ view, index, open, length, connectors, onOpen, onPatch,
                     <span className="yago-label shrink-0 pl-2">Times</span>
                     <BlankNum value={s.n} placeholder="fit" limit={40} onCommit={v => onPatch({ steps: l.steps.map((x, k) => (k === i ? { ...x, n: Math.round(v) } : x)) })}
                       title="How many connectors this step puts — empty (fit) = as many as fit before the rear minimum" />
+                    {view.two && <span className="shrink-0 pl-1"><UsePick value={s.c} view={view} what={`Step ${i + 1} puts`} onPick={u => onPatch({ steps: l.steps.map((x, k) => (k === i ? { ...x, c: u } : x)) })} /></span>}
                     {l.steps.length > 1 ? <RowTrash title="Remove this step" onClick={() => onPatch({ steps: l.steps.filter((_, k) => k !== i) })} /> : <span className="shrink-0 w-[22px]" />}
                   </div>
                 ))}
@@ -1321,6 +1445,7 @@ function LayoutLineRow({ view, index, open, length, connectors, onOpen, onPatch,
                   <div className="w-[176px] shrink-0"><Segmented items={POINT_SEG} active={p.from} height={20} onPick={k => onPatch({ points: l.points.map((x, j) => (j === i ? { ...x, from: k as 'start' | 'end' } : x)) })} /></div>
                   <span className="flex-1 min-w-0" />
                   <QbNum value={p.d} min={0} w={44} onCommit={v => onPatch({ points: l.points.map((x, j) => (j === i ? { ...x, d: v } : x)) })} /><Unit />
+                  {view.two && <span className="shrink-0 pl-1"><UsePick value={p.c} view={view} what={`Position ${i + 1}`} onPick={u => onPatch({ points: l.points.map((x, j) => (j === i ? { ...x, c: u } : x)) })} /></span>}
                   <RowTrash title="Remove this connector from the list" onClick={() => onPatch({ points: l.points.filter((_, j) => j !== i) })} />
                 </div>
               ))}
@@ -1353,7 +1478,7 @@ function ConnectorLayoutEditor({ draft, setDraft, onSave, onCancel }: { draft: C
     const cur = ref.current.lines.find(l => l.id === id);
     if (cur && id === openId && ('min' in p || 'max' in p)) reach({ ...cur, ...p });
   };
-  const views = lineViews(draft, connectors), rows = views.filter(v => !!v.conn && lineApplies(v.line, len)), act = rows.findIndex(v => v.line.id === openId);
+  const views = lineViews(draft, connectors), rows = views.filter(v => viewSlots(v).length > 0 && lineApplies(v.line, len)), act = rows.findIndex(v => v.line.id === openId);
   /** Kuralı açar; önizleme boyu aralığının dışındaysa içine çekilir (düzenlenen kural şeritte görünsün). */
   const open = (l: LayoutLine, toggle = true) => {
     setOpenId(id => (toggle && id === l.id ? null : l.id));
@@ -1366,7 +1491,7 @@ function ConnectorLayoutEditor({ draft, setDraft, onSave, onCancel }: { draft: C
     setOpenId(line.id);
     reach(line);
   };
-  const nConn = new Set(draft.lines.map(l => l.connectorId).filter(Boolean)).size;
+  const nConn = new Set(draft.lines.flatMap(lineConnectorIds).filter(Boolean)).size;
   return (
     <>
       <div className="sticky top-0 z-30 -mx-1.5 -mt-1.5 px-1.5 pt-1.5 pb-1.5 flex flex-col gap-1.5" onClick={stop}
@@ -1395,20 +1520,20 @@ function ConnectorLayoutEditor({ draft, setDraft, onSave, onCancel }: { draft: C
         trailing={<CardAction compact icon={Plus} label="Add rule" title="Add a rule: another connector, or other values for another joint-length range" onClick={() => add()} />}>
         <div className="flex flex-col gap-1" onClick={stop}>
           {!connectors.length && <div className="yago-hint px-1">No connectors in the library yet — create one under Connect first.</div>}
-          {!draft.lines.length && <div className="yago-hint px-1">No rules yet. A rule = one connector + the joint lengths it is used on + how it is spread along the joint.</div>}
+          {!draft.lines.length && <div className="yago-hint px-1">No rules yet. A rule = one connector (or two) + the joint lengths it is used on + how it is spread along the joint.</div>}
           {views.map((v, i) => (
             <LayoutLineRow key={v.line.id} view={v} index={i} open={v.line.id === openId} length={len} connectors={connectors}
               onOpen={() => open(v.line)} onPatch={p => patchLine(v.line.id, p)} onCopy={() => add(v.line)}
               onRemove={() => { setLines(ls => ls.filter(l => l.id !== v.line.id)); if (openId === v.line.id) setOpenId(null); }} />
           ))}
-          <div className="yago-hint px-1 pt-0.5">Every rule whose length range contains the joint is applied — rules for different connectors add up, and one connector can have different rules for short and long joints.</div>
+          <div className="yago-hint px-1 pt-0.5">Every rule whose length range contains the joint is applied — rules for different connectors add up, and one connector can have different rules for short and long joints. A rule can also carry two connectors: add the second with “+ 2nd”, then choose 1, 2 or 1+2 for every point.</div>
         </div>
       </QbSection>
     </>
   );
 }
 const layoutSetSummary = (l: ConnectorLayoutSet, connectors: Connector[]): string => {
-  const names = [...new Set(l.lines.map(x => connectors.find(c => c.id === x.connectorId)?.name).filter((x): x is string => !!x))];
+  const names = [...new Set(l.lines.flatMap(lineConnectorIds).map(id => connectors.find(c => c.id === id)?.name).filter((x): x is string => !!x))];
   return `${names.join(' + ') || 'no connector'} · ${l.lines.length} rule${l.lines.length === 1 ? '' : 's'}`;
 };
 /** DİZİLİMLER (Accessories › Layout): kütüphane listesi + düzenleyici. Taslak üstte (AccessoriesPanel) tutulur. */
@@ -1539,12 +1664,12 @@ function PanelTypesPanel({ onEditLayout }: { /** dizilimi Layout bölümünde d�
   /** Kenarın satırları (dizilim atanmışsa; kayıp dizilimde boş liste), atanmamışsa null. */
   const rowsOf = (e: PanelEdgeDir): LineView[] | null => (ruleOf(e) ? lineViews(setOf(e), connectors) : null);
   const rule = cur ? ruleOf(cur) : undefined, set = cur ? setOf(cur) : undefined;
-  const views = lineViews(set, connectors), rows = views.filter(v => !!v.conn && lineApplies(v.line, length));
+  const views = lineViews(set, connectors), rows = views.filter(v => viewSlots(v).length > 0 && lineApplies(v.line, length));
   // Kenara tık: seçilir; seçili kenara tık → kapanır.
   const onEdge = (e: PanelEdgeDir) => { setActive(0); setEdge(cur === e ? null : e); };
   const ends = (cur ? EDGE_ENDS[plane][cur] : undefined) ?? (['left', 'right'] as [PanelEdgeDir, PanelEdgeDir]);
   const n = PLANE_EDGES[plane].filter(e => !!ruleOf(e)).length;
-  const total = rows.reduce((k, r) => k + linePositions(r.line, length).length, 0);
+  const total = rows.reduce((k, r) => k + viewCount(r, length), 0);
   return (
     <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" style={{ fontFamily: UI_FONT }}>
       <QbSection title="Panel types" sub="click a panel on the cabinet, or pick from the list">
@@ -1584,14 +1709,17 @@ function PanelTypesPanel({ onEditLayout }: { /** dizilimi Layout bölümünde d�
                   <LengthSlider value={length} onChange={setLength} marks={setMarks(set)} />
                   <div className="flex flex-col gap-[3px]">
                     {views.map((v, i) => {
-                      const hit = !!v.conn && lineApplies(v.line, length), ri = rows.indexOf(v);
+                      const hit = viewSlots(v).length > 0 && lineApplies(v.line, length), ri = rows.indexOf(v);
                       return (
                         <div key={v.line.id} onClick={() => { if (ri >= 0) setActive(ri); }}
                           className={`yago-cell h-[26px] pl-2 pr-2 flex items-center gap-2 ${ri >= 0 ? 'cursor-pointer' : ''} ${ri >= 0 && ri === Math.min(active, rows.length - 1) ? 'is-accent' : ''}`} style={{ opacity: hit ? 1 : 0.55 }}
                           title={hit ? 'Used on the previewed joint — click to show its dimensions' : `Not used on the previewed joint (${fmt1(length)} mm)`}>
-                          <span className="shrink-0 w-[9px] h-[9px] rounded-full" style={{ background: v.color }} />
+                          <span className="shrink-0 flex items-center gap-[2px]">
+                            <span className="w-[9px] h-[9px] rounded-full" style={{ background: v.color }} />
+                            {v.two && <span className="w-[9px] h-[9px] rounded-full" style={{ background: v.color2 }} />}
+                          </span>
                           <span className="shrink-0 text-[10.5px] font-semibold tabular-nums text-stone-400">{i + 1}</span>
-                          <span className="shrink min-w-0 truncate text-[11.5px] font-semibold text-stone-700">{v.conn?.name ?? 'No connector'}</span>
+                          <span className="shrink min-w-0 truncate text-[11.5px] font-semibold text-stone-700">{viewNames(v) || 'No connector'}</span>
                           <span className={`shrink-0 h-[16px] px-1.5 rounded-full text-[9.5px] font-semibold tabular-nums flex items-center ${hit ? 'bg-[#292524] text-white' : 'bg-[#ece7e0] text-stone-500'}`}>{lineRangeText(v.line)}</span>
                           <span className={`flex-1 min-w-0 truncate text-right ${MUTED}`}>{layoutKindLabel(v.line.kind)} · {lineSummary(v.line)}</span>
                         </div>
