@@ -2977,7 +2977,7 @@ async function applyQuickBodyInner(shapeId: string, cfg: QuickBodyConfig): Promi
     if (!fresh) { warnings.push(`${name}: no free region on that face`); return false; }
     // Aynı parça: VF ve panel id'si korunur (raf / kapak / arkalık referansları bozulmaz); yüz şekli tercihi de korunur.
     const vf: VirtualFace = { ...fresh, id: old?.vf.id ?? fresh.id, quickBody: key, ...(old?.vf.fitFaceShape ? { fitFaceShape: true } : {}),
-      ...(old?.vf.panelType ? { panelType: old.vf.panelType } : {}) };
+      ...(old?.vf.panelType ? { panelType: old.vf.panelType } : {}), ...(old?.vf.connectorSets ? { connectorSets: old.vf.connectorSets } : {}) };
     if (opts.bound === false) { vf.doorBound = false; vf.backBound = false; }
     if (opts.doorBound !== undefined) vf.doorBound = opts.doorBound;
     if (opts.backBound !== undefined) vf.backBound = opts.backBound;

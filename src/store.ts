@@ -112,6 +112,9 @@ export interface VirtualFace {
   railExt?: Array<RailExt & { band: [number, number] }>;
   /** PANEL TİPİ (elle seçilmiş); yoksa konumdan otomatik bulunur (ConnectorService.panelTypeOf). */
   panelType?: PanelTypeId;
+  /** BAĞLAYICI SETİ (elle seçilmiş, grup başına): set kimliği · null = bu panelde o grubun bağlayıcısı yok. Yoksa raf / dikme grubunun seçimi,
+   *  o da yoksa grubun varsayılan seti (ConnectorService.panelSetOf). */
+  connectorSets?: Partial<Record<ConnectorGroup, string | null>>;
 }
 /** İç köşe uzatmasının hedefi: dış normali `n` olan gövde yüzü; uzatma o düzlemden `depth` önce biter. Her regen'de yeniden ölçülür. */
 export interface RailExtTarget { n: Vec3; depth: number }
@@ -329,6 +332,8 @@ export interface PanelGroup {
   name?: string;
   /** Üyelerin panel tipi (raf: sabit / hareketli); yoksa yüzey varsayılanı. Üye VF.panelType bunu ezer. */
   panelType?: PanelTypeId;
+  /** Üyelerin bağlayıcı seti (grup başına; bkz. VirtualFace.connectorSets). */
+  connectorSets?: Partial<Record<ConnectorGroup, string | null>>;
   createdAt: number;
 }
 
@@ -458,39 +463,42 @@ export type PanelTypeId =
   | 'frontPlinth' | 'rearPlinth' | 'columnSide' | 'columnFront' | 'beamFront' | 'beamHoriz' | 'free';
 /** Panelin yerleştiği yüzey: gövde yüzü rolü, yüzün özel görevi (kolon / kiriş — LegLayout.FaceKind) ya da iç panel aracı (raf / dikme / arkalık). */
 export type PanelSurface = PanelEdgeDir | 'shelf' | 'divider' | 'back' | 'columnSide' | 'columnFront' | 'beamFront' | 'beamHoriz';
-/* BAĞLAYICI DİZİLİMİ (Accessories › Layout) — bağlayıcıdan ve panel tipinden BAĞIMSIZ kütüphane kaydı: birleşim boyunca bağlayıcıların nereye
-   geleceği. Dizilim = SATIRLAR; her satır = bir bağlayıcı + geçerli olduğu birleşim boyu aralığı + dört kuraldan biri. Bir boya denk gelen
-   satırların HEPSİ uygulanır (aynı dizilimde birden çok bağlayıcı, aynı bağlayıcıya farklı boylarda farklı kural).
-   Satır İKİ bağlayıcı taşıyabilir (`connector2Id`): o zaman kuralın her noktasında hangisinin geleceği seçilir (`ConnUse`: 1 · 2 · ikisi) —
-   'ends' / 'grid'de baş · orta · son (`use`), 'steps'te baş + her adım, 'list'te her nokta.
+/* BAĞLAYICI SETİ (Accessories › Layout) — bağlayıcıdan ve panel tipinden BAĞIMSIZ kütüphane kaydı: birleşim boyunca hangi bağlayıcının nereye
+   geleceği. Set bir GRUBA aittir (sabit · hareketli): panel tipinin kenarı yalnız GRUBU söyler (Accessories › Types), hangi setin kullanılacağı
+   PANELDE seçilir (o grubun setleri arasından; seçilmezse grubun varsayılan seti).
+   Set = SATIRLAR; her satır = TEK bağlayıcı + kendi ölçüleri (dört kuraldan biri) + geçerli olduğu birleşim boyu aralığı. Aynı `rule`
+   kimliğini taşıyan satırlar arayüzde TEK KURALDIR: boy aralığını paylaşır, her bağlayıcı kendi ölçü bloğuyla durur. Bir boya denk gelen
+   satırların HEPSİ uygulanır.
    Kurallar — `start` her zaman baştan (önden) TAM mesafe:
    'ends'  = baştan `start` + sondan `end`; boy `midFrom`'a ulaşınca tam ortaya bir tane daha ·
    'grid'  = 32 ızgarası: sonda `end` EN AZ mesafedir, delik ızgarada ona en yakın deliğe oturur (kalan pay sonda kalır); boy `midFrom`'a
              ulaşınca ortaya en yakın ızgara deliğine bir tane daha ·
    'steps' = verilen adımlarla sırayla ilerler (1. adım, 2. adım …), sonda `end` yine EN AZ mesafe ·
    'list'  = doğrudan liste: her nokta baştan ya da sondan verilen mesafede. */
+export type ConnectorGroup = 'fixed' | 'movable';
 export type LayoutKind = 'ends' | 'grid' | 'steps' | 'list';
-/** Noktaya gelen bağlayıcı: 1 = satırın 1. bağlayıcısı · 2 = 2. bağlayıcısı · 3 = ikisi birden (bit maskesi). Kayıtta yoksa 1. */
-export type ConnUse = 1 | 2 | 3;
-/** 'steps' adımı: `d` mm ilerleyip delik koyar, `n` kez (0 = sığdığı kadar); `c` = bu adımın koyduğu bağlayıcı. */
-export interface LayoutStep { d: number; n: number; c?: ConnUse }
-/** 'list' noktası: baştan ya da sondan `d` mm; `c` = bu noktaya gelen bağlayıcı. */
-export interface LayoutPoint { from: 'start' | 'end'; d: number; c?: ConnUse }
+/** 'steps' adımı: `d` mm ilerleyip delik koyar, `n` kez (0 = sığdığı kadar). (`c`: ESKİ, bkz. LayoutLine.connector2Id.) */
+export interface LayoutStep { d: number; n: number; c?: number }
+/** 'list' noktası: baştan ya da sondan `d` mm. */
+export interface LayoutPoint { from: 'start' | 'end'; d: number; c?: number }
 export interface LayoutLine {
   id: string; connectorId: string | null; kind: LayoutKind;
-  /** 2. bağlayıcı: anahtar YOKSA satır tek bağlayıcılıdır (bütün noktalar 1.'ye gider, seçimler okunmaz); null = 2. yuva açık ama bağlayıcısı
-   *  seçilmemiş / silinmiş (2.'ye ayrılan noktalar boş kalır). */
-  connector2Id?: string | null;
-  /** Baş · orta · son noktasına gelen bağlayıcı ('ends' / 'grid'; 'steps'te yalnız `start` = ilk bağlayıcı). */
-  use?: { start?: ConnUse; mid?: ConnUse; end?: ConnUse };
+  /** Kural kimliği: aynı kuralın bağlayıcı satırları bunu paylaşır (boy aralıkları da aynıdır); yoksa satır tek başına bir kuraldır. */
+  rule?: string;
   /** Geçerli olduğu birleşim boyu (mm, ikisi de dahil; boy tam mm'ye yuvarlanarak bakılır). `max` 0 = üst sınır yok. */
   min: number; max: number;
   start: number; end: number; midFrom: number; pitch: number; steps: LayoutStep[]; points: LayoutPoint[];
+  /** ESKİ (8. tur): satırda 2. bağlayıcı + nokta başına seçim. Açılışta ayrı satırlara çevrilir (ConnectorService.migrateConnectorGroups). */
+  connector2Id?: string | null; use?: { start?: number; mid?: number; end?: number };
 }
-export interface ConnectorLayoutSet { id: string; name: string; lines: LayoutLine[]; createdAt: number }
-/** Kenar kuralı: o kenara atanmış dizilim. `flipFace` → B yüzündeki işlemler panelin öteki geniş yüzüne (varsayılan: görünmeyen yüz —
- *  bkz. ConnectorService.hiddenFaceRole). */
-export interface EdgeConnectorRule { layoutId: string; flipFace?: boolean }
+export interface ConnectorLayoutSet {
+  id: string; name: string; lines: LayoutLine[]; createdAt: number;
+  /** Grubu (yoksa 'fixed') · grubunun VARSAYILAN seti mi (grupta işaretli yoksa ilk set varsayılandır). */
+  group?: ConnectorGroup; isDefault?: boolean;
+}
+/** Kenar kuralı: o kenara atılacak bağlayıcı GRUBU. `flipFace` → B yüzündeki işlemler panelin öteki geniş yüzüne (varsayılan: görünmeyen yüz —
+ *  bkz. ConnectorService.hiddenFaceRole). `layoutId`: ESKİ (7. – 8. tur, kenara atanmış dizilim) — açılışta gruba çevrilir. */
+export interface EdgeConnectorRule { group?: ConnectorGroup; flipFace?: boolean; layoutId?: string }
 /** ESKİ kayıt (6. tura kadar): dizilim bağlayıcının / kenar kuralının içindeydi. Yalnız açılışta yeni dizilimlere çevrilirken okunur
  *  (ConnectorService.migrateLegacyLayouts). */
 export interface LegacyLayout {
@@ -498,7 +506,7 @@ export interface LegacyLayout {
   steps?: Array<{ k: number; n: number }>; ranges?: Array<LegacyLayout & { upTo: number }>;
 }
 export interface LegacyEdgeRule extends LegacyLayout { connectorId: string | null; custom?: boolean; flipFace?: boolean }
-/** Tip kuralı: kenar rolü (ön / arka / üst / alt / sol / sağ) → o kenar başka panele dayanıyorsa uygulanacak dizilim. */
+/** Tip kuralı: kenar rolü (ön / arka / üst / alt / sol / sağ) → o kenar başka panele dayanıyorsa atılacak bağlayıcı grubu. */
 export interface PanelTypeRule { edges: Partial<Record<PanelEdgeDir, EdgeConnectorRule[]>> }
 export interface PanelSurfaceRule { allowed: PanelTypeId[]; def: PanelTypeId }
 export interface PanelTypeConfig { rules: Partial<Record<PanelTypeId, PanelTypeRule>>; surfaces: Partial<Record<PanelSurface, PanelSurfaceRule>> }
@@ -508,7 +516,7 @@ export function normalizePanelTypeConfig(raw: { rules?: unknown; surfaces?: unkn
   for (const [type, rule] of Object.entries((raw?.rules ?? {}) as Record<string, { edges?: Record<string, unknown> } | undefined>)) {
     const edges: PanelTypeRule['edges'] = {};
     for (const [edge, v] of Object.entries(rule?.edges ?? {})) {
-      const list = (Array.isArray(v) ? v : v ? [v] : []).filter((r): r is EdgeConnectorRule => !!r && typeof r === 'object' && !!((r as EdgeConnectorRule).layoutId || (r as LegacyEdgeRule).connectorId));
+      const list = (Array.isArray(v) ? v : v ? [v] : []).filter((r): r is EdgeConnectorRule => !!r && typeof r === 'object' && !!((r as EdgeConnectorRule).group || (r as EdgeConnectorRule).layoutId || (r as LegacyEdgeRule).connectorId));
       if (list.length) edges[edge as PanelEdgeDir] = list;
     }
     rules[type as PanelTypeId] = { edges };

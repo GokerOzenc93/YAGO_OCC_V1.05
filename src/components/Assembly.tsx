@@ -14,7 +14,7 @@ import {
   type BackPlacement, type DoorType, type CornerKey, type Shape, type QuickBodyConfig, type QuickBodyBase, type PanelGroup, type FaceExtrudeValueMode,
   useStoreFields, useAppStore, type VirtualFace, type DoorGroup, type BackGroup, shapeById, childPanelsOf, panelOfVf, requestRebuild,
   type QuickBodyRails, type RailKind, type RailSpec, type RailBackRel, railsOf, type QuickBodyPanelKey, type PanelEdgeDir, type PanelTypeId, PANEL_EDGE_DIRS,
-  type QuickBackRefKey,
+  type QuickBackRefKey, type ConnectorGroup,
 } from '../store';
 import {
   BACK_TYPE_TITLE, BACK_TYPE_LABEL, vfBackBound, isBackVf, confirmBackPick, backLeaves, backPieceOf, backLeafOfMember, backGroupName, setVfBackBound, backPlaneAxes,
@@ -49,7 +49,7 @@ import {
 import { confirmBodyPanelPlacement } from './Scene';
 import {
   bodyJoints, customPanelName, edgeConnectorNames, panelNameOf, panelOrientation, panelTypeChoice, panelTypeCode, panelTypeLabel, panelTypeShort, setGroupPanelType, setVfPanelType,
-  surfaceRuleOf,
+  surfaceRuleOf, defaultSetOf, groupLabel, setGroupConnectorSet, setVfConnectorSet, setsOfGroup, typeGroupsOf,
 } from './ConnectorService';
 import { useDraft as useSketch } from './Draft';
 import { beginFacePick, deleteSketch, editSketch, exitFace, sketchFeaturesOf } from './DraftView';
@@ -2334,6 +2334,22 @@ function PanelTypeTag({ vf }: { vf: VirtualFace }) {
   );
 }
 const EDGE_ORDER: PanelEdgeDir[] = ['top', 'bottom', 'front', 'rear', 'left', 'right'];
+const SET_DEFAULT = '', SET_NONE = '__none';
+/** PANELİN BAĞLAYICI SETİ (grup başına): yalnız o grubun setleri listelenir — Fixed kenarlar için Fixed setler, Movable kenarlar için Movable
+ *  setler. "Default" = grubun varsayılan seti (Accessories › Layout'ta yıldızlı); "None" = bu panelde o grubun bağlayıcısı atılmaz. */
+export function ConnectorSetSelect({ group, pick, onChange, scope = 'this panel' }: {
+  group: ConnectorGroup; pick: string | null | undefined; onChange: (id: string | null | undefined) => void; scope?: string;
+}) {
+  const { connectorLayouts } = useStoreFields('connectorLayouts');
+  const list = setsOfGroup(group, connectorLayouts), def = defaultSetOf(group, connectorLayouts), name = groupLabel(group);
+  const value = pick === null ? SET_NONE : pick && list.some(x => x.id === pick) ? pick : SET_DEFAULT;
+  return (
+    <SelectBox label={`${name} set`} className={value !== SET_DEFAULT ? 'is-accent' : ''} value={value}
+      options={[[SET_DEFAULT, def ? `Default · ${def.name}` : `No ${name.toLowerCase()} set yet`], ...list.map(x => [x.id, x.name] as [string, string]), [SET_NONE, 'None']]}
+      onChange={v => onChange(v === SET_NONE ? null : v === SET_DEFAULT ? undefined : v)}
+      title={`Connector set used on the ${name.toLowerCase()} edges of ${scope} — only ${name.toLowerCase()} sets are listed (made under Accessories › Layout). Which edges are ${name.toLowerCase()} comes from the panel type (Accessories › Types).`} />
+  );
+}
 /** Açık panel satırında: tip seçimi (yalnız o yüzeyde sunulan tipler) + panelin kenar rolleri (bağlayıcılı kenar turuncu, adetle). */
 function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefined }) {
   // Kural / dizilim / bağlayıcı değişince satır yenilensin.
@@ -2346,7 +2362,10 @@ function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefin
   const placed = (role: PanelEdgeDir) => joints.filter(j => j.key.split('|')[1] === role).reduce((n, j) => n + j.positions.length, 0);
   const opts = c.options.map(t => [t, t === c.auto ? `${panelTypeLabel(t)} · auto` : panelTypeLabel(t)] as [PanelTypeId, string]);
   const edges = o ? [...o.edges].sort((a, b) => EDGE_ORDER.indexOf(a.role) - EDGE_ORDER.indexOf(b.role)) : [];
+  // Tipin kenarlarında geçen gruplar: her biri için bu panelin seti seçilir.
+  const groups = typeGroupsOf(c.current);
   return (
+    <>
     <div className="flex items-center gap-1 mt-1.5" onClick={stop}>
       <SelectBox label="Type" className={c.manual ? 'is-accent' : ''} value={c.current} options={opts} onChange={t => setVfPanelType(vf.id, t)}
         title={`Panel type — only the types offered on this face (Accessories › Types). ${c.manual ? `Set by hand; automatic would be ${panelTypeLabel(c.auto)}.` : 'Automatic: follows the panel\'s position.'}`} />
@@ -2357,7 +2376,7 @@ function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefin
           <div className="flex items-center gap-[3px]">
             {edges.map((e, i) => {
               // Kenarın bağlayıcıları (atanmış dizilimin satırlarından): adlar + gerçekten atılan toplam adet.
-              const names = edgeConnectorNames(c.current, e.role);
+              const names = edgeConnectorNames(vf, c.current, e.role);
               const has = names.length > 0, n = has ? placed(e.role) : 0, list = names.join(' + ');
               return (
                 <span key={i} title={`${EDGE_LABEL[e.role]} edge · ${fmt1(e.length)} mm${has ? (n ? ` · ${n} × ${list}` : ` · ${list} — nothing placed: this edge does not butt against a panel face`) : ' · no connector'}`}
@@ -2371,6 +2390,12 @@ function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefin
         </div>
       )}
     </div>
+    {groups.length > 0 && (
+      <div className="flex items-center gap-1 mt-1" onClick={stop}>
+        {groups.map(g => <ConnectorSetSelect key={g} group={g} pick={vf.connectorSets?.[g]} onChange={id => setVfConnectorSet(vf.id, g, id)} />)}
+      </div>
+    )}
+    </>
   );
 }
 /** Liste üstüne yapışık yerleştirme şeritleri: panel yüzü · raf/dikme hacmi (ya da grubu yeniden konumlama) · kapak · arkalık. */
@@ -3369,6 +3394,12 @@ export function AssemblyPanel() {
                 ) : unitTxt('mm')}
               </FieldBox>
             </div>
+            {typeGroupsOf(groupPanelType(g)).length > 0 && (
+              <div className="flex items-center gap-1 mb-1.5">
+                {typeGroupsOf(groupPanelType(g)).map(cg => <ConnectorSetSelect key={cg} group={cg} pick={g.connectorSets?.[cg]} scope={`every ${g.kind === 'divider' ? 'divider' : 'shelf'} of this group`}
+                  onChange={id => setGroupConnectorSet(g.id, cg, id)} />)}
+              </div>
+            )}
             <GroupSchematic group={g} selectedIndex={selIdx(g.memberVfIds)} memberLabels={memberLabels(label, members, g.memberVfIds)}
               onEditGap={(k, v, pv) => { if (pv) previewGroupGap(g.id, k, v); else void editGroupGap(g.id, k, v); }}
               onToggleLock={k => toggleGroupGapLock(g.id, k)}
