@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
   type AccessoryLayer, type AccessoryModel, type AccessoryUnit, type CavityBox, type Connector, type HoleSpec, type LegModel, type LegModelPart,
-  type LegPartRole, type LegPreset, type PanelHole, type PanelTypeConfig, normalizePanelTypeConfig, useAppStore,
+  type ConnectorLayoutSet, type LegPartRole, type LegPreset, type PanelHole, type PanelTypeConfig, normalizePanelTypeConfig, useAppStore,
 } from '../store';
 import { type AxisDir, type Vec3, convertReplicadToThreeGeometry, genId, initReplicad, round1 } from './Geometry';
 import { type LegRule, standardLegRules, standardOf } from './LegLayout';
@@ -237,6 +237,8 @@ export const libraryPut = (store: 'connectors' | 'settings', value: unknown): Pr
 export const libraryDelete = (store: 'connectors' | 'settings', id: string): Promise<void> => idbDelete(store, id);
 /** `settings` deposundaki panel tipi kaydının kimliği. */
 export const PANEL_TYPE_CONFIG_ID = 'panelTypes';
+/** `settings` deposundaki bağlayıcı dizilimleri kaydı: `{ id, sets }` (tek kayıt — ayrı depo / sürüm artışı gerekmez). */
+export const CONNECTOR_LAYOUTS_ID = 'connectorLayouts';
 
 /** Çözülmüş (hazır) geometriler — eşzamanlı okuma için. */
 const readyGeo = new Map<string, { geo: THREE.BufferGeometry; size: Vec3 }>();
@@ -274,6 +276,8 @@ async function readAccessoryLibrary(): Promise<void> {
   useAppStore.getState().setConnectors(connectors.sort(by));
   const cfg = settings.find(x => x.id === PANEL_TYPE_CONFIG_ID);
   if (cfg) useAppStore.getState().setPanelTypeConfig(normalizePanelTypeConfig(cfg));
+  const lay = (settings as unknown as Array<{ id: string; sets?: ConnectorLayoutSet[] }>).find(x => x.id === CONNECTOR_LAYOUTS_ID);
+  useAppStore.getState().setConnectorLayouts(Array.isArray(lay?.sets) ? lay!.sets! : []);
 }
 const SEEDED_KEY = 'yago.accessories.layersSeeded';
 function seededFlag(set = false): boolean {

@@ -6,13 +6,14 @@
       yüzüne dayanır). 5) Birleşimler: kurallar gerçek panellere işlenir. Kayıt AccessoryService veritabanında (IndexedDB). */
 import * as THREE from 'three';
 import {
-  type CavityBox, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector, type ConnectorLayout,
-  type EdgeConnectorRule, type LayoutParams, type LayoutRange, type LayoutStep, type PanelEdgeDir, type PanelGroup, type PanelSurface, type PanelSurfaceRule,
-  type PanelTypeConfig, type PanelTypeId, type PanelTypeRule, type Shape, type VirtualFace, panelOfVf, requestRebuild, shapeById, useAppStore, vfOfPanel,
+  type CavityBox, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector, type ConnectorLayoutSet,
+  type EdgeConnectorRule, type LayoutKind, type LayoutLine, type LegacyEdgeRule, type LegacyLayout, type PanelEdgeDir, type PanelGroup, type PanelSurface,
+  type PanelSurfaceRule, type PanelTypeConfig, type PanelTypeId, type PanelTypeRule, type Shape, type VirtualFace, panelOfVf, requestRebuild, shapeById, useAppStore,
+  vfOfPanel,
 } from '../store';
 import { type Vec3, effectiveBodyGeometry, footprintGeometry, genId, localBboxOf, panelHasRotation, round1 } from './Geometry';
 import { type ToolSpec } from './CutWorker';
-import { type HoleCutter, PANEL_TYPE_CONFIG_ID, holeCutterBox, holeCutterOf, importAccessoryFile, libraryDelete, libraryPut } from './AccessoryService';
+import { type HoleCutter, CONNECTOR_LAYOUTS_ID, PANEL_TYPE_CONFIG_ID, holeCutterBox, holeCutterOf, importAccessoryFile, libraryDelete, libraryPut } from './AccessoryService';
 import { isDoorPanel } from './DoorService';
 import { isFaceKind, roleOfNormal } from './LegLayout';
 import { bodyFaces, bodyFrontAxis } from './PlinthService';
@@ -276,140 +277,116 @@ export function panelOrientation(panel: Shape | undefined | null, st: St = useAp
 }
 
 // ═════════════════════════════════════════════════ 4. TİP KURALLARI (kenar → bağlayıcı) ═════════════════════════════════════════════════
-/** Eksik alanlar için (dizilimsiz eski bağlayıcı): eski davranış — uç mesafeleri + azami aralık. */
-export const DEFAULT_CONNECTOR_LAYOUT: ConnectorLayout = { mode: 'spacing', start: 50, end: 50, maxSpacing: 400, count: 2, midFrom: 600 };
-/** YENİ bağlayıcının dizilimi: baştan + sondan birer tane, birleşim 600 mm'ye ulaşınca ortaya bir tane daha. */
-export const NEW_CONNECTOR_LAYOUT: ConnectorLayout = { ...DEFAULT_CONNECTOR_LAYOUT, mode: 'ends' };
-/** Bir kenarda en çok kaç ayrı bağlayıcı tanımlanır. */
-export const MAX_EDGE_RULES = 4;
 const typeRuleOf = (type: PanelTypeId, cfg: PanelTypeConfig = useAppStore.getState().panelTypeConfig): PanelTypeRule => cfg.rules?.[type] ?? { edges: {} };
-/** Kenarın kuralları (bağlayıcısı olanlar). Eski kayıt biçimi (tek nesne) de okunur. */
+/** Kenarın kuralları (dizilimi atanmış olanlar). */
 const rulesIn = (edges: PanelTypeRule['edges'] | undefined, edge: PanelEdgeDir): EdgeConnectorRule[] => {
   const v = edges?.[edge] as EdgeConnectorRule[] | EdgeConnectorRule | undefined;
-  return (Array.isArray(v) ? v : v ? [v] : []).filter(r => !!r?.connectorId);
+  return (Array.isArray(v) ? v : v ? [v] : []).filter(r => !!r?.layoutId);
 };
 export const edgeRulesOf = (type: PanelTypeId, edge: PanelEdgeDir, cfg?: PanelTypeConfig): EdgeConnectorRule[] => rulesIn(typeRuleOf(type, cfg).edges, edge);
-const ruleHasConnector = (rule: PanelTypeRule | undefined): boolean => !!rule && (Object.keys(rule.edges ?? {}) as PanelEdgeDir[]).some(e => rulesIn(rule.edges, e).length > 0);
-/* ───────── Dizilim: 32 ızgarası + boy aralığına göre kurallar ───────── */
-export const LAYOUT_PITCH = 32, MAX_LAYOUT_STEPS = 4;
-/** 'step' kipine ilk geçişte gelen adımlar: 8 × 32 sığdığı kadar, sonra 4 × 32 ve 2 × 32 birer kez (arkaya yaklaşmak için). */
-export const DEFAULT_LAYOUT_STEPS: LayoutStep[] = [{ k: 8, n: 0 }, { k: 4, n: 1 }, { k: 2, n: 1 }];
-export const layoutPitch = (p: Pick<LayoutParams, 'pitch'>): number => (p.pitch && p.pitch > 0 ? p.pitch : LAYOUT_PITCH);
-export const layoutSteps = (p: Pick<LayoutParams, 'steps'>): LayoutStep[] =>
-  (p.steps?.length ? p.steps : DEFAULT_LAYOUT_STEPS).slice(0, MAX_LAYOUT_STEPS).map(s => ({ k: Math.max(1, Math.round(s.k) || 1), n: Math.max(0, Math.round(s.n) || 0) }));
-/** Yalnız dizilim DEĞERLERİ (aralıklar ve kenar kuralının öteki alanları olmadan); eksikler varsayılandan. Anahtarların hepsi yazılır ki
- *  üzerine yayıldığı kayıttaki eski değer kalmasın. */
-export function layoutParams(src: Partial<LayoutParams> | undefined | null): LayoutParams {
-  const { mode, start, end, maxSpacing, count, midFrom, pitch, fill, steps } = { ...DEFAULT_CONNECTOR_LAYOUT, ...(src ?? {}) };
-  return { mode, start, end, maxSpacing, count, midFrom, pitch, fill, steps };
-}
-/** Sınırlı kurallar, sınırı küçükten büyüğe (bozuk kayıt elenir). */
-export const layoutRanges = (layout: Pick<ConnectorLayout, 'ranges'> | undefined | null): LayoutRange[] =>
-  (layout?.ranges ?? []).filter(r => !!r && r.upTo > 0).sort((a, b) => a.upTo - b.upTo);
-/** Kural listesi, boy sırasıyla: sınırlı kurallar + (sonda) hepsinden uzun birleşimlerin kuralı. `from` = aralığın alt sınırı, `upTo` null = ucu açık. */
-export function layoutRules(layout: ConnectorLayout): Array<{ from: number; upTo: number | null; params: LayoutParams }> {
-  const rs = layoutRanges(layout);
-  return [...rs.map((r, i) => ({ from: i ? rs[i - 1].upTo : 0, upTo: r.upTo as number | null, params: layoutParams(r) })),
-    { from: rs.length ? rs[rs.length - 1].upTo : 0, upTo: null, params: layoutParams(layout) }];
-}
-/** `length` boyundaki birleşime uygulanan kuralın sırası (`layoutRules` içinde). */
-export function layoutIndexAt(layout: ConnectorLayout, length: number): number {
-  const rs = layoutRanges(layout), i = rs.findIndex(r => length <= r.upTo + 1e-6);
-  return i < 0 ? rs.length : i;
-}
-export const layoutAt = (layout: ConnectorLayout, length: number): LayoutParams => layoutRules(layout)[layoutIndexAt(layout, length)].params;
-/** Kural listesinden dizilim kaydı (son kural ucu açık olandır). */
-function layoutFromRules(rules: Array<{ upTo: number | null; params: LayoutParams }>): ConnectorLayout {
-  const bounded = rules.filter(r => r.upTo != null).sort((a, b) => a.upTo! - b.upTo!), open = rules.find(r => r.upTo == null) ?? bounded.pop()!;
-  return { ...layoutParams(open.params), ranges: bounded.length ? bounded.map(r => ({ ...layoutParams(r.params), upTo: r.upTo! })) : undefined };
-}
-/** `index` sıradaki kuralın değerlerini değiştirir. */
-export function patchLayoutRule(layout: ConnectorLayout, index: number, patch: Partial<LayoutParams>): ConnectorLayout {
-  return layoutFromRules(layoutRules(layout).map((r, i) => (i === index ? { ...r, params: { ...r.params, ...patch } } : r)));
-}
-/** `length` boyuna uygulanan kuralı değiştirir (önizlemede tutamak sürükleme). */
-export const patchLayoutAt = (layout: ConnectorLayout, length: number, patch: Partial<LayoutParams>): ConnectorLayout =>
-  patchLayoutRule(layout, layoutIndexAt(layout, length), patch);
-/** YENİ boy aralığı: `length` boyuna uygulanan kural ikiye bölünür — yeni kural (aynı değerlerle) `upTo`'ya kadar olan kısmı alır.
- *  Sınır: aralığın üst ucu varsa ortası, yoksa `length`'in bir üst yüzlüğü. Dönen `index` yeni kuralın sırası. */
-export function addLayoutRange(layout: ConnectorLayout, length: number): { layout: ConnectorLayout; index: number; upTo: number } {
-  const rules = layoutRules(layout), cur = rules[layoutIndexAt(layout, length)];
-  let upTo = cur.upTo != null ? Math.round((cur.from + cur.upTo) / 20) * 10 : Math.max(cur.from + 100, Math.ceil((length + 1) / 100) * 100);
-  while (rules.some(r => r.upTo === upTo)) upTo += 10;
-  const next = layoutFromRules([...rules, { upTo, params: { ...cur.params } }]);
-  return { layout: next, index: layoutRanges(next).findIndex(r => r.upTo === upTo), upTo };
-}
-/** Kuralı siler: boyları bir sonraki kurala kalır; ucu açık kural silinirse son sınırlı kural ucu açık olur. Tek kural silinmez. */
-export function removeLayoutRule(layout: ConnectorLayout, index: number): ConnectorLayout {
-  const rules = layoutRules(layout); if (rules.length < 2) return layout;
-  const kept = rules.filter((_, i) => i !== index);
-  if (rules[index].upTo == null) kept[kept.length - 1] = { ...kept[kept.length - 1], upTo: null };
-  return layoutFromRules(kept);
-}
-/** Sınırlı kuralın üst sınırını değiştirir (komşu sınırla çakışırsa 1 mm kaydırılır). */
-export function setLayoutRuleUpTo(layout: ConnectorLayout, index: number, upTo: number): ConnectorLayout {
-  const rules = layoutRules(layout); if (rules[index]?.upTo == null) return layout;
-  let v = Math.max(1, round1(upTo));
-  while (rules.some((r, i) => i !== index && r.upTo === v)) v += 1;
-  return layoutFromRules(rules.map((r, i) => (i === index ? { ...r, upTo: v } : r)));
-}
-/** 32 IZGARASI: ilk delik baştan `start` (tam). `limit` = son deliğin gidebileceği en uzak yer (sondan EN AZ `end`).
- *  'steps': adımlar sırayla — her adım `k` × ızgara ilerleyip delik koyar, `n` kez (0 = sığdığı kadar); sığmayan adım atlanır, sıra bir sonrakine
- *  geçer (kaba adımla ilerle, ince adımla arkaya yaklaş). 'middle': ön + ızgarada arkaya en yakın delik; boy `midFrom`'a ulaşınca ikisinin
- *  ortasına en yakın ızgara deliği. */
-function stepPositions(p: LayoutParams, a: number, limit: number, length: number): number[] {
-  const pitch = layoutPitch(p), out = [a];
-  if (p.fill === 'middle') {
-    const m = Math.floor((limit - a) / pitch + 1e-6), from = p.midFrom ?? DEFAULT_CONNECTOR_LAYOUT.midFrom!;
-    if (m >= 2 && from > 0 && length >= from - 1e-6) out.push(a + Math.round(m / 2) * pitch);
-    if (m >= 1) out.push(a + m * pitch);
-    return out.map(round1);
-  }
-  let pos = a;
-  for (const s of layoutSteps(p)) {
-    const d = s.k * pitch;
-    for (let i = 0; (s.n === 0 || i < s.n) && pos + d <= limit + 1e-6 && out.length < 80; i++) { pos += d; out.push(pos); }
-  }
-  return out.map(round1);
-}
-/** Kenar boyunca bağlayıcı noktaları (kenarın başından mm): boyun düştüğü aralığın kuralıyla. Kenar uç mesafelerine sığmıyorsa tek bağlayıcı
- *  ortada. 'ends': baştan `start`, sondan `end`; birleşim `midFrom` boyuna ulaşınca TAM ORTAYA bir tane daha. */
-export function edgeConnectorPositions(layout: ConnectorLayout, length: number): number[] {
+const ruleHasLayout = (rule: PanelTypeRule | undefined): boolean => !!rule && (Object.keys(rule.edges ?? {}) as PanelEdgeDir[]).some(e => rulesIn(rule.edges, e).length > 0);
+
+/* ───────── DİZİLİM (Accessories › Layout): satır = bağlayıcı + boy aralığı + dört kuraldan biri ───────── */
+export const LAYOUT_PITCH = 32, MAX_LAYOUT_STEPS = 12, MAX_LAYOUT_POINTS = 24;
+export const LAYOUT_KINDS: Array<{ key: LayoutKind; label: string; sub: string }> = [
+  { key: 'ends', label: 'Ends + middle', sub: 'fixed from both ends, one in the middle on long joints' },
+  { key: 'grid', label: '32 grid', sub: 'fixed front, rear on the grid, middle on long joints' },
+  { key: 'steps', label: 'Steps', sub: 'walk from the front: step 1, step 2, step 3 …' },
+  { key: 'list', label: 'List', sub: 'every connector typed in, from the front or the rear' },
+];
+export const layoutKindLabel = (k: LayoutKind): string => LAYOUT_KINDS.find(x => x.key === k)?.label ?? k;
+/** Yeni satır: baştan + sondan 50, 600 mm'den sonra ortaya; her boyda geçerli. Öteki kuralların değerleri de hazır gelir (kural değişince
+ *  boş kalmasın): adımlar 256 · 224, liste = baştan 50 + sondan 50. */
+export const newLayoutLine = (connectorId: string | null, init: Partial<LayoutLine> = {}): LayoutLine => ({
+  id: genId('ll'), connectorId, kind: 'ends', min: 0, max: 0, start: 50, end: 50, midFrom: 600, pitch: LAYOUT_PITCH,
+  steps: [{ d: 256, n: 1 }, { d: 224, n: 1 }], points: [{ from: 'start', d: 50 }, { from: 'end', d: 50 }], ...init,
+});
+export const newLayoutSet = (name = 'Layout', connectorId: string | null = null): ConnectorLayoutSet =>
+  ({ id: genId('lay'), name, lines: [newLayoutLine(connectorId)], createdAt: Date.now() });
+export const cloneLayoutSet = (l: ConnectorLayoutSet): ConnectorLayoutSet => JSON.parse(JSON.stringify(l)) as ConnectorLayoutSet;
+/** Satır bu birleşim boyunda geçerli mi (boy tam mm'ye yuvarlanır: "40 – 99" ile "100 – 500" arasında boşluk kalmaz). */
+export const lineApplies = (l: Pick<LayoutLine, 'min' | 'max'>, length: number): boolean => {
+  const L = Math.round(length);
+  return L >= (l.min || 0) && (!(l.max > 0) || L <= l.max);
+};
+/** Satırın bağlayıcı noktaları (birleşimin başından mm) — boy aralığına BAKMADAN. Baş + son mesafesine sığmayan birleşimde tek bağlayıcı ortada.
+ *  'grid' / 'steps': son delik sondan EN AZ `end` uzakta kalır; 'steps'te sığmayan adım atlanır, sıra sonrakine geçer. */
+export function linePositions(l: LayoutLine, length: number): number[] {
   if (!(length > 0)) return [];
-  const rule = layoutAt(layout, length);
-  const a = Math.max(0, rule.start), b = length - Math.max(0, rule.end), span = b - a;
-  if (rule.mode === 'step') return span < -1e-6 ? [round1(length / 2)] : stepPositions(rule, a, b, length);
-  if (span < 1) return [round1(length / 2)];
-  if (rule.mode === 'ends') {
-    const mid = length / 2, from = rule.midFrom ?? DEFAULT_CONNECTOR_LAYOUT.midFrom!;
-    return from > 0 && length >= from - 1e-6 && mid - a > 1 && b - mid > 1 ? [round1(a), round1(mid), round1(b)] : [round1(a), round1(b)];
+  const uniq = (list: number[]) => [...new Set(list.map(round1))].sort((x, y) => x - y);
+  if (l.kind === 'list') return uniq(l.points.map(p => (p.from === 'end' ? length - p.d : p.d)).filter(d => d >= 0 && d <= length));
+  const a = Math.max(0, l.start), b = length - Math.max(0, l.end), mid = l.midFrom > 0 && length >= l.midFrom - 1e-6;
+  if (l.kind === 'ends') {
+    if (b - a < 1) return [round1(length / 2)];
+    return mid && length / 2 - a > 1 && b - length / 2 > 1 ? uniq([a, length / 2, b]) : uniq([a, b]);
   }
-  const n = rule.mode === 'count' ? Math.max(1, Math.round(rule.count)) : Math.max(2, Math.ceil(span / Math.max(1, rule.maxSpacing) - 1e-9) + 1);
-  if (n === 1) return [round1(length / 2)];
-  return Array.from({ length: n }, (_, i) => round1(a + (span * i) / (n - 1)));
+  if (b - a < -1e-6) return [round1(length / 2)];
+  if (l.kind === 'grid') {
+    const pitch = l.pitch > 0 ? l.pitch : LAYOUT_PITCH, m = Math.floor((b - a) / pitch + 1e-6);
+    return uniq([a, ...(m >= 2 && mid ? [a + Math.round(m / 2) * pitch] : []), ...(m >= 1 ? [a + m * pitch] : [])]);
+  }
+  const out = [a];
+  let pos = a;
+  for (const st of l.steps) {
+    const d = Math.max(1, st.d);
+    for (let i = 0; (st.n <= 0 || i < st.n) && pos + d <= b + 1e-6 && out.length < 80; i++) { pos += d; out.push(pos); }
+  }
+  return uniq(out);
+}
+/** Satırın tek satırlık özeti. */
+export function lineSummary(l: LayoutLine): string {
+  const f = (v: number) => String(round1(v));
+  if (l.kind === 'ends') return `${f(l.start)} / ${f(l.end)}${l.midFrom > 0 ? ` · middle from ${f(l.midFrom)}` : ''}`;
+  if (l.kind === 'grid') return `${f(l.start)} / min ${f(l.end)} on ${f(l.pitch)}${l.midFrom > 0 ? ` · middle from ${f(l.midFrom)}` : ''}`;
+  if (l.kind === 'steps') return `${f(l.start)} + ${l.steps.map(s => `${f(s.d)}${s.n === 1 ? '' : s.n > 1 ? `×${s.n}` : '×fit'}`).join(' + ')} · min ${f(l.end)}`;
+  return l.points.map(p => `${p.from === 'end' ? '←' : ''}${f(p.d)}${p.from === 'end' ? '' : '→'}`).join(' · ') || 'empty';
+}
+export const lineRangeText = (l: Pick<LayoutLine, 'min' | 'max'>): string =>
+  (l.max > 0 ? `${round1(l.min || 0)} – ${round1(l.max)} mm` : l.min > 0 ? `from ${round1(l.min)} mm` : 'any length');
+async function saveLayoutSets(sets: ConnectorLayoutSet[]): Promise<void> {
+  useAppStore.getState().setConnectorLayouts(sets);
+  refreshConnectorBodies();
+  await libraryPut('settings', { id: CONNECTOR_LAYOUTS_ID, sets });
+}
+export function saveLayoutSet(set: ConnectorLayoutSet): Promise<void> {
+  const list = useAppStore.getState().connectorLayouts;
+  return saveLayoutSets(list.some(x => x.id === set.id) ? list.map(x => (x.id === set.id ? set : x)) : [...list, set]);
+}
+/** Dizilimi siler; onu kullanan kenarlar boşalır. */
+export async function deleteLayoutSet(id: string): Promise<void> {
+  const st = useAppStore.getState();
+  await saveLayoutSets(st.connectorLayouts.filter(x => x.id !== id));
+  const next = mapEdgeRules(st.panelTypeConfig, list => list.filter(r => r.layoutId !== id));
+  if (next) await savePanelTypeConfig(next);
+}
+/** Dizilimi kullanan kenar sayısı (liste rozeti). */
+export const layoutUseCount = (id: string, cfg: PanelTypeConfig = useAppStore.getState().panelTypeConfig): number =>
+  Object.values(cfg.rules ?? {}).reduce((n, r) => n + (Object.keys(r?.edges ?? {}) as PanelEdgeDir[]).filter(e => rulesIn(r!.edges, e).some(x => x.layoutId === id)).length, 0);
+/** Bütün kenar listelerini dönüştürür; hiçbiri değişmediyse null. */
+function mapEdgeRules(cfg: PanelTypeConfig, fn: (list: EdgeConnectorRule[], type: PanelTypeId, edge: PanelEdgeDir) => EdgeConnectorRule[]): PanelTypeConfig | null {
+  const rules: PanelTypeConfig['rules'] = {};
+  let touched = false;
+  for (const [type, rule] of Object.entries(cfg.rules ?? {}) as Array<[PanelTypeId, PanelTypeRule]>) {
+    const edges: PanelTypeRule['edges'] = {};
+    for (const e of Object.keys(rule.edges ?? {}) as PanelEdgeDir[]) {
+      const all = (rule.edges[e] ?? []) as EdgeConnectorRule[], kept = fn(all, type, e);
+      if (kept !== all && JSON.stringify(kept) !== JSON.stringify(all)) touched = true;
+      if (kept.length) edges[e] = kept;
+    }
+    rules[type] = { edges };
+  }
+  return touched ? { ...cfg, rules } : null;
 }
 async function savePanelTypeConfig(cfg: PanelTypeConfig): Promise<void> {
   useAppStore.getState().setPanelTypeConfig(cfg);
   refreshConnectorBodies();
   await libraryPut('settings', { id: PANEL_TYPE_CONFIG_ID, ...cfg });
 }
-/** Kenarın bağlayıcı listesini yazar (en çok MAX_EDGE_RULES); boş liste → kenardan bağlayıcı kalkar. */
-export function setEdgeRules(type: PanelTypeId, edge: PanelEdgeDir, rules: EdgeConnectorRule[]): Promise<void> {
+/** Kenara dizilim atar (`layoutId` null → kenardan bağlayıcılar kalkar). */
+export function setEdgeLayout(type: PanelTypeId, edge: PanelEdgeDir, layoutId: string | null, flipFace = false): Promise<void> {
   const cfg = useAppStore.getState().panelTypeConfig, edges = { ...typeRuleOf(type, cfg).edges };
-  const list = rules.filter(r => !!r.connectorId).slice(0, MAX_EDGE_RULES);
-  if (list.length) edges[edge] = list; else delete edges[edge];
+  if (layoutId) edges[edge] = [{ layoutId, ...(flipFace ? { flipFace: true } : {}) }]; else delete edges[edge];
   return savePanelTypeConfig({ ...cfg, rules: { ...cfg.rules, [type]: { edges } } });
-}
-/** Kenara eklenecek yeni kural: dizilim bağlayıcınınkinden. Aynı kenarda aynı yere düşen kural varsa uç mesafeleri 32 mm içeri kayar ve
- *  'Ends' kipinde orta bağlayıcı kapalı gelir (iki bağlayıcı üst üste gelmesin; değerler sonra elle / sürükleyerek düzeltilir). */
-export function newEdgeRule(conn: Connector, existing: EdgeConnectorRule[], connectors: Connector[]): EdgeConnectorRule {
-  const base: ConnectorLayout = { ...layoutParams(conn.layout), ranges: conn.layout?.ranges };
-  const used = existing.map(r => ruleLayout(r, connectors.find(c => c.id === r.connectorId)));
-  let shift = 0;
-  while (used.some(u => Math.abs(u.start - base.start - shift) < 16 || Math.abs(u.end - base.end - shift) < 16) && base.start + shift < 400) shift += 32;
-  if (!shift) return { ...base, connectorId: conn.id };
-  const moved = layoutFromRules(layoutRules(base).map(r => ({ ...r, params: { ...r.params, start: r.params.start + shift, end: r.params.end + shift, ...(r.params.mode === 'ends' ? { midFrom: 0 } : {}) } })));
-  return { ...moved, connectorId: conn.id, custom: true };
 }
 export function setSurfaceRule(surface: PanelSurface, rule: PanelSurfaceRule): Promise<void> {
   const cfg = useAppStore.getState().panelTypeConfig;
@@ -420,6 +397,11 @@ export const typeEdgeCount = (type: PanelTypeId, cfg?: PanelTypeConfig): number 
   const edges = typeRuleOf(type, cfg).edges;
   return (Object.keys(edges) as PanelEdgeDir[]).filter(e => rulesIn(edges, e).length > 0).length;
 };
+/** Kenardaki bağlayıcıların adları (atanmış dizilimin satırlarından, tekrarsız). */
+export function edgeConnectorNames(type: PanelTypeId, edge: PanelEdgeDir, st: St = useAppStore.getState()): string[] {
+  const ids = edgeRulesOf(type, edge, st.panelTypeConfig).flatMap(r => st.connectorLayouts.find(x => x.id === r.layoutId)?.lines ?? []).map(l => l.connectorId);
+  return [...new Set(ids)].map(id => st.connectors.find(c => c.id === id)?.name).filter((x): x is string => !!x);
+}
 
 // ═════════════════════════════════════════════════ 5. BAĞLAYICI ═════════════════════════════════════════════════
 /* TEMSİLİ BİRLEŞİM çerçevesi (mm): x = A'nın yüzünden B'nin içine · y = B'nin kalınlığı boyunca (0 = ortası) · z = birleşim çizgisi
@@ -456,7 +438,7 @@ export function connSurfaceExtent(surface: ConnSurface, tB: number): { x0: numbe
 export const connSurfaceDepth = (surface: ConnSurface, tA: number, tB: number): number => (surface === 'bFace' ? tB : surface === 'bEdge' ? CONN_REP.bLen : tA);
 
 export const newConnector = (name = 'Connector'): Connector =>
-  ({ id: genId('conn'), name, holes: [], ops: [], parts: [], tA: CONN_DEFAULT_T, tB: CONN_DEFAULT_T, layout: { ...NEW_CONNECTOR_LAYOUT }, createdAt: Date.now() });
+  ({ id: genId('conn'), name, holes: [], ops: [], parts: [], tA: CONN_DEFAULT_T, tB: CONN_DEFAULT_T, createdAt: Date.now() });
 export const newConnHole = (init: Partial<ConnHole> = {}): ConnHole => ({ id: genId('ch'), surface: 'bFace', along: 0, across: 0, diameter: 8, depth: 12, ...init });
 export const newConnOp = (surface: ConnSurface, type: ConnOpType = 'pocket', init: Partial<ConnOp> = {}): ConnOp =>
   ({ id: genId('cop'), surface, type, depth: 5, width: 6, shapes: [], ...init });
@@ -481,28 +463,18 @@ export async function saveConnector(c: Connector): Promise<void> {
   refreshConnectorBodies();
   await libraryPut('connectors', c);
 }
-/** Bağlayıcıyı siler; onu kullanan kenar kuralları boşalır. */
+/** Bağlayıcıyı siler; dizilimlerde onu kullanan satırlar bağlayıcısız kalır (satır durur, yeni bağlayıcı seçilir). */
 export async function deleteConnector(id: string): Promise<void> {
   const st = useAppStore.getState();
   st.removeConnector(id);
   refreshConnectorBodies();
   await libraryDelete('connectors', id);
-  const cfg = st.panelTypeConfig, rules: PanelTypeConfig['rules'] = {};
-  let touched = false;
-  for (const [type, rule] of Object.entries(cfg.rules ?? {}) as Array<[PanelTypeId, PanelTypeRule]>) {
-    const edges: PanelTypeRule['edges'] = {};
-    for (const e of Object.keys(rule.edges ?? {}) as PanelEdgeDir[]) {
-      const all = rulesIn(rule.edges, e), kept = all.filter(r => r.connectorId !== id);
-      if (kept.length !== all.length) touched = true;
-      if (kept.length) edges[e] = kept;
-    }
-    rules[type] = { edges };
-  }
-  if (touched) await savePanelTypeConfig({ ...cfg, rules });
+  if (st.connectorLayouts.some(x => x.lines.some(l => l.connectorId === id)))
+    await saveLayoutSets(st.connectorLayouts.map(x => ({ ...x, lines: x.lines.map(l => (l.connectorId === id ? { ...l, connectorId: null } : l)) })));
 }
-/** Bağlayıcıyı kullanan kenar sayısı (liste rozeti). */
-export const connectorUseCount = (id: string, cfg: PanelTypeConfig = useAppStore.getState().panelTypeConfig): number =>
-  Object.values(cfg.rules ?? {}).reduce((n, r) => n + (Object.keys(r?.edges ?? {}) as PanelEdgeDir[]).filter(e => rulesIn(r!.edges, e).some(x => x.connectorId === id)).length, 0);
+/** Bağlayıcıyı kullanan dizilim sayısı (liste rozeti). */
+export const connectorUseCount = (id: string, sets: ConnectorLayoutSet[] = useAppStore.getState().connectorLayouts): number =>
+  sets.filter(x => x.lines.some(l => l.connectorId === id)).length;
 
 // ═════════════════════════════════════════════════ 6. BİRLEŞİMLER: bağlayıcının gerçek panellere atılması ═════════════════════════════════════════════════
 /* BİRLEŞİM = B panelinin UCU (kalınlık yüzü) A panelinin geniş yüzüne dayanıyor. B'nin tipinde o kenar için bağlayıcı tanımlıysa temas
@@ -553,16 +525,11 @@ function hiddenFaceRole(type: PanelTypeId, plane: Exclude<PanelPlane, 'any'>, bo
   const bb = bodyBoxOf(body), c = (box.min.getComponent(thin) + box.max.getComponent(thin)) / 2, bc = bb ? (bb.min.getComponent(thin) + bb.max.getComponent(thin)) / 2 : c;
   return Math.abs(c - bc) < 1 ? 'left' : roleOfDir(body, unit(thin, c > bc ? 1 : -1), st);
 }
-/** Kenar kuralının geçerli dizilimi: kenara özel değilse bağlayıcının kendi dizilimi. */
-export function ruleLayout(rule: EdgeConnectorRule, conn: Connector | undefined): ConnectorLayout {
-  const src: Partial<ConnectorLayout> = rule.custom ? rule : conn?.layout ?? {};
-  return { ...layoutParams(src), ranges: layoutRanges(src).length ? layoutRanges(src) : undefined };
-}
 const _jointCache = new Map<string, { sig: string; joints: PanelJoint[] }>();
 /** Gövdenin tüm birleşimleri (kural + temas). Sonuç panel geometrileri / tipler / kütüphane değişene kadar saklanır. */
 export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): PanelJoint[] {
   const cfg = st.panelTypeConfig;
-  if (!st.connectors.length || !Object.values(cfg.rules ?? {}).some(ruleHasConnector)) return [];
+  if (!st.connectors.length || !st.connectorLayouts.length || !Object.values(cfg.rules ?? {}).some(ruleHasLayout)) return [];
   const body = shapeById(bodyId, st.shapes); if (!body) return [];
   const slabs = st.shapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === bodyId && !isDoorPanel(s) && !s.parameters?.curved && !panelHasRotation(s))
     .map(p => {
@@ -572,7 +539,7 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
       const thin = na[byN] > 0.9 ? byN : info.size.indexOf(Math.min(...info.size));
       return { p, vf, info, thin, uuid: geo!.uuid, type: panelTypeOf(vf, st) };
     }).filter((x): x is NonNullable<typeof x> => !!x);
-  const sig = `${slabs.map(s => `${s.p.id}:${s.uuid}:${s.type}`).join('|')}#${JSON.stringify(cfg.rules ?? {})}#${st.connectors.map(c => `${c.id}:${JSON.stringify(c.layout ?? 0)}`).join(',')}#${bodyFrontAxis(body, st).facing}`;
+  const sig = `${slabs.map(s => `${s.p.id}:${s.uuid}:${s.type}`).join('|')}#${JSON.stringify(cfg.rules ?? {})}#${st.connectors.map(c => c.id).join(',')}#${JSON.stringify(st.connectorLayouts)}#${bodyFrontAxis(body, st).facing}`;
   const hit = _jointCache.get(bodyId);
   if (hit && hit.sig === sig) {
     // Bağlayıcının içeriği (delik / model) değişmiş olabilir: nesne güncel listeden yeniden bağlanır.
@@ -581,13 +548,14 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
   const joints: PanelJoint[] = [];
   for (const B of slabs) {
     const edges = B.type ? cfg.rules?.[B.type]?.edges : undefined;
-    if (!B.type || !edges || !ruleHasConnector({ edges })) continue;
+    if (!B.type || !edges || !ruleHasLayout({ edges })) continue;
     const plane = PLANE_OF_ROLE[roleOfDir(body, unit(B.thin, 1), st)];
     const faceRoles: [PanelEdgeDir, PanelEdgeDir] = [roleOfDir(body, unit(B.thin, 1), st), roleOfDir(body, unit(B.thin, -1), st)];
     for (const i of [0, 1, 2]) if (i !== B.thin) for (const s of [1, -1]) {
       const role = roleOfDir(body, unit(i, s), st);
-      // Kenarın bağlayıcıları (birden çok olabilir); sıra numarası birleşim anahtarına girer.
-      const list = rulesIn(edges, role).map((rule, ri) => ({ rule, ri, conn: st.connectors.find(c => c.id === rule.connectorId) })).filter(x => !!x.conn);
+      // Kenarın dizilim satırları (bağlayıcısı olanlar); satır kimliği birleşim anahtarına girer. Boy aralığı temas boyu belli olunca elenir.
+      const list = rulesIn(edges, role).flatMap(rule => (st.connectorLayouts.find(x => x.id === rule.layoutId)?.lines ?? [])
+        .map(line => ({ rule, line, conn: st.connectors.find(c => c.id === line.connectorId) }))).filter(x => !!x.conn);
       if (!list.length) continue;
       const end = B.info.planes[i][s > 0 ? 1 : 0]; if (end.n < 3) continue;
       const c = s > 0 ? B.info.box.max.getComponent(i) : B.info.box.min.getComponent(i), a = [0, 1, 2].find(k => k !== i && k !== B.thin)!;
@@ -608,10 +576,14 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
         const o: Vec3 = [0, 0, 0];
         o[i] = c; o[B.thin] = (end.min[B.thin] + end.max[B.thin]) / 2; o[a] = aSign > 0 ? aOv[0] : aOv[1];
         const length = round1(aOv[1] - aOv[0]);
-        for (const { rule, ri, conn } of list) joints.push({
-          key: `${B.p.id}|${role}|${A.p.id}|${ri}`, bId: B.p.id, aId: A.p.id, connector: conn!, o, along: unit(a, aSign), nIn: unit(i, -s),
-          t: unit(B.thin, hidden * (rule.flipFace ? -1 : 1)), length, tB: round1(tB), tA: round1(A.info.size[i]), positions: edgeConnectorPositions(ruleLayout(rule, conn), length),
-        });
+        for (const { rule, line, conn } of list) {
+          if (!lineApplies(line, length)) continue;
+          const positions = linePositions(line, length); if (!positions.length) continue;
+          joints.push({
+            key: `${B.p.id}|${role}|${A.p.id}|${line.id}`, bId: B.p.id, aId: A.p.id, connector: conn!, o, along: unit(a, aSign), nIn: unit(i, -s),
+            t: unit(B.thin, hidden * (rule.flipFace ? -1 : 1)), length, tB: round1(tB), tA: round1(A.info.size[i]), positions,
+          });
+        }
       }
     }
   }
@@ -830,12 +802,60 @@ export async function addSampleConnector(name = 'Connector 1'): Promise<Connecto
   await saveConnector(c);
   return c;
 }
-const SAMPLE_SEEDED_KEY = 'yago.accessories.connectorSampleSeeded';
-/** İlk açılışta bir kez: "Connector 1" yoksa örnek bağlayıcı eklenir (silinirse geri gelmez). */
+/** ÖRNEK dizilim: verilen bağlayıcı baştan + sondan 50 mm, 600 mm'den sonra ortaya. */
+export async function addSampleLayout(connectorId: string | null, name = 'Layout 1'): Promise<ConnectorLayoutSet> {
+  const set = newLayoutSet(name, connectorId);
+  await saveLayoutSet(set);
+  return set;
+}
+/** ESKİ dizilim (bağlayıcıya / kenar kuralına gömülü, "≤ upTo" aralıklı) → yeni satırlar. Eşit dağıtım (spacing / count) kipi kalktı:
+ *  o satırlar baştan + sondan + ortaya çevrilir. */
+function legacyLines(lay: LegacyLayout | undefined, connectorId: string): LayoutLine[] {
+  const ranges = [...(lay?.ranges ?? [])].filter(r => r.upTo > 0).sort((x, y) => x.upTo - y.upTo);
+  const rows: Array<{ p: LegacyLayout; min: number; max: number }> = [
+    ...ranges.map((r, i) => ({ p: r as LegacyLayout, min: i ? ranges[i - 1].upTo + 1 : 0, max: r.upTo })),
+    { p: lay ?? {}, min: ranges.length ? ranges[ranges.length - 1].upTo + 1 : 0, max: 0 },
+  ];
+  return rows.map(({ p, min, max }) => {
+    const pitch = p.pitch && p.pitch > 0 ? p.pitch : LAYOUT_PITCH, step = p.mode === 'step';
+    return newLayoutLine(connectorId, {
+      min, max, start: p.start ?? 50, end: p.end ?? 50, midFrom: p.midFrom ?? 600, pitch,
+      kind: step ? (p.fill === 'middle' ? 'grid' : 'steps') : 'ends',
+      ...(step && p.fill !== 'middle' && p.steps?.length ? { steps: p.steps.map(x => ({ d: Math.max(1, x.k) * pitch, n: Math.max(0, x.n) })) } : {}),
+    });
+  });
+}
+/** Açılışta bir kez: eski kenar kuralları (bağlayıcı + gömülü dizilim) dizilim kayıtlarına çevrilir; aynı içerik tek dizilim olur. */
+export async function migrateLegacyLayouts(): Promise<void> {
+  const st = useAppStore.getState(), sets = [...st.connectorLayouts], byBody = new Map<string, string>();
+  const next = mapEdgeRules(st.panelTypeConfig, list => {
+    const old = (list as unknown as LegacyEdgeRule[]).filter(r => !(r as unknown as EdgeConnectorRule).layoutId && !!r.connectorId);
+    if (!old.length) return list;
+    const lines = old.flatMap(r => legacyLines(r.custom ? r : st.connectors.find(c => c.id === r.connectorId)?.layout, r.connectorId!));
+    const body = JSON.stringify(lines.map(l => ({ ...l, id: '' })));
+    let id = byBody.get(body);
+    if (!id) { const set: ConnectorLayoutSet = { id: genId('lay'), name: `Layout ${sets.length + 1}`, lines, createdAt: Date.now() + sets.length }; sets.push(set); id = set.id; byBody.set(body, id); }
+    return [...list.filter(r => !!r.layoutId), { layoutId: id, ...(old.some(r => r.flipFace) ? { flipFace: true } : {}) }];
+  });
+  if (!next) return;
+  await saveLayoutSets(sets);
+  await savePanelTypeConfig(next);
+}
+const SAMPLE_SEEDED_KEY = 'yago.accessories.connectorSampleSeeded', LAYOUT_SEEDED_KEY = 'yago.accessories.layoutSampleSeeded';
+/** Açılışta: eski dizilimler çevrilir; ilk açılışta bir kez "Connector 1" yoksa örnek bağlayıcı, hiç dizilim yoksa onunla örnek dizilim
+ *  eklenir (silinirse geri gelmez). */
 export async function seedConnectorSample(): Promise<void> {
+  try { await migrateLegacyLayouts(); } catch (err) { console.warn('[YAGO][BAĞLAYICI] eski dizilimler çevrilemedi:', err); }
   try {
-    if (localStorage.getItem(SAMPLE_SEEDED_KEY)) return;
-    localStorage.setItem(SAMPLE_SEEDED_KEY, '1');
-    if (!useAppStore.getState().connectors.some(c => c.name.trim().toLowerCase() === 'connector 1')) await addSampleConnector();
-  } catch (err) { console.warn('[YAGO][BAĞLAYICI] örnek bağlayıcı eklenemedi:', err); }
+    if (!localStorage.getItem(SAMPLE_SEEDED_KEY)) {
+      localStorage.setItem(SAMPLE_SEEDED_KEY, '1');
+      if (!useAppStore.getState().connectors.some(c => c.name.trim().toLowerCase() === 'connector 1')) await addSampleConnector();
+    }
+    if (!localStorage.getItem(LAYOUT_SEEDED_KEY)) {
+      // İşaret ancak karar verilebildiğinde konur: dizilim zaten varsa ya da örnek eklendiyse (bağlayıcı henüz yoksa sonraki açılışta denenir).
+      const st = useAppStore.getState(), conn = st.connectors.find(c => c.name.trim().toLowerCase() === 'connector 1') ?? st.connectors[0];
+      if (!st.connectorLayouts.length && conn) await addSampleLayout(conn.id);
+      if (useAppStore.getState().connectorLayouts.length) localStorage.setItem(LAYOUT_SEEDED_KEY, '1');
+    }
+  } catch (err) { console.warn('[YAGO][BAĞLAYICI] örnek bağlayıcı / dizilim eklenemedi:', err); }
 }

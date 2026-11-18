@@ -415,7 +415,7 @@ export const PANEL_EDGE_DIRS: Record<QuickBodyPanelKey, PanelEdgeDir[]> = {
 export const panelEdgeOf = (cfg: QuickBodyConfig, key: QuickBodyPanelKey, dir: PanelEdgeDir): number => cfg.ext?.[key]?.[dir] ?? 0;
 /* ───────── AKSESUAR KÜTÜPHANESİ (AccessoryService) ───────── */
 export type AccessoryUnit = 'mm' | 'cm' | 'm' | 'in';
-export type AccessoryCategory = 'legs' | 'rails' | 'hinges' | 'layers' | 'connectors' | 'panelTypes';
+export type AccessoryCategory = 'legs' | 'rails' | 'hinges' | 'layers' | 'connectors' | 'layouts' | 'panelTypes';
 /** Aksesuar katmanı: kütüphane geneli liste; parça `layerId` ile bağlanır, katman rengi parçayı boyar. */
 export interface AccessoryLayer { id: string; name: string; color: string; createdAt: number }
 /** Delik (genel): aksesuar çerçevesinde silindir. `dir` delme yönü, `pos` ağız merkezi, `diameter` / `depth` mm.
@@ -458,38 +458,48 @@ export type PanelTypeId =
   | 'frontPlinth' | 'rearPlinth' | 'columnSide' | 'columnFront' | 'beamFront' | 'beamHoriz' | 'free';
 /** Panelin yerleştiği yüzey: gövde yüzü rolü, yüzün özel görevi (kolon / kiriş — LegLayout.FaceKind) ya da iç panel aracı (raf / dikme / arkalık). */
 export type PanelSurface = PanelEdgeDir | 'shelf' | 'divider' | 'back' | 'columnSide' | 'columnFront' | 'beamFront' | 'beamHoriz';
-/** Kenar boyunca dizilim — arayüzde ÜÇ seçenek:
- *  'ends' = baştan + sondan birer tane, birleşim `midFrom` boyuna ulaşınca ortaya bir tane daha ·
- *  'step' = 32 ızgarası: baştan `start` (tam), sonra ızgaranın katı adımlarla; sondaki `end` EN AZ mesafedir (delik ızgaraya oturur) ·
- *  'spacing' / 'count' = eşit dağıtım: uçlardan mesafe + azami aralık (adet otomatik) ya da sabit adet. */
-export type EdgeLayoutMode = 'ends' | 'step' | 'spacing' | 'count';
-/** 'step' kipinin adımı: `k` × ızgara (mm) ileri gider, `n` delik koyar (0 = sığdığı kadar). Adımlar sırayla işlenir. */
-export interface LayoutStep { k: number; n: number }
-/** Tek kuralın dizilim değerleri. 'step' kipi: `pitch` ızgara (32) · `fill` 'steps' = adımlarla ilerle, 'middle' = ön + arka (ızgarada) ve
- *  `midFrom` boyundan sonra ortaya (ızgarada) bir tane. */
-export interface LayoutParams {
-  mode: EdgeLayoutMode; start: number; end: number; maxSpacing: number; count: number; midFrom?: number;
-  pitch?: number; fill?: 'steps' | 'middle'; steps?: LayoutStep[];
+/* BAĞLAYICI DİZİLİMİ (Accessories › Layout) — bağlayıcıdan ve panel tipinden BAĞIMSIZ kütüphane kaydı: birleşim boyunca bağlayıcıların nereye
+   geleceği. Dizilim = SATIRLAR; her satır = bir bağlayıcı + geçerli olduğu birleşim boyu aralığı + dört kuraldan biri. Bir boya denk gelen
+   satırların HEPSİ uygulanır (aynı dizilimde birden çok bağlayıcı, aynı bağlayıcıya farklı boylarda farklı kural).
+   Kurallar — `start` her zaman baştan (önden) TAM mesafe:
+   'ends'  = baştan `start` + sondan `end`; boy `midFrom`'a ulaşınca tam ortaya bir tane daha ·
+   'grid'  = 32 ızgarası: sonda `end` EN AZ mesafedir, delik ızgarada ona en yakın deliğe oturur (kalan pay sonda kalır); boy `midFrom`'a
+             ulaşınca ortaya en yakın ızgara deliğine bir tane daha ·
+   'steps' = verilen adımlarla sırayla ilerler (1. adım, 2. adım …), sonda `end` yine EN AZ mesafe ·
+   'list'  = doğrudan liste: her nokta baştan ya da sondan verilen mesafede. */
+export type LayoutKind = 'ends' | 'grid' | 'steps' | 'list';
+/** 'steps' adımı: `d` mm ilerleyip delik koyar, `n` kez (0 = sığdığı kadar). */
+export interface LayoutStep { d: number; n: number }
+/** 'list' noktası: baştan ya da sondan `d` mm. */
+export interface LayoutPoint { from: 'start' | 'end'; d: number }
+export interface LayoutLine {
+  id: string; connectorId: string | null; kind: LayoutKind;
+  /** Geçerli olduğu birleşim boyu (mm, ikisi de dahil; boy tam mm'ye yuvarlanarak bakılır). `max` 0 = üst sınır yok. */
+  min: number; max: number;
+  start: number; end: number; midFrom: number; pitch: number; steps: LayoutStep[]; points: LayoutPoint[];
 }
-/** Boy aralığına özel kural: birleşim boyu ≤ `upTo` ise (ve daha küçük sınırlı bir kural yoksa) bu değerler geçerli. */
-export interface LayoutRange extends LayoutParams { upTo: number }
-/** Dizilim: kendi değerleri = `ranges` sınırlarının HEPSİNDEN uzun birleşimlerin kuralı (aralık yoksa tek kural). */
-export interface ConnectorLayout extends LayoutParams { ranges?: LayoutRange[] }
-/** Kenar kuralı. Dizilim normalde BAĞLAYICININ kendi diziliminden gelir; `custom` → bu kenara özel (alttaki alanlar).
- *  `flipFace` → B yüzündeki işlemler panelin öteki geniş yüzüne (varsayılan: görünmeyen yüz — bkz. ConnectorService.hiddenFaceRole). */
-export interface EdgeConnectorRule extends ConnectorLayout { connectorId: string | null; custom?: boolean; flipFace?: boolean }
-/** Tip kuralı: kenar rolü (ön / arka / üst / alt / sol / sağ) → o kenar başka panele dayanıyorsa atılacak bağlayıcılar. Bir kenarda birden çok
- *  bağlayıcı olabilir (kam + kavela …), her biri kendi dizilimiyle. */
+export interface ConnectorLayoutSet { id: string; name: string; lines: LayoutLine[]; createdAt: number }
+/** Kenar kuralı: o kenara atanmış dizilim. `flipFace` → B yüzündeki işlemler panelin öteki geniş yüzüne (varsayılan: görünmeyen yüz —
+ *  bkz. ConnectorService.hiddenFaceRole). */
+export interface EdgeConnectorRule { layoutId: string; flipFace?: boolean }
+/** ESKİ kayıt (6. tura kadar): dizilim bağlayıcının / kenar kuralının içindeydi. Yalnız açılışta yeni dizilimlere çevrilirken okunur
+ *  (ConnectorService.migrateLegacyLayouts). */
+export interface LegacyLayout {
+  mode?: 'ends' | 'step' | 'spacing' | 'count'; start?: number; end?: number; midFrom?: number; pitch?: number; fill?: 'steps' | 'middle';
+  steps?: Array<{ k: number; n: number }>; ranges?: Array<LegacyLayout & { upTo: number }>;
+}
+export interface LegacyEdgeRule extends LegacyLayout { connectorId: string | null; custom?: boolean; flipFace?: boolean }
+/** Tip kuralı: kenar rolü (ön / arka / üst / alt / sol / sağ) → o kenar başka panele dayanıyorsa uygulanacak dizilim. */
 export interface PanelTypeRule { edges: Partial<Record<PanelEdgeDir, EdgeConnectorRule[]>> }
 export interface PanelSurfaceRule { allowed: PanelTypeId[]; def: PanelTypeId }
 export interface PanelTypeConfig { rules: Partial<Record<PanelTypeId, PanelTypeRule>>; surfaces: Partial<Record<PanelSurface, PanelSurfaceRule>> }
-/** Kayıttan gelen ayar → güncel biçim: eski kayıtta kenar başına TEK kural vardı (nesne), artık liste. */
+/** Kayıttan gelen ayar → güncel biçim (liste). Dizilimsiz ESKİ kurallar (bağlayıcı + gömülü dizilim) açılışta çevrilmek üzere korunur. */
 export function normalizePanelTypeConfig(raw: { rules?: unknown; surfaces?: unknown } | null | undefined): PanelTypeConfig {
   const rules: PanelTypeConfig['rules'] = {};
   for (const [type, rule] of Object.entries((raw?.rules ?? {}) as Record<string, { edges?: Record<string, unknown> } | undefined>)) {
     const edges: PanelTypeRule['edges'] = {};
     for (const [edge, v] of Object.entries(rule?.edges ?? {})) {
-      const list = (Array.isArray(v) ? v : v ? [v] : []).filter((r): r is EdgeConnectorRule => !!r && typeof r === 'object' && !!(r as EdgeConnectorRule).connectorId);
+      const list = (Array.isArray(v) ? v : v ? [v] : []).filter((r): r is EdgeConnectorRule => !!r && typeof r === 'object' && !!((r as EdgeConnectorRule).layoutId || (r as LegacyEdgeRule).connectorId));
       if (list.length) edges[edge as PanelEdgeDir] = list;
     }
     rules[type as PanelTypeId] = { edges };
@@ -513,8 +523,8 @@ export interface ConnOp { id: string; surface: ConnSurface; type: ConnOpType; de
 export interface ConnPart { id: string; modelId: string; surface: ConnSurface; along: number; across: number; inset: number; spin: number; flip?: boolean; layerId?: string | null }
 export interface Connector {
   id: string; name: string; holes: ConnHole[]; ops: ConnOp[]; parts: ConnPart[]; tA?: number; tB?: number; createdAt: number;
-  /** Birleşim boyunca dizilim (kenar kuralı özel değilse bu kullanılır). */
-  layout?: ConnectorLayout;
+  /** ESKİ: dizilim artık ayrı kayıt (ConnectorLayoutSet); açılışta çevrilir. */
+  layout?: LegacyLayout;
 }
 
 export const DEFAULT_QUICK_BODY: QuickBodyConfig = {
@@ -667,6 +677,7 @@ export interface AppState {
   accessoryCategory: AccessoryCategory; setAccessoryCategory: (c: AccessoryCategory) => void;
   /* PANEL TİPLERİ + BAĞLAYICILAR (ConnectorService): kütüphane kaydı (IndexedDB), burada canlı kopya. */
   connectors: Connector[]; upsertConnector: (c: Connector) => void; removeConnector: (id: string) => void; setConnectors: (list: Connector[]) => void;
+  connectorLayouts: ConnectorLayoutSet[]; setConnectorLayouts: (list: ConnectorLayoutSet[]) => void;
   panelTypeConfig: PanelTypeConfig; setPanelTypeConfig: (c: PanelTypeConfig) => void;
   /** Yerleştirme şeridinde seçilen panel tipi (null = otomatik / yüzey varsayılanı); her mod açılışında sıfırlanır. */
   placementPanelType: PanelTypeId | null; setPlacementPanelType: (t: PanelTypeId | null) => void;
@@ -1012,6 +1023,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   accessoryCategory: 'legs', setAccessoryCategory: (c) => set({ accessoryCategory: c }),
   connectors: [], upsertConnector: (c) => set((s) => ({ connectors: upsertById(s.connectors, c) })),
   removeConnector: (id) => set((s) => ({ connectors: s.connectors.filter(x => x.id !== id) })), setConnectors: (list) => set({ connectors: list }),
+  connectorLayouts: [], setConnectorLayouts: (list) => set({ connectorLayouts: list }),
   panelTypeConfig: { rules: {}, surfaces: {} }, setPanelTypeConfig: (c) => set({ panelTypeConfig: c }),
   placementPanelType: null, setPlacementPanelType: (t) => set({ placementPanelType: t }),
 

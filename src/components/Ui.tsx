@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   type LucideIcon, Spline, Layers, SwatchBook, Radius, Plus, Container, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Hash, ChevronRight, Send, Box,
-  Square, SlidersHorizontal, ListTree, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check, Footprints, Wrench, Link2, Tags,
+  Square, SlidersHorizontal, ListTree, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check, Footprints, Wrench, Link2, Tags, Ruler,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { createClient } from '@supabase/supabase-js';
@@ -216,6 +216,7 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
   const accessories: RailSpec[] = [
     { key: 'acc-legs', label: 'Legs', icon: Footprints, title: 'Leg models and leg sets', active: s.accessoryCategory === 'legs', onClick: () => s.setAccessoryCategory('legs') },
     { key: 'acc-connectors', label: 'Connect', icon: Link2, title: 'Connectors — holes, drawn operations and a 3D model on a two-panel joint', active: s.accessoryCategory === 'connectors', onClick: () => s.setAccessoryCategory('connectors') },
+    { key: 'acc-layouts', label: 'Layout', icon: Ruler, title: 'Connector layouts — where connectors sit along a joint: four rules, per joint-length range, several connectors in one layout', active: s.accessoryCategory === 'layouts', onClick: () => s.setAccessoryCategory('layouts') },
     { key: 'acc-types', label: 'Types', icon: Tags, title: 'Panel types — what each panel is, which edges get a connector, and the default type per face', active: s.accessoryCategory === 'panelTypes', onClick: () => s.setAccessoryCategory('panelTypes') },
     { key: 'acc-layers', label: 'Layers', icon: SwatchBook, title: 'Accessory layers — shared by every accessory part (name + colour)', active: s.accessoryCategory === 'layers', onClick: () => s.setAccessoryCategory('layers') },
   ];
