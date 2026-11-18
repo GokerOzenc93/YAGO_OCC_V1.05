@@ -7,7 +7,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import * as THREE from 'three';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { ContactShadows, GizmoHelper, Grid, Html, Line, OrbitControls, useGizmoContext } from '@react-three/drei';
-import { Plus, Trash2, Upload, Pencil, RotateCcw, Drill, Check, ChevronDown, Copy, FlaskConical, Crosshair, Magnet, Maximize2, Minus, MousePointer2, PenLine, Spline, Square, BoxSelect, Star, Circle as CircleIcon } from 'lucide-react';
+import { Plus, Trash2, Upload, Pencil, RotateCcw, Drill, Check, ChevronDown, Copy, FlaskConical, Crosshair, Magnet, Maximize2, Minus, MousePointer2, PenLine, Scissors, Spline, Square, BoxSelect, Star, Circle as CircleIcon } from 'lucide-react';
 import {
   type AccessoryLayer, type AccessoryUnit, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector, type ConnectorGroup, type ConnectorLayoutSet,
   type HoleSpec, type LayoutKind, type LayoutLine, type LegModel, type LegModelPart, type LegPartRole, type LegPreset, type PanelEdgeDir, type PanelSurface,
@@ -976,7 +976,7 @@ function PanelFaceView({ type, plane, size, cur, rowsOf, onEdge }: {
   );
 }
 
-// ───────── 3. Dizilim: önizleme şeridi · boy aralığı haritası · kural kartları ─────────
+// ───────── 3. Dizilim: önizleme şeridi (Types) · boy aralıkları listesi · bağlayıcı şeritleri (Layout) ─────────
 const Unit = () => <span className="yago-unit shrink-0 pr-1">mm</span>;
 const LEN_MIN = 40, LEN_MAX = 2400;
 /** Sayı kutusu: boş = `placeholder` (ör. "fit" = sığdığı kadar, "any" = sınırsız) → 0 olarak kaydedilir. */
@@ -994,34 +994,14 @@ type BandRow = LineView;
 const BAND = { VW: 480, VH: 140, X0: 24, X1: 456, yA: 22, hA: 13, hB: 54, ky: 0.82 } as const;
 /** KENAR ŞERİDİ — birleşime üstten bakış: üstte dayandığı panel (taralı), altında bu panelin kenar bandı; o boyda geçerli her satır kendi
  *  bağlayıcısının renginde, gerçek delik iziyle. Etkin satırın ölçü zinciri altta (baştaki ve sondaki ölçünün altında "fixed" / "min …").
- *  `onDrag` verilirse tutamaklar SÜRÜKLENİR: ilk / son bağlayıcı (baş mesafesi · son mesafesi ya da EN AZ mesafe), listede her nokta.
- *  '32 grid'de ızgara çentikleri; 'grid' / 'steps'te sondaki EN AZ mesafe bölgesi taralı (delik oraya giremez). */
-function LayoutBand({ length, ends, rows, active, onPick, onDrag }: {
-  length: number; ends: [string, string]; rows: BandRow[]; active: number; onPick?: (i: number) => void; onDrag?: (lineId: string, patch: Partial<LayoutLine>) => void;
-}) {
-  const svg = useRef<SVGSVGElement>(null);
-  const drag = useRef<string | null>(null);
-  const [grab, setGrab] = useState(false);
+ *  '32 grid'de ızgara çentikleri; 'grid' / 'steps'te sondaki EN AZ mesafe bölgesi taralı (delik oraya giremez). Salt okunur (Types önizlemesi);
+ *  düzenleme Layout'taki bağlayıcı şeritlerinde (LaneTrack). */
+function LayoutBand({ length, ends, rows, active, onPick }: { length: number; ends: [string, string]; rows: BandRow[]; active: number; onPick?: (i: number) => void }) {
   const { VW, VH, X0, X1, yA, hA, hB, ky } = BAND, yJ = yA + hA, kx = (X1 - X0) / Math.max(1, length), xOf = (d: number) => X0 + d * kx;
   const pos = rows.map(r => linePositions(r.line, length));
   const act = rows[active], actPos = pos[active] ?? [], L = act?.line;
   // Farklı satırların üst üste gelen noktaları (≤ 9 mm): kırmızı halka.
   const clash = pos.flatMap((list, i) => list.filter(d => pos.some((o, j) => j !== i && o.some(x => Math.abs(x - d) < 9))));
-  const clampI = (v: number, hi: number) => Math.round(Math.min(Math.max(0, hi), Math.max(0, v)));
-  const handles: Array<{ key: string; d: number; title: string; apply: (mm: number) => Partial<LayoutLine> }> = !L || !onDrag ? []
-    : L.kind === 'list'
-      ? L.points.map((p, i) => ({
-        key: `p${i}`, d: p.from === 'end' ? length - p.d : p.d, title: `Drag to move connector ${i + 1} (measured from the ${p.from === 'end' ? ends[1] : ends[0]})`,
-        apply: (mm: number) => ({ points: L.points.map((q, k) => (k === i ? { ...q, d: clampI(q.from === 'end' ? length - mm : mm, length) } : q)) }),
-      })).filter(hd => hd.d >= 0 && hd.d <= length)
-      : actPos.length ? [
-        { key: 'start', d: actPos[0], title: `Drag to change the distance from the ${ends[0]}`, apply: (mm: number) => ({ start: clampI(mm, length - L.end - 1) }) },
-        ...(actPos.length >= 2 ? [{ key: 'end', d: actPos[actPos.length - 1], title: `Drag to change the ${L.kind === 'ends' ? 'distance' : 'minimum distance'} from the ${ends[1]}`,
-          apply: (mm: number) => ({ end: clampI(length - mm, length - L.start - 1) }) }] : []),
-      ] : [];
-  const mmAt = (e: React.PointerEvent) => { const r = svg.current!.getBoundingClientRect(); return (((e.clientX - r.left) / r.width) * VW - X0) / kx; };
-  const move = (e: React.PointerEvent) => { const hd = handles.find(x => x.key === drag.current); if (hd && L && onDrag) onDrag(L.id, hd.apply(mmAt(e))); };
-  const drop = (e: React.PointerEvent) => { if (!drag.current) return; (e.target as Element).releasePointerCapture?.(e.pointerId); drag.current = null; setGrab(false); };
   const chain = act ? [0, ...actPos, length] : [];
   const mid = L && (L.kind === 'ends' || L.kind === 'grid') ? { on: actPos.length === 3, from: L.midFrom } : null;
   const minZone = L && (L.kind === 'grid' || L.kind === 'steps') && actPos.length ? Math.min(Math.max(0, L.end), length) : 0;
@@ -1035,8 +1015,7 @@ function LayoutBand({ length, ends, rows, active, onPick, onDrag }: {
   const yC = yJ + hB + 16;
   const cap = (i: number): string => (!L || L.kind === 'list' ? '' : i === 0 ? 'fixed' : L.kind === 'ends' ? 'fixed' : `min ${fmt1(L.end)}`);
   return (
-    <svg ref={svg} viewBox={`0 0 ${VW} ${VH}`} className="block w-full select-none" style={{ fontFamily: UI_FONT, touchAction: 'none', cursor: grab ? 'grabbing' : undefined }}
-      onPointerMove={move} onPointerUp={drop} onPointerCancel={drop}>
+    <svg viewBox={`0 0 ${VW} ${VH}`} className="block w-full select-none" style={{ fontFamily: UI_FONT }}>
       <defs>
         <linearGradient id="yago-band-fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0.55" stopColor={PT.fill} /><stop offset="1" stopColor={PT.fill} stopOpacity={0} /></linearGradient>
         <pattern id="yago-band-hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="5" stroke="#cfc6b8" strokeWidth="1.1" /></pattern>
@@ -1097,15 +1076,6 @@ function LayoutBand({ length, ends, rows, active, onPick, onDrag }: {
           </g>
         );
       })}
-      {handles.map(hd => (
-        <g key={hd.key} style={{ cursor: grab ? 'grabbing' : 'ew-resize' }}
-          onPointerDown={e => { stop(e); e.preventDefault(); (e.currentTarget as Element).setPointerCapture(e.pointerId); drag.current = hd.key; setGrab(true); }}>
-          <title>{hd.title}</title>
-          <rect x={xOf(hd.d) - 9} y={yA - 4} width={18} height={hA + hB + 6} fill="transparent" />
-          <path d={`M${xOf(hd.d) - 6} ${yJ - 15}h12v8l-6 7l-6 -7z`} fill={act!.color} stroke="#fff" strokeWidth={1} />
-          <path d={`M${xOf(hd.d) - 2.2} ${yJ - 12.5}v4M${xOf(hd.d) + 2.2} ${yJ - 12.5}v4`} stroke="#fff" strokeWidth={1} strokeLinecap="round" />
-        </g>
-      ))}
     </svg>
   );
 }
@@ -1129,65 +1099,6 @@ function LengthSlider({ value, onChange, marks = [] }: { value: number; onChange
   );
 }
 const setMarks = (set: ConnectorLayoutSet | undefined | null): number[] => (set?.lines ?? []).flatMap(l => [l.min, l.max]).filter(v => v > 0);
-/** BOY ARALIĞI HARİTASI — hangi kural hangi birleşim boyunda geçerli, tek bakışta: her KURAL bir çubuk (`min`'den `max`'a; üst sınırsız
- *  çubuk sağa açık biter), kuralın her bağlayıcısı çubukta kendi renginde bir şerit. Dikey imleç = önizleme boyu: haritaya tık / sürükle boyu
- *  değiştirir, çubuğa tık o kuralı da açar. Eksen karekök ölçekli: kısa boylar (40 – 100 mm) da okunur genişlikte. */
-function LayoutRangeMap({ rules, length, onLength, activeRule, onPick }: {
-  rules: RuleView[]; length: number; onLength: (v: number) => void; activeRule: string | null; onPick: (ruleId: string) => void;
-}) {
-  const svg = useRef<SVGSVGElement>(null);
-  const drag = useRef(false);
-  const VW = 480, X0 = 14, X1 = 466, RH = 16, top = 20, H = top + Math.max(1, rules.length) * RH + 20;
-  const Lmax = Math.max(LEN_MAX, Math.ceil((Math.max(0, ...rules.flatMap(r => [r.lines[0].line.min, r.lines[0].line.max])) * 1.15) / 100) * 100, Math.ceil(length / 100) * 100);
-  const xOf = (v: number) => X0 + (X1 - X0) * Math.sqrt(Math.max(0, Math.min(v, Lmax)) / Lmax);
-  const lenAt = (e: React.PointerEvent) => {
-    const r = svg.current!.getBoundingClientRect(), t = Math.max(0, Math.min(1, (((e.clientX - r.left) / r.width) * VW - X0) / (X1 - X0)));
-    const v = Lmax * t * t, step = v < 200 ? 1 : v < 1000 ? 5 : 10;
-    return Math.max(1, Math.round(v / step) * step);
-  };
-  const xc = xOf(length), yB = top + Math.max(1, rules.length) * RH + 2;
-  return (
-    <svg ref={svg} viewBox={`0 0 ${VW} ${H}`} className="block w-full select-none" style={{ fontFamily: UI_FONT, touchAction: 'none', cursor: 'ew-resize' }}
-      onPointerDown={e => { stop(e); try { (e.currentTarget as Element).setPointerCapture(e.pointerId); } catch { /* yakalanamayan işaretçi: sürükleme yine çalışır */ } drag.current = true; onLength(lenAt(e)); }}
-      onPointerMove={e => { if (drag.current) onLength(lenAt(e)); }} onPointerUp={e => { drag.current = false; (e.currentTarget as Element).releasePointerCapture?.(e.pointerId); }}
-      onPointerCancel={() => { drag.current = false; }}>
-      <title>Which rule applies to which joint length — click or drag to change the previewed length; click a bar to open that rule</title>
-      {[0, 100, 250, 500, 1000, 1500, 2000, 3000, 4000, 6000].filter(t => t <= Lmax).map(t => (
-        <g key={t}>
-          <line x1={xOf(t)} y1={top - 2} x2={xOf(t)} y2={yB + 3} stroke="#e3ddd4" strokeWidth={0.8} />
-          <text x={xOf(t)} y={yB + 13} textAnchor="middle" fontSize={7.8} fontWeight={500} fill={PT.mute} style={{ fontVariantNumeric: 'tabular-nums' }}>{t}</text>
-        </g>
-      ))}
-      {!rules.length && <text x={(X0 + X1) / 2} y={top + RH / 2 + 3} textAnchor="middle" fontSize={8.6} fill={PT.mute}>no rules yet</text>}
-      {rules.map((r, i) => {
-        const first = r.lines[0].line, y = top + i * RH + 2, hh = RH - 5, xa = xOf(first.min || 0), open = !(first.max > 0), xb = Math.max(xa + 4, open ? X1 : xOf(first.max));
-        const on = r.id === activeRule, hit = lineApplies(first, length), colors = [...new Set(r.lines.map(v => v.color))], sh = hh / colors.length;
-        const names = [...new Set(r.lines.map(v => v.conn?.name).filter(Boolean))].join(' + ') || 'no connector';
-        const text = `Rule ${i + 1} · ${names}`, tw = text.length * 4.5 + 8;
-        const inside = xb - xa > tw + 4, right = !inside && xb + tw < X1;
-        const d = open ? `M${xa} ${y}H${xb - 5}l5 ${hh / 2}l-5 ${hh / 2}H${xa}Z` : `M${xa} ${y}H${xb}V${y + hh}H${xa}Z`;
-        return (
-          <g key={r.id} onPointerDown={() => onPick(r.id)} style={{ cursor: 'pointer' }}>
-            <rect x={X0} y={y - 2} width={X1 - X0} height={RH - 1} fill={on ? '#f3ede4' : 'transparent'} rx={3} />
-            <clipPath id={`yago-range-${i}`}><path d={d} /></clipPath>
-            <g clipPath={`url(#yago-range-${i})`} opacity={hit ? 0.92 : 0.3}>
-              {colors.map((c, k) => <rect key={k} x={xa} y={y + sh * k} width={xb - xa} height={sh + 0.3} fill={c} />)}
-            </g>
-            <path d={d} fill="none" stroke={on ? PT.dark : 'none'} strokeWidth={1.1} strokeLinejoin="round" />
-            <text x={inside ? xa + 5 : right ? xb + 5 : xa - 5} y={y + hh / 2 + 3} textAnchor={inside || right ? 'start' : 'end'} fontSize={8.2} fontWeight={600}
-              fill={inside ? (hit ? '#fff' : PT.ink) : PT.ink} style={{ pointerEvents: 'none' }}>{text}</text>
-          </g>
-        );
-      })}
-      {/* önizleme boyu */}
-      <line x1={xc} y1={top - 4} x2={xc} y2={yB + 3} stroke={PT.dark} strokeWidth={1.2} />
-      <g transform={`translate(${Math.max(X0 + 16, Math.min(X1 - 16, xc))} ${top - 8})`}>
-        <rect x={-17} y={-9} width={34} height={13} rx={6.5} fill={PT.dark} />
-        <text x={0} y={0.6} textAnchor="middle" fontSize={8.2} fontWeight={700} fill="#fff" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt1(length)}</text>
-      </g>
-    </svg>
-  );
-}
 /** Kuralın küçük resmi (seçim kartında): birleşim şeridi + o kurala özgü işaretler. */
 function KindGlyph({ kind, on }: { kind: LayoutKind; on: boolean }) {
   const c = on ? SEL : '#8a8073', soft = on ? '#f5b48a' : '#cfc7bc', y = 15, x0 = 6, x1 = 98;
@@ -1248,37 +1159,212 @@ function LayoutKindCards({ value, onPick }: { value: LayoutKind; onPick: (k: Lay
 const SMALL_SELECT = 'h-[22px] pl-1 pr-5 rounded-[5px] bg-transparent text-[12px] font-semibold text-stone-800 appearance-none outline-none cursor-pointer hover:bg-[#f6f3ee] transition-colors duration-150 max-w-full truncate';
 const POINT_SEG: SegItem[] = [{ key: 'start', label: 'From front', title: 'Measured from the front (start) of the joint' }, { key: 'end', label: 'From rear', title: 'Measured from the rear (end) of the joint' }];
 const MAX_RULE_CONNECTORS = RULE_COLORS.length;
-/** KURALIN BİR BAĞLAYICISI — bağlayıcı + KENDİ ölçüleri (dört kuraldan biri). Blok bağlayıcının renginde çerçevelidir ve ölçülerin başında
- *  bağlayıcının adı yazar: hangi ölçünün hangi bağlayıcıya ait olduğu hep görünür. Kapalıyken tek satır özet; tık → açılır (şerit de onu gösterir). */
-function RuleConnectorBlock({ view, open, length, connectors, removable, onOpen, onPatch, onRemove }: {
-  view: LineView; open: boolean; length: number; connectors: Connector[]; removable: boolean;
-  onOpen: () => void; onPatch: (p: Partial<LayoutLine>) => void; onRemove: () => void;
+const KIND_HINT: Record<LayoutKind, string> = {
+  ends: 'Fixed distance from both ends; one more exactly in the middle once the joint reaches “Middle ≥”.',
+  grid: 'Front is exact, the others sit on the grid counted from it. Rear is a minimum — the leftover stays at the rear.',
+  steps: 'Walks from the front, step after step. Rear is a minimum — a step that would come closer is skipped.',
+  list: 'Every connector by hand: click the strip to add one, drag to move it, double-click to remove it.',
+};
+
+/* BOY ARALIKLARI — düzenleyicide aralıklar ÜST ÜSTE BİNMEZ: birleşim boyu ekseni ardışık aralıklara bölünür, her aralık kendi bağlayıcılarını
+   taşır (aralık = aynı `rule` kimliğini paylaşan satırlar); hiçbir aralığa düşmeyen boy = "bağlayıcı yok" (boşluk satırı). Çekirdek değişmedi:
+   satırlar yine `min` / `max` taşır, yalnız düzenleyici bu düzeni korur. */
+type Range = { id: string; min: number; max: number };
+const INF = Number.POSITIVE_INFINITY;
+const topOf = (r: { max: number }): number => (r.max > 0 ? r.max : INF);
+const freshLineIds = () => { const l = newLayoutLine(null); return { id: l.id, rule: l.rule as string }; };
+function rangesOf(lines: LayoutLine[]): Range[] {
+  const out: Range[] = [];
+  for (const l of lines) { const id = ruleIdOf(l); if (!out.some(r => r.id === id)) out.push({ id, min: Math.max(0, Math.round(l.min || 0)), max: Math.max(0, Math.round(l.max || 0)) }); }
+  return out;
+}
+/** Satırları ardışık aralıklara çevirir (boya göre sıralı). Zaten düzenliyse aynı diziyi döndürür. Üst üste binen eski kurallar (ör. "her boy" +
+ *  "100 – 500") kesişim parçalarına bölünür — her parça o boyda geçerli bütün bağlayıcıları alır, davranış aynı kalır; ters girilmiş aralık
+ *  (hiç uygulanmıyordu) düşer. */
+function partitionLines(lines: LayoutLine[]): LayoutLine[] {
+  const all = rangesOf(lines).filter(r => topOf(r) >= r.min).sort((a, b) => a.min - b.min), of = (id: string) => lines.filter(l => ruleIdOf(l) === id);
+  if (all.every((r, i) => i === 0 || r.min > topOf(all[i - 1]))) {
+    const out = all.flatMap(r => of(r.id).map(l => (l.min === r.min && l.max === r.max ? l : { ...l, min: r.min, max: r.max })));
+    return out.length === lines.length && out.every((l, i) => l === lines[i]) ? lines : out;
+  }
+  const cuts = [...new Set(all.flatMap(r => (r.max > 0 ? [r.min, r.max + 1] : [r.min])))].sort((a, b) => a - b), seen = new Set<string>();
+  return cuts.flatMap((a, i) => {
+    const b = i + 1 < cuts.length ? cuts[i + 1] - 1 : INF, members = all.filter(r => r.min <= a && topOf(r) >= b);
+    if (!members.length) return [];
+    const rule = freshLineIds().rule;
+    return members.flatMap(m => of(m.id).map(l => {
+      const first = !seen.has(l.id); seen.add(l.id);
+      return { ...(JSON.parse(JSON.stringify(l)) as LayoutLine), id: first ? l.id : freshLineIds().id, rule, min: a, max: b === INF ? 0 : b };
+    }));
+  });
+}
+/** Aralık sınırını değiştirir: bitişik komşunun sınırı birlikte kayar (sınır ortaktır), bitişik olmayan komşu ancak üstüne binilirse itilir;
+ *  hiçbir aralık 1 mm'nin altına inmez. Üst sınırı boş ("any") yalnız son aralık olabilir. */
+function moveRange(lines: LayoutLine[], id: string, p: { min?: number; max?: number }): LayoutLine[] {
+  const rs = rangesOf(lines).map(r => ({ ...r })), i = rs.findIndex(r => r.id === id), r = rs[i], prev = rs[i - 1], next = rs[i + 1];
+  if (!r) return lines;
+  if (p.min !== undefined) {
+    const v = Math.min(topOf(r), Math.max(prev ? Math.max(prev.min, 1) + 1 : 0, Math.round(p.min)));
+    if (prev && (prev.max === r.min - 1 || topOf(prev) >= v)) prev.max = v - 1;
+    r.min = v;
+  }
+  if (p.max !== undefined) {
+    let v = Math.round(p.max);
+    if (!(v > 0)) { if (next) return lines; v = 0; } else {
+      v = Math.max(r.min, 1, next ? Math.min(v, topOf(next) - 1) : v);
+      if (next && (next.min === topOf(r) + 1 || next.min <= v)) next.min = v + 1;
+    }
+    r.max = v;
+  }
+  return lines.map(l => { const x = rs.find(q => q.id === ruleIdOf(l)); return x && (l.min !== x.min || l.max !== x.max) ? { ...l, min: x.min, max: x.max } : l; });
+}
+const rangeLabel = (min: number, max: number): string => (max > 0 ? (min > 1 ? `${min} – ${max} mm` : `up to ${max} mm`) : min > 1 ? `from ${min} mm` : 'any length');
+/** Aralığın önizleme boyu (elle seçilmemişse): kapalı aralıkta ortası, üstü açık aralıkta alt sınırın 1,5 katı (en az 560). */
+const sampleLength = (min: number, max: number): number => (max > 0 ? Math.max(1, Math.round((Math.max(min, 1) + max) / 2)) : Math.max(min, 560, Math.round((min * 1.5) / 10) * 10));
+type RangeRow = { gap: false; rule: RuleView; min: number; max: number } | { gap: true; min: number; max: number };
+/** Listede gösterilecek satırlar: aralıklar + aralarında / başta / sonda kalan bağlayıcısız boşluklar. */
+function rangeRows(rules: RuleView[]): RangeRow[] {
+  const out: RangeRow[] = [];
+  let cur = 1;
+  for (const rule of rules) {
+    const { min, max } = rule.lines[0].line;
+    if (min > cur) out.push({ gap: true, min: cur === 1 ? 0 : cur, max: min - 1 });
+    out.push({ gap: false, rule, min, max });
+    cur = max > 0 ? max + 1 : INF;
+  }
+  if (rules.length && cur !== INF) out.push({ gap: true, min: cur, max: 0 });
+  return out;
+}
+
+/** ARALIĞIN KÜÇÜK RESMİ (kapalı satırda): birleşim şeridi o aralığın önizleme boyunda, bütün bağlayıcılar kendi renginde. Şeridin uzunluğu boyla
+ *  büyür (`scale` = en uzun önizlenen aralığa göre, karekök) — satırlar alt alta basamak gibi okunur: kısa birleşim kısa şerit, uzun birleşim uzun. */
+const THUMB_W = 200;
+function RangeThumb({ lines, length, scale }: { lines: LineView[]; length: number; scale: number }) {
+  const VW = THUMB_W, x0 = 2, w = 26 + (VW - 40 - 26) * Math.max(0, Math.min(1, scale)), used = lines.filter(v => !!v.conn), hh = used.length > 2 ? 16 : 12, y = (24 - hh) / 2;
+  return (
+    <svg viewBox={`0 0 ${VW} 24`} width={VW} height={24} className="block select-none" style={{ fontFamily: UI_FONT }}>
+      <title>{`How the connectors sit on a ${fmt1(length)} mm joint`}</title>
+      <rect x={x0} y={y} width={w} height={hh} rx={1.5} fill={PT.fill} stroke={PT.stroke} strokeWidth={0.9} />
+      {used.map((v, i) => linePositions(v.line, length).map((d, k) => (
+        <circle key={`${v.line.id}-${k}`} cx={x0 + (d / Math.max(1, length)) * w} cy={12 + (i - (used.length - 1) / 2) * (used.length > 2 ? 3.6 : 4.4)} r={used.length > 1 ? 2.5 : 3} fill={v.color} stroke="#fff" strokeWidth={0.8} />
+      )))}
+      <text x={x0 + w + 6} y={15} fontSize={8.4} fontWeight={500} fill={PT.mute} style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt1(length)}</text>
+    </svg>
+  );
+}
+const LANE = { VW: 330, VH: 50, X0: 12, X1: 318, yT: 13, hS: 15, yC: 37 } as const, LANE_SIDE = 134;
+/** BAĞLAYICI ŞERİDİ — TEK bağlayıcının birleşim boyunca yerleri, kendi renginde, kendi ölçü zinciriyle (uç ölçüler kalın = girilen değerler).
+ *  Tutamaklar SÜRÜKLENİR: ilk / son bağlayıcı (baş mesafesi · son mesafesi ya da EN AZ mesafe), listede her nokta. Seçili 'list' şeridinde
+ *  boş yere tık → oraya bağlayıcı ekler, tutamağa çift tık → siler. '32 grid'de ızgara çentikleri; 'grid' / 'steps'te sondaki EN AZ bölgesi taralı.
+ *  `clash` = başka şeritteki bir bağlayıcıyla çakışan noktalar (kırmızı halka). */
+function LaneTrack({ view, length, selected, clash, onPatch }: { view: LineView; length: number; selected: boolean; clash: number[]; onPatch: (p: Partial<LayoutLine>) => void }) {
+  const svg = useRef<SVGSVGElement>(null);
+  const drag = useRef<string | null>(null);
+  const [grab, setGrab] = useState(false);
+  const { VW, VH, X0, X1, yT, hS, yC } = LANE, L = view.line, c = view.color, kx = (X1 - X0) / Math.max(1, length), xOf = (d: number) => X0 + d * kx, yM = yT + hS / 2;
+  const pos = view.conn ? linePositions(L, length) : [], a = Math.max(0, L.start), b = length - Math.max(0, L.end);
+  // Baş + son mesafesi sığmıyor → tek bağlayıcı ortada: sürüklenecek uç yok.
+  const centred = L.kind !== 'list' && pos.length === 1 && b - a < (L.kind === 'ends' ? 1 : -1e-6);
+  const clampI = (v: number, hi: number) => Math.round(Math.min(Math.max(0, hi), Math.max(0, v)));
+  const handles: Array<{ key: string; d: number; title: string; point?: number; apply: (mm: number) => Partial<LayoutLine> }> = !view.conn || centred ? []
+    : L.kind === 'list'
+      ? L.points.map((p, i) => ({
+        key: `p${i}`, point: i, d: p.from === 'end' ? length - p.d : p.d, title: `Drag to move · double-click to remove (measured from the ${p.from === 'end' ? 'rear' : 'front'})`,
+        apply: (mm: number) => ({ points: L.points.map((q, k) => (k === i ? { ...q, d: clampI(q.from === 'end' ? length - mm : mm, length) } : q)) }),
+      })).filter(hd => hd.d >= 0 && hd.d <= length)
+      : pos.length ? [
+        { key: 'start', d: pos[0], title: 'Drag to change the distance from the front', apply: (mm: number) => ({ start: clampI(mm, length - L.end - 1) }) },
+        ...(pos.length >= 2 ? [{ key: 'end', d: pos[pos.length - 1], title: `Drag to change the ${L.kind === 'ends' ? 'distance' : 'minimum distance'} from the rear`,
+          apply: (mm: number) => ({ end: clampI(length - mm, length - L.start - 1) }) }] : []),
+      ] : [];
+  const mmAt = (e: { clientX: number }) => { const r = svg.current!.getBoundingClientRect(); return (((e.clientX - r.left) / r.width) * VW - X0) / kx; };
+  const move = (e: React.PointerEvent) => { const hd = handles.find(x => x.key === drag.current); if (hd) onPatch(hd.apply(mmAt(e))); };
+  const drop = (e: React.PointerEvent) => { if (!drag.current) return; (e.target as Element).releasePointerCapture?.(e.pointerId); drag.current = null; setGrab(false); };
+  const canAdd = selected && !!view.conn && L.kind === 'list' && L.points.length < MAX_LAYOUT_POINTS;
+  const addAt = (e: React.MouseEvent) => {
+    const mm = Math.round(Math.min(length, Math.max(0, mmAt(e)))), rear = mm > length / 2;
+    onPatch({ points: [...L.points, { from: rear ? 'end' : 'start', d: rear ? Math.round(length - mm) : mm }] });
+  };
+  const chain = pos.length ? [0, ...pos, length] : [];
+  const mid = L.kind === 'ends' || L.kind === 'grid' ? { on: pos.length === 3, from: L.midFrom } : null;
+  const minZone = (L.kind === 'grid' || L.kind === 'steps') && pos.length && !centred ? Math.min(Math.max(0, L.end), length) : 0;
+  const pitch = L.kind === 'grid' ? (L.pitch > 0 ? L.pitch : 32) : 0;
+  const ticks = pitch && pos.length && !centred && pitch * kx >= 3 ? Array.from({ length: Math.floor((length - L.start) / pitch + 1e-6) + 1 }, (_, i) => L.start + i * pitch) : [];
+  const note = !view.conn ? 'pick a connector' : !pos.length ? 'nothing fits on this length' : centred ? 'centred — the end distances do not fit' : '';
+  return (
+    <svg ref={svg} viewBox={`0 0 ${VW} ${VH}`} className="block w-full select-none" style={{ fontFamily: UI_FONT, touchAction: 'none', cursor: grab ? 'grabbing' : undefined }}
+      onPointerMove={move} onPointerUp={drop} onPointerCancel={drop}>
+      <rect x={X0} y={yT} width={X1 - X0} height={hS} fill={selected ? '#f6ecd9' : PT.fill} />
+      {minZone > 0 && <rect x={xOf(length - minZone)} y={yT} width={minZone * kx} height={hS} fill="url(#yago-lane-keepout)" opacity={0.75} />}
+      {minZone > 0 && <line x1={xOf(length - minZone)} y1={yT} x2={xOf(length - minZone)} y2={yT + hS} stroke="#8a8073" strokeWidth={0.9} strokeDasharray="2.5 2" />}
+      {ticks.map((d, i) => <line key={`t${i}`} x1={xOf(d)} y1={yT} x2={xOf(d)} y2={yT + 3.5} stroke="#a89f92" strokeWidth={0.7} />)}
+      <rect x={X0} y={yT} width={X1 - X0} height={hS} fill="none" stroke={PT.stroke} strokeWidth={1} rx={1} />
+      {canAdd && <rect x={X0} y={yT - 2} width={X1 - X0} height={hS + 4} fill="transparent" style={{ cursor: 'copy' }} onClick={e => { stop(e); addAt(e); }}><title>Click to add a connector here</title></rect>}
+      {/* orta bağlayıcı henüz yok → geleceği yer */}
+      {mid && !mid.on && mid.from > 0 && pos.length === 2 && <circle cx={(xOf(pos[0]) + xOf(pos[1])) / 2} cy={yM} r={4.2} fill="none" stroke={c} strokeWidth={1} strokeDasharray="2.2 1.8" opacity={0.8} />}
+      {pos.map((d, i) => <circle key={i} cx={xOf(d)} cy={yM} r={4.2} fill={c} stroke="#fff" strokeWidth={1.1} style={{ pointerEvents: 'none' }} />)}
+      {clash.map((d, i) => <circle key={`c${i}`} cx={xOf(d)} cy={yM} r={7.4} fill="none" stroke="#dc2626" strokeWidth={1.2} strokeDasharray="3 2" style={{ pointerEvents: 'none' }} />)}
+      {/* ölçü zinciri */}
+      {chain.slice(0, -1).map((p, i) => {
+        const q = chain[i + 1], xa = xOf(p), xb = xOf(q), edge = (i === 0 || i === chain.length - 2) && L.kind !== 'list' && !centred;
+        if (q - p < 0.05) return null;
+        return (
+          <g key={`d${i}`} style={{ pointerEvents: 'none' }}>
+            <line x1={xa} y1={yC} x2={xb} y2={yC} stroke={edge ? c : '#b5ada2'} strokeWidth={edge ? 1.3 : 0.9} />
+            <line x1={xa} y1={yT + hS} x2={xa} y2={yC + 3} stroke="#cfc7bc" strokeWidth={0.8} /><line x1={xb} y1={yT + hS} x2={xb} y2={yC + 3} stroke="#cfc7bc" strokeWidth={0.8} />
+            {xb - xa >= 17 && <text x={(xa + xb) / 2} y={yC + 10.5} textAnchor="middle" fontSize={9.2} fontWeight={edge ? 700 : 500} fill={edge ? c : '#8a8378'} style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt1(q - p)}</text>}
+          </g>
+        );
+      })}
+      {note && <text x={(X0 + X1) / 2} y={pos.length ? 9 : yM + 3} textAnchor="middle" fontSize={8.2} fontWeight={600} fill={PT.mute} style={{ pointerEvents: 'none' }}>{note}</text>}
+      {handles.map(hd => (
+        <g key={hd.key} style={{ cursor: grab ? 'grabbing' : 'ew-resize' }}
+          onPointerDown={e => { e.preventDefault(); (e.currentTarget as Element).setPointerCapture(e.pointerId); drag.current = hd.key; setGrab(true); }}
+          onClick={e => { if (selected) stop(e); }}
+          onDoubleClick={hd.point === undefined ? undefined : e => { stop(e); onPatch({ points: L.points.filter((_, k) => k !== hd.point) }); }}>
+          <title>{hd.title}</title>
+          <rect x={xOf(hd.d) - 8} y={0} width={16} height={yT + hS + 2} fill="transparent" />
+          <path d={`M${xOf(hd.d) - 5} ${yT - 11}h10v6.5l-5 5.5l-5 -5.5z`} fill={c} stroke="#fff" strokeWidth={0.9} />
+        </g>
+      ))}
+    </svg>
+  );
+}
+/** BİR BAĞLAYICI = BİR ŞERİT SATIRI: solda bağlayıcı seçimi + kural adı, sağda kendi şeridi (ölçüler şeridin üstünde, sürüklenir). Satıra tık →
+ *  altında o bağlayıcının ayarları açılır: dört kuraldan biri (resimli kart) + sayılar. Ölçü hep kendi bağlayıcısının satırında, kendi renginde. */
+function ConnectorLane({ view, selected, length, clash, connectors, removable, onSelect, onPatch, onRemove }: {
+  view: LineView; selected: boolean; length: number; clash: number[]; connectors: Connector[]; removable: boolean;
+  onSelect: () => void; onPatch: (p: Partial<LayoutLine>) => void; onRemove: () => void;
 }) {
-  const l = view.line, hit = lineApplies(l, length), n = hit && view.conn ? linePositions(l, length).length : 0;
+  const l = view.line, n = view.conn ? linePositions(l, length).length : 0;
   const mm = (v: number, on: (v: number) => void, min = 0, w = 34) => <><QbNum value={v} min={min} w={w} onCommit={on} /><Unit /></>;
   const front = <EditCell label="From front" title="Exact distance of the first connector from the front (start) of the joint (mm)">{mm(l.start, v => onPatch({ start: v }))}</EditCell>;
   const rearMin = <EditCell label="Rear min" title="Smallest allowed distance of the last connector from the rear (end) of the joint (mm) — the real distance is this or a little more">{mm(l.end, v => onPatch({ end: v }))}</EditCell>;
   const middle = <EditCell label="Middle ≥" title="One more connector goes in the middle when the joint is at least this long (mm) · 0 = never">{mm(l.midFrom, v => onPatch({ midFrom: v }))}</EditCell>;
   return (
-    <div className="rounded-[8px] overflow-hidden transition-shadow duration-150" data-connector-block={view.conn?.name ?? ''}
-      style={{ background: open ? '#fff' : '#faf8f5', boxShadow: `inset 3px 0 0 ${view.color}, 0 0 0 1px ${open ? view.color : '#e3ddd4'}` }}>
-      <div onClick={e => { stop(e); onOpen(); }} className="h-[30px] pl-3 pr-1 flex items-center gap-2 cursor-pointer" title={open ? undefined : 'Click to edit the measurements of this connector'}>
-        <span className="shrink-0 w-[10px] h-[10px] rounded-full ring-2 ring-white" style={{ background: view.color, boxShadow: `0 0 0 1px ${view.color}` }} />
-        <div className="relative shrink min-w-0" onClick={stop} title="Connector — the measurements in this block belong to it">
-          <select aria-label="Connector" value={l.connectorId ?? ''} onChange={e => onPatch({ connectorId: e.target.value || null })} className={SMALL_SELECT} style={{ fontFamily: UI_FONT }}>
-            {!view.conn && <option value="">Pick a connector</option>}
-            {connectors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-          <ChevronDown size={11} strokeWidth={2.2} className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-stone-400" />
+    <div className="rounded-[8px] overflow-hidden transition-shadow duration-150" data-lane={view.conn?.name ?? ''}
+      style={{ background: selected ? '#fff' : '#faf8f5', boxShadow: `inset 3px 0 0 ${view.color}, 0 0 0 1px ${selected ? view.color : '#e3ddd4'}` }}>
+      <div onClick={e => { stop(e); onSelect(); }} className="flex items-center cursor-pointer" title={selected ? undefined : 'Click to edit the rule and the measurements of this connector — or just drag its handles'}>
+        <div className="shrink-0 pl-2.5 flex flex-col gap-[1px]" style={{ width: LANE_SIDE }}>
+          <div className="flex items-center gap-1 min-w-0">
+            <span className="shrink-0 w-[9px] h-[9px] rounded-full" style={{ background: view.color }} />
+            <div className="relative min-w-0" onClick={stop} title="Connector of this strip">
+              <select aria-label="Connector" value={l.connectorId ?? ''} onChange={e => onPatch({ connectorId: e.target.value || null })} className={SMALL_SELECT} style={{ fontFamily: UI_FONT }}>
+                {!view.conn && <option value="">Pick…</option>}
+                {connectors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <ChevronDown size={11} strokeWidth={2.2} className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-stone-400" />
+            </div>
+          </div>
+          <span className={`pl-[14px] truncate ${MUTED}`} title={`${layoutKindLabel(l.kind)} · ${lineSummary(l)}`}>{layoutKindLabel(l.kind)}{n ? ` · ${n} ×` : ''}</span>
         </div>
-        <span className={`flex-1 min-w-0 truncate text-right ${MUTED}`} title="Rule · values">{layoutKindLabel(l.kind)} · {lineSummary(l)}{n ? ` · ${n} ×` : ''}</span>
-        {removable ? <RowTrash title="Remove this connector from the rule" onClick={onRemove} /> : <span className="shrink-0 w-[2px]" />}
+        <div className="flex-1 min-w-0"><LaneTrack view={view} length={length} selected={selected} clash={clash} onPatch={onPatch} /></div>
+        <div className="shrink-0 w-[26px] flex justify-center">{removable && <RowTrash title="Remove this connector from the range" onClick={onRemove} />}</div>
       </div>
-      {open && (
-        <div className="pl-3 pr-1.5 pb-1.5 flex flex-col gap-1.5" onClick={stop}>
-          <div className="text-[9.5px] font-bold uppercase tracking-[0.07em] truncate" style={{ color: view.color }}>Measurements of {view.conn?.name ?? 'this connector'}</div>
+      {selected && (
+        <div className="pl-3 pr-1.5 pb-1.5 pt-1 flex flex-col gap-1.5" onClick={stop} style={{ borderTop: '1px solid #efeae2' }}>
           <LayoutKindCards value={l.kind} onPick={k => onPatch({ kind: k })} />
-          <div className="yago-hint px-1">{KIND_HELP[l.kind]}</div>
+          <div className="yago-hint px-1">{KIND_HINT[l.kind]}</div>
           {l.kind === 'ends' && (
             <div className="grid gap-x-1" style={{ ...QB_CELL_ROW, gridTemplateColumns: '1.1fr 1.02fr 0.96fr' }}>
               {front}
@@ -1331,7 +1417,7 @@ function RuleConnectorBlock({ view, open, length, connectors, removable, onOpen,
               ))}
               {l.points.length < MAX_LAYOUT_POINTS && (
                 <div className="flex justify-end h-[24px]">
-                  <CardAction compact icon={Plus} label="Add connector" className="!h-[22px] !px-2" title="Add one more position to the list"
+                  <CardAction compact icon={Plus} label="Add position" className="!h-[22px] !px-2" title="Add one more position to the list — or click the strip where it should go"
                     onClick={() => { const last = l.points.filter(p => p.from === 'start').reduce((m, p) => Math.max(m, p.d), 0); onPatch({ points: [...l.points, { from: 'start', d: last + 50 }] }); }} />
                 </div>
               )}
@@ -1342,140 +1428,172 @@ function RuleConnectorBlock({ view, open, length, connectors, removable, onOpen,
     </div>
   );
 }
-/** KURAL KARTI: sıra · boy aralığı · bağlayıcıları · kopya · sil. Açıkken: boy aralığı (kuralın bütün bağlayıcıları için ortak) → her bağlayıcı
- *  kendi bloğunda kendi ölçüleriyle → "Add connector". */
-function LayoutRuleCard({ rule, index, openId, length, connectors, onToggle, onOpenLine, onPatchLine, onRange, onAddConnector, onRemoveLine, onCopy, onRemove }: {
-  rule: RuleView; index: number; openId: string | null; length: number; connectors: Connector[];
-  onToggle: () => void; onOpenLine: (id: string) => void; onPatchLine: (id: string, p: Partial<LayoutLine>) => void; onRange: (p: { min?: number; max?: number }) => void;
-  onAddConnector: () => void; onRemoveLine: (id: string) => void; onCopy: () => void; onRemove: () => void;
+/** BOY ARALIĞI KARTI. Kapalı: aralık · küçük resmi · bağlayıcıları (ad + adet). Açık: aralığın iki sınırı (yazılır) → önizleme boyu (kaydırıcı
+ *  yalnız aralığın içinde gezer; "Split" aralığı o boydan ikiye böler) → her bağlayıcı kendi şerit satırında → "Add connector". */
+function RangeCard({ rule, open, lineId, length, scale, hasNext, connectors, onToggle, onLength, onRange, onSelectLine, onPatchLine, onAddConnector, onRemoveLine, onSplit, onRemove }: {
+  rule: RuleView; open: boolean; lineId: string | null; length: number; scale: number; hasNext: boolean; connectors: Connector[];
+  onToggle: () => void; onLength: (v: number) => void; onRange: (p: { min?: number; max?: number }) => void; onSelectLine: (id: string) => void;
+  onPatchLine: (id: string, p: Partial<LayoutLine>) => void; onAddConnector: () => void; onRemoveLine: (id: string) => void; onSplit: () => void; onRemove: () => void;
 }) {
-  const first = rule.lines[0].line, open = rule.lines.some(v => v.line.id === openId), hit = lineApplies(first, length);
-  const n = hit ? rule.lines.reduce((k, v) => k + (v.conn ? linePositions(v.line, length).length : 0), 0) : 0;
-  const mm = (v: number, on: (v: number) => void) => <><QbNum value={v} min={0} w={44} onCommit={on} /><Unit /></>;
+  const { min, max } = rule.lines[0].line, label = rangeLabel(min, max), lo = Math.max(1, min), top = max > 0 ? max : Math.max(LEN_MAX, lo * 2), span = top - lo;
+  const pos = rule.lines.map(v => (v.conn ? linePositions(v.line, length) : []));
+  // Farklı bağlayıcıların üst üste gelen noktaları (≤ 9 mm).
+  const clash = pos.map((list, i) => list.filter(d => pos.some((o, j) => j !== i && o.some(x => Math.abs(x - d) < 9))));
+  const total = pos.reduce((n, list) => n + list.length, 0), clashing = clash.some(c => c.length > 0);
+  const chips = rule.lines.reduce<Array<{ key: string; name: string; color: string; n: number }>>((list, v, i) => {
+    const key = v.conn?.id ?? '', hit = list.find(x => x.key === key);
+    if (hit) hit.n += pos[i].length; else list.push({ key, name: v.conn?.name ?? 'No connector', color: v.color, n: pos[i].length });
+    return list;
+  }, []);
   return (
-    <div className={rowCardClass(open, false, false)} style={{ opacity: hit || open ? 1 : 0.62 }} data-rule={index + 1}>
-      <div onClick={e => { stop(e); onToggle(); }} className={`relative h-[32px] pl-2.5 pr-1 flex items-center gap-2 cursor-pointer transition-colors duration-150 hover:bg-[#faf8f5] ${open ? ROW_SEL_HEAD : ''}`}>
-        {open && <span className={ROW_SEL_BAR} />}
-        <span className="shrink-0 text-[11px] font-semibold text-stone-700">Rule {index + 1}</span>
-        <span className={`shrink-0 h-[18px] px-1.5 rounded-full text-[10px] font-semibold tabular-nums flex items-center ${hit ? 'bg-[#292524] text-white' : 'bg-[#ece7e0] text-stone-500'}`}
-          title={hit ? `Applies to the previewed joint (${fmt1(length)} mm)` : `Not used on the previewed joint (${fmt1(length)} mm)`}>{lineRangeText(first)}</span>
-        <div className="flex-1 min-w-0 flex items-center gap-2.5 overflow-hidden" title="Connectors of this rule">
-          {rule.lines.map(v => (
-            <span key={v.line.id} className="min-w-0 shrink flex items-center gap-1">
-              <span className="shrink-0 w-[8px] h-[8px] rounded-full" style={{ background: v.color }} />
-              <span className="min-w-0 truncate text-[11.5px] font-medium text-stone-700">{v.conn?.name ?? 'No connector'}</span>
-            </span>
-          ))}
-        </div>
-        {n > 0 && <span className={`shrink-0 ${MUTED}`} title={`Connectors this rule puts on the previewed joint (${fmt1(length)} mm)`}>{n} ×</span>}
-        <button type="button" title="Duplicate this rule — e.g. to give another length range its own values" onClick={e => { stop(e); onCopy(); }} className={ICON_BTN}><Copy size={12} strokeWidth={1.9} /></button>
-        <RowTrash title="Remove this rule" onClick={onRemove} />
-      </div>
-      {open && (
-        <div className={`${CARD_BODY} flex flex-col gap-1.5`} style={CARD_BODY_STYLE} onClick={stop}>
-          <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
-            <EditCell label="Joint from" title="This rule applies to joints at least this long (mm) · 0 = from the shortest">{mm(first.min, v => onRange({ min: Math.round(v) }))}</EditCell>
-            <EditCell label="Joint to" title="… and at most this long (mm) · empty = no upper limit">
-              <BlankNum value={first.max} placeholder="any" w={44} limit={99999} onCommit={v => onRange({ max: Math.round(v) })} title="Longest joint this rule applies to (mm) — empty = any length" /><Unit /></EditCell>
+    <div className={rowCardClass(open, false, false)} data-range={label}>
+      {!open ? (
+        <div onClick={e => { stop(e); onToggle(); }} className="min-h-[36px] pl-2.5 pr-2 flex items-center gap-2 cursor-pointer transition-colors duration-150 hover:bg-[#faf8f5]"
+          title={`Joints ${label === 'any length' ? 'of any length' : label} — click to edit`}>
+          <span className="shrink-0 w-[82px] text-[11.5px] font-semibold tabular-nums text-stone-800">{label}</span>
+          <div className="shrink-0"><RangeThumb lines={rule.lines} length={length} scale={scale} /></div>
+          <div className="flex-1 min-w-0 flex items-center justify-end gap-2 overflow-hidden">
+            {chips.map(c => (
+              <span key={c.key} className="min-w-0 shrink flex items-center gap-1" title={`${c.n} × ${c.name} on a ${fmt1(length)} mm joint`}>
+                <span className="shrink-0 w-[8px] h-[8px] rounded-full" style={{ background: c.color }} />
+                <span className="min-w-0 truncate text-[11px] font-medium text-stone-700">{c.name}</span>
+                <span className={`shrink-0 ${MUTED}`}>{c.n}</span>
+              </span>
+            ))}
           </div>
-          {first.max > 0 && first.max < first.min && <div className="text-[10.5px] font-medium text-red-600 px-1">“Joint to” is smaller than “Joint from” — this rule never applies.</div>}
-          {rule.lines.map(v => (
-            <RuleConnectorBlock key={v.line.id} view={v} open={v.line.id === openId} length={length} connectors={connectors} removable={rule.lines.length > 1}
-              onOpen={() => onOpenLine(v.line.id)} onPatch={p => onPatchLine(v.line.id, p)} onRemove={() => onRemoveLine(v.line.id)} />
-          ))}
-          {rule.lines.length < MAX_RULE_CONNECTORS && (
-            <div className="flex items-center gap-2 h-[24px]">
-              <span className="flex-1 min-w-0 truncate yago-hint pl-1">Every connector of a rule has its own measurements.</span>
-              <CardAction compact icon={Plus} label="Add connector" className="!h-[22px] !px-2" title="Add another connector to this rule — it gets its own block with its own measurements" onClick={onAddConnector} />
-            </div>
-          )}
         </div>
+      ) : (
+        <>
+          <div onClick={e => { stop(e); onToggle(); }} className={`relative h-[36px] pl-2.5 pr-1 flex items-center gap-1.5 cursor-pointer ${ROW_SEL_HEAD}`}>
+            <span className={ROW_SEL_BAR} />
+            <span className="yago-label shrink-0">Joint from</span>
+            <div className="yago-cell shrink-0 h-[24px] pl-1 pr-0.5 flex items-center" title="Shortest joint of this range (mm) — the range before it ends just below"><QbNum value={min} min={0} w={40} onCommit={v => onRange({ min: v })} /><Unit /></div>
+            <span className="yago-label shrink-0">to</span>
+            <div className="yago-cell shrink-0 h-[24px] pl-1 pr-0.5 flex items-center" title={hasNext ? 'Longest joint of this range (mm) — the next range starts just above' : 'Longest joint of this range (mm) — empty = any length'}>
+              {hasNext ? <QbNum value={max} min={lo} w={40} onCommit={v => onRange({ max: v })} />
+                : <BlankNum value={max} placeholder="any" w={40} limit={99999} onCommit={v => onRange({ max: v })} title="Longest joint of this range (mm) — empty = any length" />}<Unit /></div>
+            <span className="flex-1 min-w-0" />
+            <RowTrash title="Remove this range — joints of this length get no connectors" onClick={onRemove} />
+            <RowChevron open onClick={e => { stop(e); onToggle(); }} title="Close" />
+          </div>
+          <div className={`${CARD_BODY} flex flex-col gap-1.5`} style={CARD_BODY_STYLE} onClick={stop}>
+            <div className="flex items-center gap-2 h-[26px] pl-1" title="Preview only: slide to see how the connectors spread on a shorter or longer joint of this range. Real panels use their own joint length.">
+              <span className="yago-label shrink-0">Preview at</span>
+              {span > 0
+                ? <input type="range" min={lo} max={top} step={span <= 200 ? 1 : span <= 1000 ? 5 : 10} value={Math.min(top, length)} onChange={e => onLength(Number(e.target.value))}
+                  className="flex-1 min-w-0 h-[14px] cursor-pointer" style={{ accentColor: SEL }} />
+                : <span className="flex-1 min-w-0 truncate yago-hint">this range is a single length</span>}
+              <div className="yago-cell shrink-0 h-[24px] pl-1 pr-0.5 flex items-center"><QbNum value={length} min={lo} max={max > 0 ? max : 9999} w={40} onCommit={onLength} /><Unit /></div>
+              {length > lo && <CardAction compact icon={Scissors} label={`Split at ${fmt1(length)}`} className="!h-[24px] !px-2"
+                title={`Other connectors from ${fmt1(length)} mm on: cuts this range in two at the previewed length — the upper part starts as a copy you can change`} onClick={onSplit} />}
+            </div>
+            {/* şeritlerin üstünde: uç adları (şeridin uçlarına hizalı) + o boydaki toplam */}
+            <div className="flex items-center h-[12px]">
+              <span className="shrink-0" style={{ width: LANE_SIDE }} />
+              <div className="flex-1 min-w-0 flex items-center text-[8.4px] font-bold tracking-[0.08em] text-stone-600">
+                <span style={{ marginLeft: `${(LANE.X0 / LANE.VW) * 100}%` }}>FRONT</span>
+                <span className={`flex-1 min-w-0 truncate text-center font-semibold tracking-normal ${clashing ? 'text-red-600' : 'text-stone-400'}`} style={{ fontSize: 10 }}>
+                  {clashing ? 'two connectors overlap' : `${total} connector${total === 1 ? '' : 's'} on a ${fmt1(length)} mm joint`}</span>
+                <span style={{ marginRight: `${(1 - LANE.X1 / LANE.VW) * 100}%` }}>REAR</span>
+              </div>
+              <span className="shrink-0 w-[26px]" />
+            </div>
+            {rule.lines.map((v, i) => (
+              <ConnectorLane key={v.line.id} view={v} selected={v.line.id === lineId} length={length} clash={clash[i]} connectors={connectors} removable={rule.lines.length > 1}
+                onSelect={() => onSelectLine(v.line.id)} onPatch={p => onPatchLine(v.line.id, p)} onRemove={() => onRemoveLine(v.line.id)} />
+            ))}
+            {rule.lines.length < MAX_RULE_CONNECTORS && (
+              <div className="flex items-center gap-2 h-[24px]">
+                <span className="flex-1 min-w-0 truncate yago-hint pl-1">Drag a handle, or click a strip for its rule and numbers.</span>
+                <CardAction compact icon={Plus} label="Add connector" className="!h-[22px] !px-2" title="Add another connector to this range — it gets its own strip with its own rule and measurements" onClick={onAddConnector} />
+              </div>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
 }
 const GROUP_SEG: SegItem[] = CONNECTOR_GROUPS.map(g => ({ key: g.key, label: g.label, title: `${g.label} set — ${g.sub}` }));
-/** SET DÜZENLEYİCİ. Üstte sabit: ad + grup (Fixed / Movable) + önizleme şeridi (o boyda geçerli bağlayıcıların hepsi) + boy aralığı haritası;
- *  altta kurallar. Bağlayıcı bloğu açılınca önizleme boyu kuralın aralığına gelir ve şerit o bağlayıcının ölçü zincirini gösterir. */
+/** Düzenlemeye açılan set: satırlar ardışık boy aralıklarına çevrilmiş kopya (bkz. partitionLines). */
+const editableLayoutSet = (l: ConnectorLayoutSet): ConnectorLayoutSet => { const c = cloneLayoutSet(l); return { ...c, lines: partitionLines(c.lines) }; };
+/** SET DÜZENLEYİCİ. Üstte ad + grup (Fixed / Movable). Altında TEK LİSTE: birleşim boyu aralıkları, kısadan uzuna — her satır o aralığın resmi
+ *  (basamak gibi büyüyen şerit + bağlayıcıları). Aralığa tık → açılır: sınırlar, önizleme boyu ve her bağlayıcı kendi şerit satırında. */
 function ConnectorLayoutEditor({ draft, setDraft, onSave, onCancel }: { draft: ConnectorLayoutSet; setDraft: (l: ConnectorLayoutSet) => void; onSave: () => void; onCancel: () => void }) {
   const { connectors } = useStoreFields('connectors');
-  const [len, setLen] = useState(560);
-  const [openId, setOpenId] = useState<string | null>(draft.lines[0]?.id ?? null);
+  // Tek aralıklı set açık gelir (tek bağlayıcısı varsa ayarlarıyla); çok aralıklı set kapalı gelir — önce bütün aralıkların resmi görünsün.
+  const [openRule, setOpenRule] = useState<string | null>(() => { const rs = rangesOf(draft.lines); return rs.length === 1 ? rs[0].id : null; });
+  const [lineId, setLineId] = useState<string | null>(draft.lines.length === 1 ? draft.lines[0].id : null);
+  const [lens, setLens] = useState<Record<string, number>>({});
   const ref = useRef(draft); ref.current = draft;
-  const setLines = (fn: (lines: LayoutLine[]) => LayoutLine[]) => setDraft({ ...ref.current, lines: fn(ref.current.lines) });
+  const setLines = (fn: (lines: LayoutLine[]) => LayoutLine[]) => setDraft({ ...ref.current, lines: partitionLines(fn(ref.current.lines)) });
   const linesOf = (ruleId: string) => ref.current.lines.filter(l => ruleIdOf(l) === ruleId);
-  /** Boy, kuralın aralığının dışındaysa içine çekilir (düzenlenen bağlayıcı şeritte görünsün); ters girilmiş aralıkta dokunulmaz. */
-  const reach = (l: Pick<LayoutLine, 'min' | 'max'>) => { if (!lineApplies(l, len) && !(l.max > 0 && l.max < l.min)) setLen(l.max > 0 && len > l.max ? l.max : Math.max(1, l.min)); };
+  const views = lineViews(draft, connectors), rules = ruleViews(views), rows = rangeRows(rules);
+  const lenOf = (r: { id: string; min: number; max: number }) => Math.min(topOf(r), Math.max(1, r.min, lens[r.id] ?? sampleLength(r.min, r.max)));
+  const lenOfRule = (r: RuleView) => lenOf({ id: r.id, min: r.lines[0].line.min, max: r.lines[0].line.max });
+  const longest = Math.max(1, ...rules.map(lenOfRule));
+  const openLine = (l: LayoutLine) => { setOpenRule(ruleIdOf(l)); setLineId(l.id); };
   const patchLine = (id: string, p: Partial<LayoutLine>) => setLines(ls => ls.map(l => (l.id === id ? { ...l, ...p } : l)));
-  /** Boy aralığı kuralın BÜTÜN bağlayıcılarına yazılır; açık kuralsa önizleme boyu onu izler. */
-  const patchRange = (ruleId: string, p: { min?: number; max?: number }) => {
-    const cur = linesOf(ruleId)[0];
-    setLines(ls => ls.map(l => (ruleIdOf(l) === ruleId ? { ...l, ...p } : l)));
-    if (cur && linesOf(ruleId).some(l => l.id === openId)) reach({ ...cur, ...p });
+  const newLine = (init: Partial<LayoutLine>) => newLayoutLine(connectors[0]?.id ?? null, init);
+  /** Yeni aralık en uzun aralığın ÜSTÜNE gelir: son aralık üstü açıksa oradan bölünür (alt sınırın 2 katı, en az + 100), kapalıysa bittiği yerden başlar. */
+  const addRange = () => {
+    const rs = rangesOf(ref.current.lines), last = rs[rs.length - 1];
+    const min = !last ? 0 : last.max > 0 ? last.max + 1 : Math.ceil(Math.max(last.min * 2, last.min + 100) / 50) * 50, line = newLine({ min, max: 0 });
+    setLines(ls => [...(last && !(last.max > 0) ? moveRange(ls, last.id, { max: min - 1 }) : ls), line]); openLine(line);
   };
-  const views = lineViews(draft, connectors), rules = ruleViews(views);
-  const rows = views.filter(v => !!v.conn && lineApplies(v.line, len)), act = rows.findIndex(v => v.line.id === openId);
-  const openLine = ref.current.lines.find(l => l.id === openId), openRule = openLine ? ruleIdOf(openLine) : null;
-  const open = (l: LayoutLine) => { setOpenId(l.id); reach(l); };
-  /** Kuralı aç / kapat (açarken ilk bağlayıcısı açılır). */
-  const toggleRule = (ruleId: string) => { if (openRule === ruleId) setOpenId(null); else { const l = linesOf(ruleId)[0]; if (l) open(l); } };
-  const insertAfter = (ruleId: string | null, add: LayoutLine[]) => setLines(ls => {
-    const i = ruleId ? ls.reduce((k, l, j) => (ruleIdOf(l) === ruleId ? j : k), -1) : -1;
-    return i < 0 ? [...ls, ...add] : [...ls.slice(0, i + 1), ...add, ...ls.slice(i + 1)];
-  });
-  const addRule = () => { const line = newLayoutLine(connectors[0]?.id ?? null); insertAfter(null, [line]); open(line); };
-  /** Kurala bağlayıcı ekle: kütüphanede kuralda henüz olmayan ilk bağlayıcıyla, kendi ölçü bloğuyla. */
+  const fillGap = (min: number, max: number) => { const line = newLine({ min, max }); setLines(ls => [...ls, line]); openLine(line); };
+  /** Aralığı önizleme boyundan ikiye böler; üst parça alt parçanın kopyasıdır (sonra değiştirilir). */
+  const splitRange = (ruleId: string, at: number) => {
+    const cur = linesOf(ruleId), first = cur[0]; if (!first || !(at > Math.max(1, first.min)) || at > topOf(first)) return;
+    const rule = freshLineIds().rule, copy = cur.map(l => ({ ...(JSON.parse(JSON.stringify(l)) as LayoutLine), id: freshLineIds().id, rule, min: at, max: first.max }));
+    setLines(ls => [...ls.map(l => (ruleIdOf(l) === ruleId ? { ...l, max: at - 1 } : l)), ...copy]);
+    setOpenRule(rule); setLineId(null);
+  };
+  /** Aralığa bağlayıcı ekle: kütüphanede aralıkta henüz olmayan ilk bağlayıcıyla, kendi şeridinde. */
   const addConnector = (ruleId: string) => {
     const cur = linesOf(ruleId), last = cur[cur.length - 1]; if (!last) return;
     const line = newRuleLine(last, (connectors.find(c => !cur.some(l => l.connectorId === c.id)) ?? connectors[0])?.id ?? null);
-    insertAfter(ruleId, [line]); open(line);
+    setLines(ls => { const i = ls.lastIndexOf(last); return [...ls.slice(0, i + 1), line, ...ls.slice(i + 1)]; }); openLine(line);
   };
-  const copyRule = (ruleId: string) => {
-    const id = newLayoutLine(null).rule, copy = linesOf(ruleId).map(l => ({ ...(JSON.parse(JSON.stringify(l)) as LayoutLine), id: newLayoutLine(null).id, rule: id }));
-    if (!copy.length) return;
-    insertAfter(ruleId, copy); open(copy[0]);
-  };
-  const removeLine = (id: string) => { setLines(ls => ls.filter(l => l.id !== id)); if (openId === id) setOpenId(null); };
-  const removeRule = (ruleId: string) => { setLines(ls => ls.filter(l => ruleIdOf(l) !== ruleId)); if (openRule === ruleId) setOpenId(null); };
+  const removeLine = (id: string) => { setLines(ls => ls.filter(l => l.id !== id)); if (lineId === id) setLineId(null); };
+  const removeRange = (ruleId: string) => { setLines(ls => ls.filter(l => ruleIdOf(l) !== ruleId)); if (openRule === ruleId) { setOpenRule(null); setLineId(null); } };
   const nConn = new Set(draft.lines.map(l => l.connectorId).filter(Boolean)).size;
   return (
     <>
-      <div className="sticky top-0 z-30 -mx-1.5 -mt-1.5 px-1.5 pt-1.5 pb-1.5 flex flex-col gap-1.5" onClick={stop}
-        style={{ background: '#f8f6f2', boxShadow: '0 6px 10px -8px rgba(40,30,20,0.18)' }}>
-        <div className="flex items-center gap-1.5">
-          <div className="yago-cell flex-1 min-w-0 h-[28px] px-2 flex items-center">
-            <input type="text" value={draft.name} placeholder="Set name" spellCheck={false} onChange={e => setDraft({ ...ref.current, name: e.target.value })}
-              onKeyDown={e => { if (e.key === 'Enter') onSave(); }} className="yago-field yago-field-text" style={TEXT_INPUT} />
-          </div>
-          <div className="shrink-0 w-[150px]" title="Group of this set — a panel-type edge only says Fixed or Movable; a panel then chooses among the sets of that group">
-            <Segmented items={GROUP_SEG} active={setGroupOf(draft)} height={24} onPick={k => { if (k !== setGroupOf(ref.current)) setDraft({ ...ref.current, group: k as ConnectorGroup, isDefault: undefined }); }} />
-          </div>
-          <ApplyBtn enabled onClick={onSave} title="Save" />
-          <ExitBtn onClick={onCancel} />
+      <div className="sticky top-0 z-30 -mx-1.5 -mt-1.5 px-1.5 pt-1.5 pb-1.5 flex items-center gap-1.5" onClick={stop} style={{ background: '#f8f6f2', boxShadow: '0 6px 10px -8px rgba(40,30,20,0.18)' }}>
+        <div className="yago-cell flex-1 min-w-0 h-[28px] px-2 flex items-center">
+          <input type="text" value={draft.name} placeholder="Set name" spellCheck={false} onChange={e => setDraft({ ...ref.current, name: e.target.value })}
+            onKeyDown={e => { if (e.key === 'Enter') onSave(); }} className="yago-field yago-field-text" style={TEXT_INPUT} />
         </div>
-        <div className="rounded-[9px] ring-1 ring-[#e3ddd4] px-1 pt-1" style={{ background: '#faf8f5' }}>
-          <LayoutBand length={len} ends={['front', 'rear']} rows={rows} active={act} onPick={i => setOpenId(rows[i].line.id)} onDrag={patchLine} />
+        <div className="shrink-0 w-[150px]" title="Group of this set — a panel-type edge only says Fixed or Movable; a panel then chooses among the sets of that group">
+          <Segmented items={GROUP_SEG} active={setGroupOf(draft)} height={24} onPick={k => { if (k !== setGroupOf(ref.current)) setDraft({ ...ref.current, group: k as ConnectorGroup, isDefault: undefined }); }} />
         </div>
-        <div className="rounded-[9px] ring-1 ring-[#e3ddd4]" style={{ background: '#faf8f5' }}>
-          <div className="flex items-center gap-2 h-[26px] pl-2 pr-1">
-            <span className="yago-label shrink-0">Joint length</span>
-            <span className="flex-1 min-w-0 truncate yago-hint">which rule is used at which length — click or drag</span>
-            <div className="yago-cell shrink-0 h-[22px] pl-1 pr-0.5 flex items-center"><QbNum value={len} min={1} max={9999} w={40} onCommit={setLen} /><Unit /></div>
-          </div>
-          <LayoutRangeMap rules={rules} length={len} onLength={setLen} activeRule={openRule} onPick={id => { if (openRule !== id) toggleRule(id); }} />
-        </div>
+        <ApplyBtn enabled onClick={onSave} title="Save" />
+        <ExitBtn onClick={onCancel} />
       </div>
-      <QbSection title="Rules" sub={`${rules.length} rule${rules.length === 1 ? '' : 's'} · ${nConn} connector${nConn === 1 ? '' : 's'}`}
-        trailing={<CardAction compact icon={Plus} label="Add rule" title="Add a rule: other connectors or other measurements for another joint-length range" onClick={addRule} />}>
+      <QbSection title="By joint length" sub={`${rules.length} range${rules.length === 1 ? '' : 's'} · ${nConn} connector${nConn === 1 ? '' : 's'}`}
+        trailing={<CardAction compact icon={Plus} label="Add range" title="Add a range for longer joints, with its own connectors" onClick={addRange} />}>
         <div className="flex flex-col gap-1" onClick={stop}>
+          <svg width="0" height="0" className="absolute" aria-hidden>
+            <defs><pattern id="yago-lane-keepout" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#b5a998" strokeWidth="0.9" /></pattern></defs>
+          </svg>
           {!connectors.length && <div className="yago-hint px-1">No connectors in the library yet — create one under Connect first.</div>}
-          {!rules.length && <div className="yago-hint px-1">No rules yet. A rule = a joint-length range + the connectors used on it, each with its own measurements.</div>}
-          {rules.map((r, i) => (
-            <LayoutRuleCard key={r.id} rule={r} index={i} openId={openId} length={len} connectors={connectors}
-              onToggle={() => toggleRule(r.id)} onOpenLine={id => { const l = ref.current.lines.find(x => x.id === id); if (l) open(l); }} onPatchLine={patchLine}
-              onRange={p => patchRange(r.id, p)} onAddConnector={() => addConnector(r.id)} onRemoveLine={removeLine} onCopy={() => copyRule(r.id)} onRemove={() => removeRule(r.id)} />
-          ))}
-          <div className="yago-hint px-1 pt-0.5">A rule is used on every joint whose length falls in its range. Inside a rule each connector sits in its own coloured block with its own measurements — click a block to edit it; the strip above shows that connector’s dimensions.</div>
+          {!rules.length && <div className="yago-hint px-1">No ranges yet — add one: a joint-length range and the connectors used on it.</div>}
+          {rows.map((row, i) => (row.gap ? (
+            <div key={`gap-${row.min}`} className="h-[32px] pl-2.5 pr-1 flex items-center gap-2 rounded-[9px] border border-dashed border-[#d6cfc3]" data-gap={rangeLabel(row.min, row.max)}>
+              <span className="shrink-0 w-[82px] text-[11.5px] font-semibold tabular-nums text-stone-400">{rangeLabel(row.min, row.max)}</span>
+              <span className="flex-1 min-w-0 truncate yago-hint">no connectors on joints of this length</span>
+              <CardAction compact icon={Plus} label="Add" className="!h-[22px] !px-2" title="Put connectors on joints of this length" onClick={() => fillGap(row.min, row.max)} />
+            </div>
+          ) : (
+            <RangeCard key={row.rule.id} rule={row.rule} open={row.rule.id === openRule} lineId={lineId} length={lenOfRule(row.rule)} scale={Math.sqrt(lenOfRule(row.rule) / longest)}
+              hasNext={rows.slice(i + 1).some(x => !x.gap)} connectors={connectors}
+              onToggle={() => { setLineId(null); setOpenRule(o => (o === row.rule.id ? null : row.rule.id)); }}
+              onLength={v => setLens(m => ({ ...m, [row.rule.id]: v }))} onRange={p => setLines(ls => moveRange(ls, row.rule.id, p))}
+              onSelectLine={id => setLineId(cur => (cur === id ? null : id))} onPatchLine={patchLine}
+              onAddConnector={() => addConnector(row.rule.id)} onRemoveLine={removeLine} onSplit={() => splitRange(row.rule.id, lenOfRule(row.rule))} onRemove={() => removeRange(row.rule.id)} />
+          )))}
+          <div className="yago-hint px-1 pt-0.5">Each row is a joint-length range with its own connectors, shortest joints first — a joint uses the row its length falls in. Open a row to change its limits and connectors.</div>
         </div>
       </QbSection>
     </>
@@ -1520,7 +1638,7 @@ function ConnectorLayoutsPanel({ draft, setDraft }: { draft: ConnectorLayoutSet 
                       <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-stone-700">{l.name}</span>
                       <span className={`shrink min-w-0 truncate ${MUTED}`}>{layoutSetSummary(l, connectors)}</span>
                       <span className={`shrink-0 ${MUTED}`} title="Default set of its group, or the number of panels that chose this set by hand (Assembly)">· {isDef ? 'default' : uses ? `${uses} panel${uses === 1 ? '' : 's'}` : 'not chosen'}</span>
-                      <button type="button" title="Edit" onClick={() => setDraft(cloneLayoutSet(l))} className={ICON_BTN}><Pencil size={12} strokeWidth={1.9} /></button>
+                      <button type="button" title="Edit" onClick={() => setDraft(editableLayoutSet(l))} className={ICON_BTN}><Pencil size={12} strokeWidth={1.9} /></button>
                       <button type="button" title="Duplicate" onClick={() => void saveLayoutSet({ ...cloneLayoutSet(l), id: newLayoutSet().id, name: `${l.name} copy`, isDefault: undefined, createdAt: Date.now() })} className={ICON_BTN}><Copy size={12} strokeWidth={1.9} /></button>
                       <button type="button" title={isDef ? 'Delete — panels fall back to the next set of this group' : 'Delete — panels that chose it go back to the default set'} onClick={() => void deleteLayoutSet(l.id)} className={DEL_BTN}><Trash2 size={12} strokeWidth={1.9} /></button>
                     </div>
@@ -2586,7 +2704,7 @@ export function AccessoriesPanel() {
   if (accessoryCategory === 'layers') return <LayersPanel />;
   if (accessoryCategory === 'connectors') return <ConnectorsPanel draft={connDraft} setDraft={setConnDraft} keepModels={legKeep} />;
   if (accessoryCategory === 'layouts') return <ConnectorLayoutsPanel draft={layoutDraft} setDraft={setLayoutDraft} />;
-  if (accessoryCategory === 'panelTypes') return <PanelTypesPanel onEditLayout={l => { setLayoutDraft(cloneLayoutSet(l)); setCategory('layouts'); }} />;
+  if (accessoryCategory === 'panelTypes') return <PanelTypesPanel onEditLayout={l => { setLayoutDraft(editableLayoutSet(l)); setCategory('layouts'); }} />;
   if (accessoryCategory !== 'legs') return null;
   return (
     <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" style={{ fontFamily: UI_FONT }}>
