@@ -30,7 +30,7 @@ import {
   connOpSummary, connShapeClosed, connShapePoints, connSurfaceCoords, connSurfaceDepth, connSurfaceExtent, connSurfacePoint, connThickness, connectorUseCount, deleteConnector, addSampleConnector,
   edgeRulesOf, newConnHole, newConnOp, newConnPart, newConnector, panelTypeDef, panelTypeLabel, panelTypeShort, saveConnector, setEdgeGroup, setSurfaceRule,
   surfaceLabel, surfaceRuleOf, typeEdgeCount, LAYOUT_KINDS, MAX_LAYOUT_POINTS, MAX_LAYOUT_STEPS, cloneLayoutSet, deleteLayoutSet, layoutKindLabel, layoutUseCount, lineApplies,
-  linePositions, lineRangeText, lineSummary, newLayoutLine, newLayoutSet, saveLayoutSet, holeFaceHint, holeFaceOptions, CONNECTOR_GROUPS, defaultSetOf, groupLabel, newRuleLine, ruleIdOf, setDefaultLayout, setGroupOf, setsOfGroup,
+  linePositions, lineRangeText, lineSummary, newLayoutLine, pointD, pointPos, newLayoutSet, saveLayoutSet, holeFaceHint, holeFaceOptions, CONNECTOR_GROUPS, defaultSetOf, groupLabel, newRuleLine, ruleIdOf, setDefaultLayout, setGroupOf, setsOfGroup,
 } from './ConnectorService';
 import { standardLegRules } from './LegLayout';
 import { syncPlinthSetsUsingPreset } from './PlinthService';
@@ -1157,13 +1157,21 @@ function LayoutKindCards({ value, onPick }: { value: LayoutKind; onPick: (k: Lay
   );
 }
 const SMALL_SELECT = 'h-[22px] pl-1 pr-5 rounded-[5px] bg-transparent text-[12px] font-semibold text-stone-800 appearance-none outline-none cursor-pointer hover:bg-[#f6f3ee] transition-colors duration-150 max-w-full truncate';
-const POINT_SEG: SegItem[] = [{ key: 'start', label: 'From front', title: 'Measured from the front (start) of the joint' }, { key: 'end', label: 'From rear', title: 'Measured from the rear (end) of the joint' }];
+const POINT_SEG: SegItem[] = [
+  { key: 'start', label: 'Front', title: 'Measured from the front (start) of the joint' },
+  { key: 'mid', label: 'Middle', title: 'Measured from the exact middle of the joint — 0 = in the middle, minus = toward the front, plus = toward the rear' },
+  { key: 'end', label: 'Rear', title: 'Measured from the rear (end) of the joint' },
+];
+type PointFrom = LayoutLine['points'][number]['from'];
+const POINT_FROM_NAME: Record<PointFrom, string> = { start: 'front', mid: 'middle', end: 'rear' };
+/** Ortadan ölçülen nokta eksi / artı olabilir: yarım boydan öteye gidemez; ötekiler 0 … boy. */
+const clampPointD = (from: PointFrom, d: number, length: number): number => Math.round(from === 'mid' ? Math.max(-length / 2, Math.min(length / 2, d)) : Math.max(0, Math.min(length, d)));
 const MAX_RULE_CONNECTORS = RULE_COLORS.length;
 const KIND_HINT: Record<LayoutKind, string> = {
   ends: 'Fixed distance from both ends; one more exactly in the middle once the joint reaches “Middle ≥”.',
   grid: 'Front is exact, the others sit on the grid counted from it. Rear is a minimum — the leftover stays at the rear.',
   steps: 'Walks from the front, step after step. Rear is a minimum — a step that would come closer is skipped.',
-  list: 'Every connector by hand: click the strip to add one, drag to move it, double-click to remove it.',
+  list: 'Every connector by hand, measured from the front, the rear or the exact middle (0 = centred, minus = toward the front). Click the strip to add one — near the centre it is measured from the middle; drag to move, double-click to remove.',
 };
 
 /* BOY ARALIKLARI — düzenleyicide aralıklar ÜST ÜSTE BİNMEZ: birleşim boyu ekseni ardışık aralıklara bölünür, her aralık kendi bağlayıcılarını
@@ -1269,8 +1277,8 @@ function LaneTrack({ view, length, selected, clash, onPatch }: { view: LineView;
   const handles: Array<{ key: string; d: number; title: string; point?: number; apply: (mm: number) => Partial<LayoutLine> }> = !view.conn || centred ? []
     : L.kind === 'list'
       ? L.points.map((p, i) => ({
-        key: `p${i}`, point: i, d: p.from === 'end' ? length - p.d : p.d, title: `Drag to move · double-click to remove (measured from the ${p.from === 'end' ? 'rear' : 'front'})`,
-        apply: (mm: number) => ({ points: L.points.map((q, k) => (k === i ? { ...q, d: clampI(q.from === 'end' ? length - mm : mm, length) } : q)) }),
+        key: `p${i}`, point: i, d: pointPos(p, length), title: `Drag to move · double-click to remove (measured from the ${POINT_FROM_NAME[p.from]})`,
+        apply: (mm: number) => ({ points: L.points.map((q, k) => (k === i ? { ...q, d: clampPointD(q.from, pointD(q.from, mm, length), length) } : q)) }),
       })).filter(hd => hd.d >= 0 && hd.d <= length)
       : pos.length ? [
         { key: 'start', d: pos[0], title: 'Drag to change the distance from the front', apply: (mm: number) => ({ start: clampI(mm, length - L.end - 1) }) },
@@ -1282,8 +1290,9 @@ function LaneTrack({ view, length, selected, clash, onPatch }: { view: LineView;
   const drop = (e: React.PointerEvent) => { if (!drag.current) return; (e.target as Element).releasePointerCapture?.(e.pointerId); drag.current = null; setGrab(false); };
   const canAdd = selected && !!view.conn && L.kind === 'list' && L.points.length < MAX_LAYOUT_POINTS;
   const addAt = (e: React.MouseEvent) => {
-    const mm = Math.round(Math.min(length, Math.max(0, mmAt(e)))), rear = mm > length / 2;
-    onPatch({ points: [...L.points, { from: rear ? 'end' : 'start', d: rear ? Math.round(length - mm) : mm }] });
+    // Ortaya yakın tık (boyun ± %8'i) → ortadan ölçülür; ötekiler yakın uçtan.
+    const mm = Math.min(length, Math.max(0, mmAt(e))), from: PointFrom = Math.abs(mm - length / 2) <= length * 0.08 ? 'mid' : mm > length / 2 ? 'end' : 'start';
+    onPatch({ points: [...L.points, { from, d: clampPointD(from, pointD(from, mm, length), length) }] });
   };
   const chain = pos.length ? [0, ...pos, length] : [];
   const mid = L.kind === 'ends' || L.kind === 'grid' ? { on: pos.length === 3, from: L.midFrom } : null;
@@ -1301,6 +1310,13 @@ function LaneTrack({ view, length, selected, clash, onPatch }: { view: LineView;
       <rect x={X0} y={yT} width={X1 - X0} height={hS} fill="none" stroke={PT.stroke} strokeWidth={1} rx={1} />
       {canAdd && <rect x={X0} y={yT - 2} width={X1 - X0} height={hS + 4} fill="transparent" style={{ cursor: 'copy' }} onClick={e => { stop(e); addAt(e); }}><title>Click to add a connector here</title></rect>}
       {/* orta bağlayıcı henüz yok → geleceği yer */}
+      {/* liste ortadan ölçülen nokta taşıyorsa ölçünün referansı: birleşimin ortası */}
+      {L.kind === 'list' && L.points.some(p => p.from === 'mid') && (
+        <g style={{ pointerEvents: 'none' }}>
+          <line x1={xOf(length / 2)} y1={yT - 3} x2={xOf(length / 2)} y2={yT + hS + 3} stroke={c} strokeWidth={0.9} strokeDasharray="2 1.6" opacity={0.85} />
+          <text x={xOf(length / 2)} y={yT - 4} textAnchor="middle" fontSize={7.4} fontWeight={700} fill={c} style={{ letterSpacing: '0.06em' }}>MID</text>
+        </g>
+      )}
       {mid && !mid.on && mid.from > 0 && pos.length === 2 && <circle cx={(xOf(pos[0]) + xOf(pos[1])) / 2} cy={yM} r={4.2} fill="none" stroke={c} strokeWidth={1} strokeDasharray="2.2 1.8" opacity={0.8} />}
       {pos.map((d, i) => <circle key={i} cx={xOf(d)} cy={yM} r={4.2} fill={c} stroke="#fff" strokeWidth={1.1} style={{ pointerEvents: 'none' }} />)}
       {clash.map((d, i) => <circle key={`c${i}`} cx={xOf(d)} cy={yM} r={7.4} fill="none" stroke="#dc2626" strokeWidth={1.2} strokeDasharray="3 2" style={{ pointerEvents: 'none' }} />)}
@@ -1409,9 +1425,12 @@ function ConnectorLane({ view, selected, length, clash, connectors, removable, o
               {l.points.map((p, i) => (
                 <div key={i} className="yago-cell h-[28px] pl-2 pr-1 flex items-center gap-1.5" onClick={stop}>
                   <span className="yago-label shrink-0 w-[14px]">{i + 1}</span>
-                  <div className="w-[176px] shrink-0"><Segmented items={POINT_SEG} active={p.from} height={20} onPick={k => onPatch({ points: l.points.map((x, j) => (j === i ? { ...x, from: k as 'start' | 'end' } : x)) })} /></div>
-                  <span className="flex-1 min-w-0" />
-                  <QbNum value={p.d} min={0} w={44} onCommit={v => onPatch({ points: l.points.map((x, j) => (j === i ? { ...x, d: v } : x)) })} /><Unit />
+                  <div className="w-[186px] shrink-0"><Segmented items={POINT_SEG} active={p.from} height={20} onPick={k => onPatch({ points: l.points.map((x, j) => (j !== i ? x
+                    // Ortaya geçince tam ortaya (0); öne / arkaya geçince nokta yerinde kalır, değer yeni ucundan yazılır.
+                    : { ...x, from: k as PointFrom, d: k === 'mid' ? 0 : clampPointD(k as PointFrom, pointD(k as PointFrom, pointPos(x, length), length), length) })) })} /></div>
+                  <span className="flex-1 min-w-0 truncate text-right yago-hint" title="Measured from the exact middle: 0 = centred, minus = toward the front, plus = toward the rear">
+                    {p.from === 'mid' ? (p.d === 0 ? 'centred' : p.d < 0 ? 'toward front' : 'toward rear') : ''}</span>
+                  <QbNum value={p.d} min={p.from === 'mid' ? -9999 : 0} w={44} onCommit={v => onPatch({ points: l.points.map((x, j) => (j === i ? { ...x, d: v } : x)) })} /><Unit />
                   <RowTrash title="Remove this connector from the list" onClick={() => onPatch({ points: l.points.filter((_, j) => j !== i) })} />
                 </div>
               ))}
