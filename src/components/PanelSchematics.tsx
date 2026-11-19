@@ -513,7 +513,19 @@ function fatLines(geometry: THREE.BufferGeometry, color: number, linewidth: numb
   return lines;
 }
 
-export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRotated?: boolean }) {
+/** Önizlemede bir çapanın ekran yeri (px) + panelin ortasından dışarı doğru birim yön. */
+export interface PreviewAnchor { x: number; y: number; ox: number; oy: number }
+/** `anchors`: panelin kendi çerçevesinde yönler (ör. kenarın dış yönü) → o yöndeki kenar ortasının ekran yeri hesaplanır ve `overlay`'e verilir
+ *  (önizlemenin üstünde etkileşimli katman: kenar etiketleri vb. — katman işaretçiyi kendisi durdurur, yoksa sürükleme döndürür). */
+export function PanelPreview2D({ shape, arrowRotated, anchors, overlay }: {
+  shape: Shape; arrowRotated?: boolean; anchors?: Record<string, [number, number, number]>;
+  /** `view` = panelin kendi çerçevesinde, bakılan geniş yüzün dış yönü (hangi yüze bakıldığını yazmak için). */
+  overlay?: (pts: Record<string, PreviewAnchor>, size: { w: number; h: number }, view: [number, number, number]) => React.ReactNode;
+}) {
+  const [anchorPts, setAnchorPts] = useState<Record<string, PreviewAnchor>>({});
+  const [viewDir, setViewDir] = useState<[number, number, number]>([0, 0, 1]);
+  const anchorsRef = useRef(anchors); anchorsRef.current = anchors;
+  const anchorKey = anchors ? JSON.stringify(anchors) : '';
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [ground, setGround] = useState<GroundRender[]>([]);
@@ -646,6 +658,15 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
     // Ölçü pill'leri: çakışan pill ölçü yönünde dışa itilir.
     const fsG = dimFs(w);
     const proj = (p: THREE.Vector3): Pt => { const ndc = p.clone().project(camera); return { x: (ndc.x + 1) / 2 * w, y: (1 - ndc.y) / 2 * h }; };
+    // Çapalar: panelin ortasından verilen yöndeki kenar ortası.
+    const c0 = proj(center), anc: Record<string, PreviewAnchor> = {};
+    for (const [key, d] of Object.entries(anchorsRef.current ?? {})) {
+      const dir = new THREE.Vector3(d[0], d[1], d[2]), half = (Math.abs(dir.x) * sz.x + Math.abs(dir.y) * sz.y + Math.abs(dir.z) * sz.z) / 2;
+      const p = proj(center.clone().addScaledVector(dir, half)), l = Math.hypot(p.x - c0.x, p.y - c0.y) || 1;
+      anc[key] = { x: p.x, y: p.y, ox: (p.x - c0.x) / l, oy: (p.y - c0.y) / l };
+    }
+    setAnchorPts(anc);
+    setViewDir([Math.round(nDir.x), Math.round(nDir.y), Math.round(nDir.z)]);
     const items = allDimsW.map(d => {
       const fa = proj(d.fa), fb = proj(d.fb), da = proj(d.da), db = proj(d.db);
       const ox = da.x - fa.x, oy = da.y - fa.y, l = Math.hypot(ox, oy) || 1;
@@ -663,7 +684,7 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
     }));
     disposables.forEach(d => d.dispose());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shape?.geometry?.uuid, panelFrameOf(shape)?.geo, arrowRotated, az, canvasSize.w, canvasSize.h]);
+  }, [shape?.geometry?.uuid, panelFrameOf(shape)?.geo, arrowRotated, az, canvasSize.w, canvasSize.h, anchorKey]);
 
   const onPointerDown = (e: React.PointerEvent) => {
     dragRef.current = { x: e.clientX, az: azRef.current };
@@ -688,6 +709,7 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
           </g>
         ))}
       </svg>
+      {overlay && canvasSize.w > 0 && <div style={{ ...fill, pointerEvents: 'none', cursor: 'default' }}>{overlay(anchorPts, canvasSize, viewDir)}</div>}
     </div>
   );
 }

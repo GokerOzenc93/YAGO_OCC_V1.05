@@ -4,11 +4,11 @@ import {
   ChevronRight, Minus, Plus, ChevronDown, Pencil, Trash2, Unlink, MoveVertical, Move, RotateCw, GripVertical, ArrowUp, Box, Move3d, Equal,
   RotateCcw, Container, ChevronLeft, PenLine,
 } from 'lucide-react';
-import { type Box3 } from 'three';
+import { type Box3, Vector3 } from 'three';
 import { UI_FONT, INK, TYPE } from './Ui';
 import {
   stop, parseNum, DoorTypeIcon, type Kids, fmt1, panelDims, geoAxes, PREVIEW_FRAME, PREVIEW_HEIGHT, PREVIEW_BG, PanelPreview2D, BackTypeIcon,
-  GroupSchematic, DoorSchematic, BackSchematic,
+  GroupSchematic, DoorSchematic, BackSchematic, panelFrameOf,
 } from './PanelSchematics';
 import {
   type BackPlacement, type DoorType, type CornerKey, type Shape, type QuickBodyConfig, type QuickBodyBase, type PanelGroup, type FaceExtrudeValueMode,
@@ -51,6 +51,7 @@ import {
   bodyJoints, customPanelName, edgeConnectorNames, panelNameOf, panelOrientation, panelTypeChoice, panelTypeCode, panelTypeLabel, panelTypeShort, setGroupPanelType, setVfPanelType,
   surfaceRuleOf, defaultSetOf, groupLabel, setGroupConnectorSet, setVfConnectorSet, setsOfGroup, typeGroupsOf,
   type PanelPlane, holeFaceHint, holeFaceOptions, panelTypeDef, setGroupConnectorFlip, setVfConnectorFlip, typeFlipOf,
+  EDGE_LABEL as EDGE_NAME, edgeRulesOf, panelEdgeFlip, panelEdgeSetOf, panelFlipPick, panelSetOf, setVfEdgeConnector,
 } from './ConnectorService';
 import { useDraft as useSketch } from './Draft';
 import { beginFacePick, deleteSketch, editSketch, exitFace, sketchFeaturesOf } from './DraftView';
@@ -2370,8 +2371,114 @@ export function HoleFaceSelect({ type, plane, pick, onChange, scope = 'this pane
     </div>
   );
 }
+const clampPx = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(Math.max(lo, hi), v));
+/** PANEL ÖNİZLEMESİ + BAĞLAYICI AYARI (önizlemenin üstünde):
+ *  · sol altta "All edges · holes on": panelin BÜTÜN bağlayıcılarının delik yüzü — öteki yüze tek tık hepsini çevirir;
+ *  · bağlayıcılı her kenarın ortasında bir etiket (kenar · delik yüzü · varsa kenara özel set); etikete tık → o KENARIN küçük kartı:
+ *    delik yüzü + set (yalnız o kenarın grubunun setleri) + "panelle aynı". Kenara özel seçim turuncu görünür.
+ *  Tipin kenarında bağlayıcı yoksa düz önizleme. Seçimler anında gerçek panele işlenir (delikler önizlemede de yer değiştirir). */
+function PanelConnectorPreview({ vf, panel, arrowRotated }: { vf: VirtualFace; panel: Shape; arrowRotated: boolean }) {
+  useStoreFields('panelTypeConfig', 'connectors', 'connectorLayouts', 'panelGroups');
+  const [openEdge, setOpenEdge] = useState<PanelEdgeDir | null>(null);
+  const st = useAppStore.getState(), type = panelTypeChoice(vf)?.current ?? null, o = panelOrientation(panel), fr = panelFrameOf(panel);
+  const edges = type && o && fr ? o.edges.flatMap(e => {
+    const rule = edgeRulesOf(type, e.role)[0]; if (!rule?.group) return [];
+    const d = new Vector3(e.dir[0], e.dir[1], e.dir[2]).applyQuaternion(fr.inv);
+    return [{
+      role: e.role, group: rule.group, dir: [Math.round(d.x), Math.round(d.y), Math.round(d.z)] as [number, number, number], own: vf.connectorEdges?.[e.role] ?? {},
+      flip: panelEdgeFlip(vf, e.role, !!rule.flipFace, st), panelFlip: panelFlipPick(vf, st) ?? !!rule.flipFace,
+      set: panelEdgeSetOf(vf, e.role, rule.group, st), panelSet: panelSetOf(vf, rule.group, st),
+    }];
+  }) : [];
+  if (!type || !o || !edges.length) return <PanelPreview2D shape={panel} arrowRotated={arrowRotated} />;
+  const faces = holeFaceOptions(type, o.plane), faceName = (flip: boolean) => faces.find(f => f.flip === flip)!.label;
+  const faceItems = faces.map(f => ({ key: f.flip ? 'flip' : 'def', label: f.label }));
+  const allFlip = edges.every(e => e.flip === edges[0].flip) ? edges[0].flip : null;
+  const manual = vf.connectorFlip !== undefined || edges.some(e => e.own.flip !== undefined);
+  const cur = edges.find(e => e.role === openEdge);
+  const anchors = Object.fromEntries(edges.map(e => [e.role, e.dir]));
+  // Bakılan yüzün adı: bir birleşimin işlenen yüzü (`t`) ile o kenarın yüz seçiminden okunur (bağlayıcı atılmamışsa yazılmaz).
+  const joint = bodyJoints(vf.shapeId, st).find(j => j.bId === panel.id), jointEdge = joint ? edges.find(e => e.role === joint.key.split('|')[1]) : undefined;
+  const seen = (view: [number, number, number]): string | null => {
+    if (!joint || !jointEdge) return null;
+    const v = new Vector3(view[0], view[1], view[2]).applyQuaternion(fr!.inv.clone().invert());
+    return faceName(v.x * joint.t[0] + v.y * joint.t[1] + v.z * joint.t[2] > 0 ? jointEdge.flip : !jointEdge.flip);
+  };
+  return (
+    <PanelPreview2D shape={panel} arrowRotated={arrowRotated} anchors={anchors} overlay={(pts, size, view) => {
+      // Etiket kenar ortasının biraz dışında; yazısı uzunsa da önizlemenin içinde kalır (yarı genişlik yazıdan kestirilir).
+      const chipText = (e: typeof edges[number]) => `${e.set ? faceName(e.flip) : 'none'}${e.own.set !== undefined && e.set ? ` · ${e.set.name}` : ''}`;
+      const at = (role: PanelEdgeDir) => {
+        const p = pts[role], e = edges.find(x => x.role === role); if (!p || !e) return null;
+        const hw = ((EDGE_NAME[role].length + chipText(e).length) * 5.7 + 26) / 2;
+        return { x: clampPx(p.x + p.ox * 30, hw + 6, size.w - hw - 6), y: clampPx(p.y + p.oy * 20, 14, size.h - 52) };
+      };
+      const cp = cur ? at(cur.role) : null, POP_W = 272, looking = seen(view);
+      return (
+        <>
+          {looking && <span data-view-face className="absolute left-2.5 top-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-stone-400"
+            title="The wide face of the panel this preview shows — face holes drilled into the other face are not visible here">Viewing · {looking}</span>}
+          {edges.map(e => {
+            const p = at(e.role); if (!p) return null;
+            const on = e.role === openEdge, own = e.own.flip !== undefined || e.own.set !== undefined;
+            return (
+              <button key={e.role} type="button" data-edge-chip={e.role} onPointerDown={stop} onClick={ev => { stop(ev); setOpenEdge(x => (x === e.role ? null : e.role)); }}
+                title={`${EDGE_NAME[e.role]} edge — ${e.set ? `${e.set.name} · holes on the ${faceName(e.flip).toLowerCase()}` : 'no connectors on this edge'}${own ? ' · set by hand for this edge' : ''}. Click to change this edge only.`}
+                className={`absolute h-[20px] px-2 rounded-full text-[9.5px] font-bold whitespace-nowrap flex items-center gap-1 transition-colors duration-150 shadow-[0_1px_3px_rgba(40,30,20,0.14)]
+                  ${on ? 'bg-[#292524] text-white' : own ? 'bg-[#fff4ec] text-[#c2410c] ring-1 ring-[#f3c7a5] hover:bg-white' : 'bg-white text-stone-700 ring-1 ring-[#cfc7bc] hover:ring-[#a89f92]'}`}
+                style={{ left: p.x, top: p.y, transform: 'translate(-50%, -50%)', pointerEvents: 'auto', fontFamily: UI_FONT }}>
+                <span className="tracking-[0.07em]">{EDGE_NAME[e.role].toUpperCase()}</span>
+                <span className={`font-semibold ${on ? 'text-stone-300' : own ? '' : 'text-stone-500'}`}>{chipText(e)}</span>
+              </button>
+            );
+          })}
+          <div data-all-face className={`absolute left-2 bottom-2 yago-cell h-[28px] pl-2 pr-1 flex items-center gap-1.5 ${manual ? 'is-accent' : ''}`} style={{ pointerEvents: 'auto', background: '#fff' }}
+            onPointerDown={stop} onClick={stop}
+            title={`Which wide face of this panel gets the connectors' face holes (e.g. the cam housing) — on ALL its edges. Click the other face to turn them all over. ${holeFaceHint(type, o.plane)}`}>
+            <span className={`shrink-0 ${CELL_LABEL}`}>All edges · holes on</span>
+            <div className="w-[176px]">
+              <Segmented items={faceItems} active={allFlip == null ? null : allFlip ? 'flip' : 'def'} height={20}
+                onPick={k => { const flip = k === 'flip'; setVfConnectorFlip(vf.id, flip === typeFlipOf(type) ? undefined : flip); }} />
+            </div>
+            {manual && <ClearBtn title="Back to the panel type's setting on every edge" label="Reset hole faces" onClick={() => setVfConnectorFlip(vf.id, undefined)} />}
+          </div>
+          {cur && cp && (
+            <div data-edge-pop={cur.role} onPointerDown={stop} onClick={stop} className="absolute rounded-[10px] bg-white ring-1 ring-[#d6cfc3] p-1.5 flex flex-col gap-1 shadow-[0_10px_28px_-10px_rgba(40,30,20,0.4)]"
+              style={{ left: clampPx(cp.x - POP_W / 2, 6, size.w - POP_W - 6), width: POP_W, pointerEvents: 'auto', fontFamily: UI_FONT, ...(cp.y < size.h * 0.5 ? { top: cp.y + 15 } : { bottom: size.h - cp.y + 15 }) }}>
+              <div className="flex items-center gap-1.5 h-[20px] pl-1">
+                <span className="shrink-0 whitespace-nowrap text-[9.5px] font-bold tracking-[0.07em] text-stone-800">{EDGE_NAME[cur.role].toUpperCase()} EDGE</span>
+                <span className="yago-hint truncate">this edge only</span>
+                <span className="flex-1 min-w-0" />
+                <ClearBtn title="Close" label="Close edge settings" onClick={() => setOpenEdge(null)} />
+              </div>
+              <div className={`yago-cell h-[28px] pl-2 pr-1 flex items-center gap-1.5 ${cur.own.flip !== undefined ? 'is-accent' : ''}`}
+                title={`Which wide face gets the face holes of the ${EDGE_NAME[cur.role].toLowerCase()} edge. The rest of the panel: ${faceName(cur.panelFlip).toLowerCase()}.`}>
+                <span className={`shrink-0 ${CELL_LABEL}`}>Holes on</span>
+                <div className="flex-1 min-w-0">
+                  <Segmented items={faceItems} active={cur.flip ? 'flip' : 'def'} height={20}
+                    onPick={k => { const flip = k === 'flip'; setVfEdgeConnector(vf.id, cur.role, { flip: flip === cur.panelFlip ? undefined : flip }); }} />
+                </div>
+              </div>
+              <div className="flex">
+                <SelectBox label="Set" className={cur.own.set !== undefined ? 'is-accent' : ''}
+                  value={cur.own.set === null ? SET_NONE : cur.own.set && cur.set?.id === cur.own.set ? cur.own.set : SET_DEFAULT}
+                  options={[[SET_DEFAULT, `Same as panel · ${cur.panelSet?.name ?? 'none'}`], ...setsOfGroup(cur.group, st.connectorLayouts).map(x => [x.id, x.name] as [string, string]), [SET_NONE, 'None on this edge']]}
+                  onChange={v => setVfEdgeConnector(vf.id, cur.role, { set: v === SET_NONE ? null : v === SET_DEFAULT ? undefined : v })}
+                  title={`Connector set (layout) of the ${EDGE_NAME[cur.role].toLowerCase()} edge only — ${groupLabel(cur.group).toLowerCase()} sets. “Same as panel” follows the panel’s ${groupLabel(cur.group)} set.`} />
+              </div>
+              {(cur.own.flip !== undefined || cur.own.set !== undefined) && (
+                <button type="button" onClick={() => setVfEdgeConnector(vf.id, cur.role, { flip: undefined, set: undefined })}
+                  className="self-end h-[20px] px-2 rounded-full text-[10px] font-semibold text-stone-500 hover:text-stone-900 hover:bg-[#f1ede6] transition-colors">Same as the rest of the panel</button>
+              )}
+            </div>
+          )}
+        </>
+      );
+    }} />
+  );
+}
 /** Açık panel satırında: tip seçimi (yalnız o yüzeyde sunulan tipler) + panelin kenar rolleri (bağlayıcılı kenar turuncu, adetle) + panelin
- *  bağlayıcı seti (grup başına) + delik yüzü. */
+ *  bağlayıcı seti (grup başına, bütün kenarları). Delik yüzü ve kenar-özel seçimler önizlemenin üstünde (PanelConnectorPreview). */
 function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefined }) {
   // Kural / dizilim / bağlayıcı değişince satır yenilensin.
   useStoreFields('panelTypeConfig', 'connectors', 'connectorLayouts');
@@ -2414,8 +2521,6 @@ function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefin
     {groups.length > 0 && (
       <div className="flex items-center flex-wrap gap-1 mt-1" onClick={stop}>
         {groups.map(g => <ConnectorSetSelect key={g} group={g} pick={vf.connectorSets?.[g]} onChange={id => setVfConnectorSet(vf.id, g, id)} />)}
-        {o && <div className="flex basis-full">
-          <HoleFaceSelect type={c.current} plane={o.plane} pick={vf.connectorFlip} onChange={flip => setVfConnectorFlip(vf.id, flip)} /></div>}
       </div>
     )}
     </>
@@ -3023,7 +3128,7 @@ export function AssemblyPanel() {
         <PanelTypeStrip vf={vf} panel={vp} />
         <div className={`${PREVIEW_FRAME} mt-1.5`} style={{ height: PREVIEW_HEIGHT, background: PREVIEW_BG }}>
           {activeDims && activePanel
-            ? <PanelPreview2D key={activePanel.id} shape={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated} />
+            ? <PanelConnectorPreview key={activePanel.id} vf={vf} panel={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated} />
             : <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs text-stone-400">No panel</span></div>}
         </div>
         <PanelSteps panel={activePanel} edit={stepEdit} setEdit={setStepEdit} />
