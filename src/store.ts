@@ -118,6 +118,9 @@ export interface VirtualFace {
   /** DELİK YÜZÜ (elle, panelin bütün bağlayıcılı kenarları için): false = tipin varsayılan (görünmeyen) yüzü · true = öteki geniş yüz. Yoksa
    *  raf / dikme grubunun seçimi, o da yoksa panel tipinin kenar ayarı (EdgeConnectorRule.flipFace). */
   connectorFlip?: boolean;
+  /** KENAR ÖZELİNDE (elle): o kenarın seti (kimlik · null = o kenarda bağlayıcı yok) ve / veya delik yüzü. Panel genelindeki seçimi
+   *  (connectorSets / connectorFlip) o kenar için ezer; panel genelinde yeni seçim yapılınca ilgili kenar kayıtları silinir. */
+  connectorEdges?: Partial<Record<PanelEdgeDir, { set?: string | null; flip?: boolean }>>;
 }
 /** İç köşe uzatmasının hedefi: dış normali `n` olan gövde yüzü; uzatma o düzlemden `depth` önce biter. Her regen'de yeniden ölçülür. */
 export interface RailExtTarget { n: Vec3; depth: number }
