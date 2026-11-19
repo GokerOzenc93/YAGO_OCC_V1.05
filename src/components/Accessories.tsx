@@ -980,11 +980,14 @@ function PanelFaceView({ type, plane, size, cur, rowsOf, onEdge }: {
 const Unit = () => <span className="yago-unit shrink-0 pr-1">mm</span>;
 const LEN_MIN = 40, LEN_MAX = 2400;
 /** Sayı kutusu: boş = `placeholder` (ör. "fit" = sığdığı kadar, "any" = sınırsız) → 0 olarak kaydedilir. */
-function BlankNum({ value, onCommit, title, placeholder, limit = 9999, w = 30 }: { value: number; onCommit: (n: number) => void; title: string; placeholder: string; limit?: number; w?: number }) {
+/** `focusKey` değişince kutuya odaklanır (içerik seçili) — yeni açılan aralığın "to" kutusu gibi. */
+function BlankNum({ value, onCommit, title, placeholder, limit = 9999, w = 30, focusKey }: { value: number; onCommit: (n: number) => void; title: string; placeholder: string; limit?: number; w?: number; focusKey?: number }) {
   const [draft, setDraft] = useState<string | null>(null);
+  const el = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (focusKey) el.current?.focus({ preventScroll: false }); }, [focusKey]);
   const commit = () => { if (draft == null) return; const n = parseFloat(draft.replace(',', '.')); setDraft(null); onCommit(Number.isFinite(n) && n > 0 ? Math.min(limit, round1(n)) : 0); };
   return (
-    <input type="text" inputMode="numeric" value={draft ?? (value > 0 ? String(value) : '')} placeholder={placeholder} title={title} onClick={stop}
+    <input ref={el} type="text" inputMode="numeric" value={draft ?? (value > 0 ? String(value) : '')} placeholder={placeholder} title={title} onClick={stop}
       onChange={e => setDraft(e.target.value)} onBlur={commit} onFocus={e => e.target.select()}
       onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setDraft(null); }}
       className="yago-field placeholder:text-stone-400 placeholder:font-medium" style={{ ...FIELD_INPUT, width: w, flexShrink: 0, textAlign: 'right' }} />
@@ -1449,8 +1452,10 @@ function ConnectorLane({ view, selected, length, clash, connectors, removable, o
 }
 /** BOY ARALIĞI KARTI. Kapalı: aralık · küçük resmi · bağlayıcıları (ad + adet). Açık: aralığın iki sınırı (yazılır) → önizleme boyu (kaydırıcı
  *  yalnız aralığın içinde gezer; "Split" aralığı o boydan ikiye böler) → her bağlayıcı kendi şerit satırında → "Add connector". */
-function RangeCard({ rule, open, lineId, length, scale, hasNext, connectors, onToggle, onLength, onRange, onSelectLine, onPatchLine, onAddConnector, onRemoveLine, onSplit, onRemove }: {
+function RangeCard({ rule, open, lineId, length, scale, hasNext, connectors, focusTo, asking, onToggle, onLength, onRange, onSelectLine, onPatchLine, onAddConnector, onRemoveLine, onSplit, onRemove }: {
   rule: RuleView; open: boolean; lineId: string | null; length: number; scale: number; hasNext: boolean; connectors: Connector[];
+  /** değişince "to" kutusuna odaklanır · `asking` = + basıldı, bu aralığın bitişi bekleniyor (girilince sonraki aralık açılır) */
+  focusTo?: number; asking?: boolean;
   onToggle: () => void; onLength: (v: number) => void; onRange: (p: { min?: number; max?: number }) => void; onSelectLine: (id: string) => void;
   onPatchLine: (id: string, p: Partial<LayoutLine>) => void; onAddConnector: () => void; onRemoveLine: (id: string) => void; onSplit: () => void; onRemove: () => void;
 }) {
@@ -1488,14 +1493,19 @@ function RangeCard({ rule, open, lineId, length, scale, hasNext, connectors, onT
             <span className="yago-label shrink-0">Joint from</span>
             <div className="yago-cell shrink-0 h-[24px] pl-1 pr-0.5 flex items-center" title="Shortest joint of this range (mm) — the range before it ends just below"><QbNum value={min} min={0} w={40} onCommit={v => onRange({ min: v })} /><Unit /></div>
             <span className="yago-label shrink-0">to</span>
-            <div className="yago-cell shrink-0 h-[24px] pl-1 pr-0.5 flex items-center" title={hasNext ? 'Longest joint of this range (mm) — the next range starts just above' : 'Longest joint of this range (mm) — empty = any length'}>
+            <div className="yago-cell shrink-0 h-[24px] pl-1 pr-0.5 flex items-center" title={hasNext ? 'Longest joint of this range (mm) — the next range starts just above' : 'Longest joint of this range (mm) — empty = any length'}
+              style={!hasNext && !(max > 0) && (asking || focusTo) ? { boxShadow: `0 0 0 1.5px ${SEL}` } : undefined}>
               {hasNext ? <QbNum value={max} min={lo} w={40} onCommit={v => onRange({ max: v })} />
-                : <BlankNum value={max} placeholder="any" w={40} limit={99999} onCommit={v => onRange({ max: v })} title="Longest joint of this range (mm) — empty = any length" />}<Unit /></div>
+                : <BlankNum value={max} placeholder="any" w={40} limit={99999} focusKey={focusTo} onCommit={v => onRange({ max: v })} title="Longest joint of this range (mm) — empty = any length" />}<Unit /></div>
             <span className="flex-1 min-w-0" />
             <RowTrash title="Remove this range — joints of this length get no connectors" onClick={onRemove} />
             <RowChevron open onClick={e => { stop(e); onToggle(); }} title="Close" />
           </div>
           <div className={`${CARD_BODY} flex flex-col gap-1.5`} style={CARD_BODY_STYLE} onClick={stop}>
+            {!hasNext && !(max > 0) && (asking || focusTo) && (
+              <div className="pl-1 text-[11px] font-semibold" style={{ color: SEL }} data-ask-end>
+                {asking ? `Where does this range end? Type it in “to” — the next range then starts at +1 mm.` : `Starts at ${min} mm — type where it ends in “to” (empty = any length).`}</div>
+            )}
             <div className="flex items-center gap-2 h-[26px] pl-1" title="Preview only: slide to see how the connectors spread on a shorter or longer joint of this range. Real panels use their own joint length.">
               <span className="yago-label shrink-0">Preview at</span>
               {span > 0
@@ -1554,13 +1564,28 @@ function ConnectorLayoutEditor({ draft, setDraft, onSave, onCancel }: { draft: C
   const openLine = (l: LayoutLine) => { setOpenRule(ruleIdOf(l)); setLineId(l.id); };
   const patchLine = (id: string, p: Partial<LayoutLine>) => setLines(ls => ls.map(l => (l.id === id ? { ...l, ...p } : l)));
   const newLine = (init: Partial<LayoutLine>) => newLayoutLine(connectors[0]?.id ?? null, init);
-  /** Yeni aralık en uzun aralığın ÜSTÜNE gelir: son aralık üstü açıksa oradan bölünür (alt sınırın 2 katı, en az + 100), kapalıysa bittiği yerden başlar. */
+  /** "to" kutusuna odak isteği (sayaç: aynı aralığa yeniden odaklanabilsin) · `askId` = + basıldı, bitişi beklenen son aralık. */
+  const [focus, setFocus] = useState<{ id: string; n: number } | null>(() => (draft.lines.length === 1 && !(draft.lines[0].max > 0) && !useAppStore.getState().connectorLayouts.some(s => s.id === draft.id) ? { id: ruleIdOf(draft.lines[0]), n: 1 } : null));
+  const [askId, setAskId] = useState<string | null>(null);
+  const focusOn = (id: string) => setFocus(f => ({ id, n: (f?.n ?? 0) + 1 }));
+  /** + : yeni aralık kaldığı yerden başlar (öncekinin sonu + 1), BİTİŞİNİ kullanıcı girer ("to" kutusu açık + odakta).
+   *  Son aralığın bitişi henüz girilmemişse ("any") önce o sorulur; girilince sonraki aralık kendiliğinden açılır. */
   const addRange = () => {
     const rs = rangesOf(ref.current.lines), last = rs[rs.length - 1];
-    const min = !last ? 0 : last.max > 0 ? last.max + 1 : Math.ceil(Math.max(last.min * 2, last.min + 100) / 50) * 50, line = newLine({ min, max: 0 });
-    setLines(ls => [...(last && !(last.max > 0) ? moveRange(ls, last.id, { max: min - 1 }) : ls), line]); openLine(line);
+    if (last && !(last.max > 0)) { setOpenRule(last.id); setLineId(null); setAskId(last.id); focusOn(last.id); return; }
+    const line = newLine({ min: last ? last.max + 1 : 0, max: 0 });
+    setLines(ls => [...ls, line]); openLine(line); setAskId(null); focusOn(ruleIdOf(line));
   };
-  const fillGap = (min: number, max: number) => { const line = newLine({ min, max }); setLines(ls => [...ls, line]); openLine(line); };
+  /** Sınır değişimi; bitişi beklenen aralığa bitiş girildiyse sonraki aralık aynı adımda eklenir (başlangıcı bitiş + 1). */
+  const changeRange = (id: string, p: { min?: number; max?: number }) => {
+    const next = askId === id && (p.max ?? 0) > 0 ? newLine({ min: 0, max: 0 }) : null;
+    setLines(ls => {
+      const moved = moveRange(ls, id, p), r = next && rangesOf(moved).find(x => x.id === id);
+      return next && r && r.max > 0 ? [...moved, { ...next, min: r.max + 1 }] : moved;
+    });
+    if (next) { setAskId(null); openLine(next); focusOn(ruleIdOf(next)); }
+  };
+  const fillGap = (min: number, max: number) => { if (!(max > 0)) { addRange(); return; } const line = newLine({ min, max }); setLines(ls => [...ls, line]); openLine(line); };
   /** Aralığı önizleme boyundan ikiye böler; üst parça alt parçanın kopyasıdır (sonra değiştirilir). */
   const splitRange = (ruleId: string, at: number) => {
     const cur = linesOf(ruleId), first = cur[0]; if (!first || !(at > Math.max(1, first.min)) || at > topOf(first)) return;
@@ -1591,7 +1616,7 @@ function ConnectorLayoutEditor({ draft, setDraft, onSave, onCancel }: { draft: C
         <ExitBtn onClick={onCancel} />
       </div>
       <QbSection title="By joint length" sub={`${rules.length} range${rules.length === 1 ? '' : 's'} · ${nConn} connector${nConn === 1 ? '' : 's'}`}
-        trailing={<CardAction compact icon={Plus} label="Add range" title="Add a range for longer joints, with its own connectors" onClick={addRange} />}>
+        trailing={<CardAction compact icon={Plus} label="Add range" title="Add the next range: it starts 1 mm after the last one ends — you type where it ends" onClick={addRange} />}>
         <div className="flex flex-col gap-1" onClick={stop}>
           <svg width="0" height="0" className="absolute" aria-hidden>
             <defs><pattern id="yago-lane-keepout" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#b5a998" strokeWidth="0.9" /></pattern></defs>
@@ -1606,9 +1631,9 @@ function ConnectorLayoutEditor({ draft, setDraft, onSave, onCancel }: { draft: C
             </div>
           ) : (
             <RangeCard key={row.rule.id} rule={row.rule} open={row.rule.id === openRule} lineId={lineId} length={lenOfRule(row.rule)} scale={Math.sqrt(lenOfRule(row.rule) / longest)}
-              hasNext={rows.slice(i + 1).some(x => !x.gap)} connectors={connectors}
-              onToggle={() => { setLineId(null); setOpenRule(o => (o === row.rule.id ? null : row.rule.id)); }}
-              onLength={v => setLens(m => ({ ...m, [row.rule.id]: v }))} onRange={p => setLines(ls => moveRange(ls, row.rule.id, p))}
+              hasNext={rows.slice(i + 1).some(x => !x.gap)} connectors={connectors} focusTo={focus?.id === row.rule.id ? focus.n : undefined} asking={askId === row.rule.id}
+              onToggle={() => { setLineId(null); setAskId(null); setOpenRule(o => (o === row.rule.id ? null : row.rule.id)); }}
+              onLength={v => setLens(m => ({ ...m, [row.rule.id]: v }))} onRange={p => changeRange(row.rule.id, p)}
               onSelectLine={id => setLineId(cur => (cur === id ? null : id))} onPatchLine={patchLine}
               onAddConnector={() => addConnector(row.rule.id)} onRemoveLine={removeLine} onSplit={() => splitRange(row.rule.id, lenOfRule(row.rule))} onRemove={() => removeRange(row.rule.id)} />
           )))}
@@ -1630,7 +1655,7 @@ function ConnectorLayoutsPanel({ draft, setDraft }: { draft: ConnectorLayoutSet 
   const nextName = () => { let n = sets.length + 1; while (sets.some(x => x.name === `Layout ${n}`)) n++; return `Layout ${n}`; };
   if (draft) return (
     <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" style={{ fontFamily: UI_FONT }}>
-      <ConnectorLayoutEditor draft={draft} setDraft={setDraft} onSave={() => void save()} onCancel={() => setDraft(null)} />
+      <ConnectorLayoutEditor key={draft.id} draft={draft} setDraft={setDraft} onSave={() => void save()} onCancel={() => setDraft(null)} />
     </div>
   );
   return (
