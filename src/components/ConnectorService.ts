@@ -441,6 +441,11 @@ export const pointPos = (p: Pick<ListPoint, 'from' | 'd'>, length: number): numb
 export const pointD = (from: ListPoint['from'], pos: number, length: number): number => (from === 'end' ? length - pos : from === 'mid' ? pos - length / 2 : pos);
 /** Satırın bağlayıcı noktaları (birleşimin başından mm) — boy aralığına BAKMADAN. Baş + son mesafesine sığmayan birleşimde tek bağlayıcı ortada.
  *  'grid' / 'steps': son delik sondan EN AZ `end` uzakta kalır; 'steps'te sığmayan adım atlanır, sıra sonrakine geçer. */
+/** 'steps' uç kipi (eski `endFixed` → 'both'). */
+export const stepEndsOf = (l: Pick<LayoutLine, 'stepEnds' | 'endFixed'>): NonNullable<LayoutLine['stepEnds']> => l.stepEnds ?? (l.endFixed ? 'both' : 'front');
+/** Arka / ön değer EN AZ mesafe mi (yaklaşık: gerçek mesafe bu ya da biraz fazlası). Arka: 'grid' her zaman, 'steps' iki uç sabit değilse · ön: yalnız ortalanan 'steps'. */
+export const rearIsMin = (l: Pick<LayoutLine, 'kind' | 'stepEnds' | 'endFixed'>): boolean => l.kind === 'grid' || (l.kind === 'steps' && stepEndsOf(l) !== 'both');
+export const frontIsMin = (l: Pick<LayoutLine, 'kind' | 'stepEnds' | 'endFixed'>): boolean => l.kind === 'steps' && stepEndsOf(l) === 'centre';
 export function linePositions(l: LayoutLine, length: number): number[] {
   if (!(length > 0)) return [];
   const uniq = (list: number[]) => [...new Set(list.map(round1))].sort((x, y) => x - y);
@@ -450,16 +455,34 @@ export function linePositions(l: LayoutLine, length: number): number[] {
     if (b - a < 1) return [round1(length / 2)];
     return mid && length / 2 - a > 1 && b - length / 2 > 1 ? uniq([a, length / 2, b]) : uniq([a, b]);
   }
+  const ends = l.kind === 'steps' ? stepEndsOf(l) : 'front';
+  // Ortalanmış adımlar: önce adımlar (iki uçta en az `start` kalacak kadar) sığdırılır, sonra desen ortaya kaydırılır → ön = arka.
+  if (ends === 'centre') {
+    const room = length - 2 * a, rel = [0];
+    if (room < -1e-6) return [round1(length / 2)];
+    let p = 0;
+    for (const st of l.steps) {
+      const d = Math.max(1, st.d);
+      for (let i = 0; (st.n <= 0 || i < st.n) && p + d <= room + 1e-6 && rel.length < 80; i++) { p += d; rel.push(p); }
+    }
+    const off = (length - p) / 2;
+    return uniq(rel.map(r => off + r));
+  }
   if (b - a < -1e-6) return [round1(length / 2)];
   if (l.kind === 'grid') {
     const pitch = l.pitch > 0 ? l.pitch : LAYOUT_PITCH, m = Math.floor((b - a) / pitch + 1e-6);
     return uniq([a, ...(m >= 2 && mid ? [a + Math.round(m / 2) * pitch] : []), ...(m >= 1 ? [a + m * pitch] : [])]);
   }
-  const out = [a];
+  const out = [a], gaps = [0];
   let pos = a;
   for (const st of l.steps) {
     const d = Math.max(1, st.d);
-    for (let i = 0; (st.n <= 0 || i < st.n) && pos + d <= b + 1e-6 && out.length < 80; i++) { pos += d; out.push(pos); }
+    for (let i = 0; (st.n <= 0 || i < st.n) && pos + d <= b + 1e-6 && out.length < 80; i++) { pos += d; out.push(pos); gaps.push(d); }
+  }
+  // Arka SABİT: son bağlayıcı tam arka mesafede; ona kendi adımının yarısından fazla yaklaşan adım deliği düşer (yerini sabit delik alır).
+  if (ends === 'both' && b - a >= 1) {
+    while (out.length > 1 && b - out[out.length - 1] < gaps[gaps.length - 1] / 2) { out.pop(); gaps.pop(); }
+    out.push(b);
   }
   return uniq(out);
 }
@@ -468,7 +491,10 @@ export function lineSummary(l: LayoutLine): string {
   const f = (v: number) => String(round1(v));
   if (l.kind === 'ends') return `${f(l.start)} / ${f(l.end)}${l.midFrom > 0 ? ` · middle from ${f(l.midFrom)}` : ''}`;
   if (l.kind === 'grid') return `${f(l.start)} / min ${f(l.end)} on ${f(l.pitch)}${l.midFrom > 0 ? ` · middle from ${f(l.midFrom)}` : ''}`;
-  if (l.kind === 'steps') return `${f(l.start)} + ${l.steps.map(s => `${f(s.d)}${s.n === 1 ? '' : s.n > 1 ? `×${s.n}` : '×fit'}`).join(' + ')} · min ${f(l.end)}`;
+  if (l.kind === 'steps') {
+    const st = l.steps.map(s => `${f(s.d)}${s.n === 1 ? '' : s.n > 1 ? `×${s.n}` : '×fit'}`).join(' + '), ends = stepEndsOf(l);
+    return ends === 'centre' ? `${st} · centred, min ${f(l.start)}` : `${f(l.start)} + ${st} · ${ends === 'both' ? 'rear' : 'min'} ${f(l.end)}`;
+  }
   return l.points.map(p => (p.from === 'mid' ? (p.d ? `mid${p.d > 0 ? '+' : '−'}${f(Math.abs(p.d))}` : 'mid') : `${p.from === 'end' ? '←' : ''}${f(p.d)}${p.from === 'end' ? '' : '→'}`)).join(' · ') || 'empty';
 }
 export const lineRangeText = (l: Pick<LayoutLine, 'min' | 'max'>): string =>

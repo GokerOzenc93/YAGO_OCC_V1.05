@@ -11,7 +11,7 @@ import { Plus, Trash2, Upload, Pencil, RotateCcw, Drill, Check, ChevronDown, Cop
 import {
   type AccessoryLayer, type AccessoryUnit, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector, type ConnectorGroup, type ConnectorLayoutSet,
   type HoleSpec, type LayoutKind, type LayoutLine, type LegModel, type LegModelPart, type LegPartRole, type LegPreset, type PanelEdgeDir, type PanelSurface,
-  type PanelTypeConfig, type PanelTypeId, useAppStore, useStoreFields,
+  type PanelTypeConfig, type PanelTypeId, type StepEnds, useAppStore, useStoreFields,
 } from '../store';
 import { UI_FONT, useEscapeOwner } from './Ui';
 import { type AxisDir, type Vec3, round1 } from './Geometry';
@@ -30,7 +30,7 @@ import {
   connOpSummary, connShapeClosed, connShapePoints, connSurfaceCoords, connSurfaceDepth, connSurfaceExtent, connSurfacePoint, connThickness, connectorUseCount, deleteConnector, addSampleConnector,
   edgeRulesOf, newConnHole, newConnOp, newConnPart, newConnector, panelTypeDef, panelTypeLabel, panelTypeShort, saveConnector, setEdgeGroup, setSurfaceRule,
   surfaceLabel, surfaceRuleOf, typeEdgeCount, LAYOUT_KINDS, MAX_LAYOUT_POINTS, MAX_LAYOUT_STEPS, cloneLayoutSet, deleteLayoutSet, layoutKindLabel, layoutUseCount, lineApplies,
-  linePositions, lineRangeText, lineSummary, newLayoutLine, pointD, pointPos, newLayoutSet, saveLayoutSet, holeFaceHint, holeFaceOptions, CONNECTOR_GROUPS, defaultSetOf, groupLabel, newRuleLine, ruleIdOf, setDefaultLayout, setGroupOf, setsOfGroup,
+  linePositions, lineRangeText, lineSummary, newLayoutLine, pointD, pointPos, rearIsMin, frontIsMin, stepEndsOf, newLayoutSet, saveLayoutSet, holeFaceHint, holeFaceOptions, CONNECTOR_GROUPS, defaultSetOf, groupLabel, newRuleLine, ruleIdOf, setDefaultLayout, setGroupOf, setsOfGroup,
 } from './ConnectorService';
 import { standardLegRules } from './LegLayout';
 import { syncPlinthSetsUsingPreset } from './PlinthService';
@@ -1007,16 +1007,17 @@ function LayoutBand({ length, ends, rows, active, onPick }: { length: number; en
   const clash = pos.flatMap((list, i) => list.filter(d => pos.some((o, j) => j !== i && o.some(x => Math.abs(x - d) < 9))));
   const chain = act ? [0, ...actPos, length] : [];
   const mid = L && (L.kind === 'ends' || L.kind === 'grid') ? { on: actPos.length === 3, from: L.midFrom } : null;
-  const minZone = L && (L.kind === 'grid' || L.kind === 'steps') && actPos.length ? Math.min(Math.max(0, L.end), length) : 0;
+  const minZone = L && rearIsMin(L) && actPos.length ? Math.min(Math.max(0, frontIsMin(L) ? L.start : L.end), length) : 0;
+  const frontZone = L && frontIsMin(L) && actPos.length ? Math.min(Math.max(0, L.start), length) : 0;
   const pitch = L?.kind === 'grid' ? (L.pitch > 0 ? L.pitch : 32) : 0;
   const ticks = L && pitch && actPos.length && pitch * kx >= 3 ? Array.from({ length: Math.floor((length - L.start) / pitch + 1e-6) + 1 }, (_, i) => L.start + i * pitch) : [];
   const total = pos.reduce((n, list) => n + list.length, 0), rear = actPos.length ? length - actPos[actPos.length - 1] : 0;
   const note = !rows.length ? 'no rule applies to this joint length'
     : clash.length ? 'two connectors overlap'
       : !act ? `${total} connector${total === 1 ? '' : 's'} · ${rows.length} rule${rows.length === 1 ? '' : 's'} at this length`
-        : `${actPos.length} × ${act.conn?.name ?? 'connector'}${minZone ? ` · ${fmt1(rear)} from ${ends[1]} (min ${fmt1(L!.end)})` : ''}${mid ? (mid.on ? ' · middle added' : mid.from > 0 ? ` · middle from ${fmt1(mid.from)} mm` : '') : ''}`;
+        : `${actPos.length} × ${act.conn?.name ?? 'connector'}${frontZone ? ` · ${fmt1(actPos[0])} from both ends (min ${fmt1(L!.start)})` : minZone ? ` · ${fmt1(rear)} from ${ends[1]} (min ${fmt1(L!.end)})` : ''}${mid ? (mid.on ? ' · middle added' : mid.from > 0 ? ` · middle from ${fmt1(mid.from)} mm` : '') : ''}`;
   const yC = yJ + hB + 16;
-  const cap = (i: number): string => (!L || L.kind === 'list' ? '' : i === 0 ? 'fixed' : L.kind === 'ends' ? 'fixed' : `min ${fmt1(L.end)}`);
+  const cap = (i: number): string => (!L || L.kind === 'list' ? '' : frontIsMin(L) ? `min ${fmt1(L.start)}` : i === 0 || !rearIsMin(L) ? 'fixed' : `min ${fmt1(L.end)}`);
   return (
     <svg viewBox={`0 0 ${VW} ${VH}`} className="block w-full select-none" style={{ fontFamily: UI_FONT }}>
       <defs>
@@ -1031,6 +1032,12 @@ function LayoutBand({ length, ends, rows, active, onPick }: { length: number; en
       {/* dayandığı panel (taralı) + bu panelin kenar bandı */}
       <rect x={X0 - 10} y={yA} width={X1 - X0 + 20} height={hA} fill="#f4efe6" /><rect x={X0 - 10} y={yA} width={X1 - X0 + 20} height={hA} fill="url(#yago-band-hatch)" />
       <rect x={X0} y={yJ} width={X1 - X0} height={hB} fill="url(#yago-band-fade)" />
+      {frontZone > 0 && (
+        <g>
+          <rect x={X0} y={yJ} width={frontZone * kx} height={hB - 22} fill="url(#yago-band-keepout)" opacity={0.7} />
+          <line x1={xOf(frontZone)} y1={yJ} x2={xOf(frontZone)} y2={yJ + hB - 22} stroke="#8a8073" strokeWidth={0.9} strokeDasharray="2.5 2" />
+        </g>
+      )}
       {minZone > 0 && (
         <g>
           <rect x={xOf(length - minZone)} y={yJ} width={minZone * kx} height={hB - 22} fill="url(#yago-band-keepout)" opacity={0.7} />
@@ -1137,7 +1144,7 @@ function KindGlyph({ kind, on }: { kind: LayoutKind; on: boolean }) {
 const KIND_HELP: Record<LayoutKind, string> = {
   ends: 'One connector at a fixed distance from the front, one at a fixed distance from the rear. Once the joint reaches the “Middle ≥” length, a third one goes exactly in the middle.',
   grid: 'The first connector sits exactly at the front distance; the others land on the 32 mm grid counted from it. The rear value is a minimum: the last connector takes the grid hole nearest the rear that still keeps it, and whatever is left over stays at the rear. Once the joint reaches “Middle ≥”, one more goes on the grid hole nearest the middle.',
-  steps: 'Walks from the front: the first connector at the front distance, then step 1, step 2, step 3 … one after another, each putting a connector. The rear value is a minimum — a step that would come closer to the rear is skipped.',
+  steps: 'Walks from the front: the first connector at the front distance, then step 1, step 2, step 3 … one after another, each putting a connector. Ends: front fixed + rear minimum, both fixed, or both minimum and centred (equal front and rear).',
   list: 'Every connector is typed in: its distance and whether it is measured from the front or from the rear. Nothing is calculated — best for short joints with fixed positions.',
 };
 /** Dört kural, resimli kart olarak (seçili = turuncu çerçeve + onay). */
@@ -1166,6 +1173,11 @@ const POINT_SEG: SegItem[] = [
   { key: 'end', label: 'Rear', title: 'Measured from the rear (end) of the joint' },
 ];
 type PointFrom = LayoutLine['points'][number]['from'];
+const STEP_ENDS_SEG: SegItem[] = [
+  { key: 'front', label: 'Front fixed', title: 'Front exact, rear a minimum — the leftover of the steps stays at the rear' },
+  { key: 'both', label: 'Both fixed', title: 'Front and rear exact — the steps walk from the front; the leftover sits between the last step and the rear' },
+  { key: 'centre', label: 'Both min · centred', title: 'Front and rear equal and at least the minimum — the steps are centred, so the holes keep your step distances (32 multiples) and both ends match' },
+];
 const POINT_FROM_NAME: Record<PointFrom, string> = { start: 'front', mid: 'middle', end: 'rear' };
 /** Ortadan ölçülen nokta eksi / artı olabilir: yarım boydan öteye gidemez; ötekiler 0 … boy. */
 const clampPointD = (from: PointFrom, d: number, length: number): number => Math.round(from === 'mid' ? Math.max(-length / 2, Math.min(length / 2, d)) : Math.max(0, Math.min(length, d)));
@@ -1173,7 +1185,7 @@ const MAX_RULE_CONNECTORS = RULE_COLORS.length;
 const KIND_HINT: Record<LayoutKind, string> = {
   ends: 'Fixed distance from both ends; one more exactly in the middle once the joint reaches “Middle ≥”.',
   grid: 'Front is exact, the others sit on the grid counted from it. Rear is a minimum — the leftover stays at the rear.',
-  steps: 'Walks from the front, step after step. Rear is a minimum — a step that would come closer is skipped.',
+  steps: 'Holes step by step (step 1, step 2 …). “Ends” says how the front and the rear are used — hover each choice for details.',
   list: 'Every connector by hand, measured from the front, the rear or the exact middle (0 = centred, minus = toward the front). Click the strip to add one — near the centre it is measured from the middle; drag to move, double-click to remove.',
 };
 
@@ -1284,9 +1296,15 @@ function LaneTrack({ view, length, selected, clash, onPatch }: { view: LineView;
         apply: (mm: number) => ({ points: L.points.map((q, k) => (k === i ? { ...q, d: clampPointD(q.from, pointD(q.from, mm, length), length) } : q)) }),
       })).filter(hd => hd.d >= 0 && hd.d <= length)
       : pos.length ? [
-        { key: 'start', d: pos[0], title: 'Drag to change the distance from the front', apply: (mm: number) => ({ start: clampI(mm, length - L.end - 1) }) },
-        ...(pos.length >= 2 ? [{ key: 'end', d: pos[pos.length - 1], title: `Drag to change the ${L.kind === 'ends' ? 'distance' : 'minimum distance'} from the rear`,
-          apply: (mm: number) => ({ end: clampI(length - mm, length - L.start - 1) }) }] : []),
+        // Ortalanmış steps: iki uç tek değer (en az) — hangi tutamak sürüklenirse ikisi birlikte.
+        ...(frontIsMin(L) ? [
+          { key: 'start', d: pos[0], title: 'Drag to change the minimum distance from both ends', apply: (mm: number) => { const v = clampI(mm, length / 2); return { start: v, end: v }; } },
+          ...(pos.length >= 2 ? [{ key: 'end', d: pos[pos.length - 1], title: 'Drag to change the minimum distance from both ends', apply: (mm: number) => { const v = clampI(length - mm, length / 2); return { start: v, end: v }; } }] : []),
+        ] : [
+          { key: 'start', d: pos[0], title: 'Drag to change the distance from the front', apply: (mm: number) => ({ start: clampI(mm, length - L.end - 1) }) },
+          ...(pos.length >= 2 ? [{ key: 'end', d: pos[pos.length - 1], title: `Drag to change the ${rearIsMin(L) ? 'minimum distance' : 'distance'} from the rear`,
+            apply: (mm: number) => ({ end: clampI(length - mm, length - L.start - 1) }) }] : []),
+        ]),
       ] : [];
   const mmAt = (e: { clientX: number }) => { const r = svg.current!.getBoundingClientRect(); return (((e.clientX - r.left) / r.width) * VW - X0) / kx; };
   const move = (e: React.PointerEvent) => { const hd = handles.find(x => x.key === drag.current); if (hd) onPatch(hd.apply(mmAt(e))); };
@@ -1299,7 +1317,8 @@ function LaneTrack({ view, length, selected, clash, onPatch }: { view: LineView;
   };
   const chain = pos.length ? [0, ...pos, length] : [];
   const mid = L.kind === 'ends' || L.kind === 'grid' ? { on: pos.length === 3, from: L.midFrom } : null;
-  const minZone = (L.kind === 'grid' || L.kind === 'steps') && pos.length && !centred ? Math.min(Math.max(0, L.end), length) : 0;
+  const minZone = rearIsMin(L) && pos.length && !centred ? Math.min(Math.max(0, frontIsMin(L) ? L.start : L.end), length) : 0;
+  const frontZone = frontIsMin(L) && pos.length && !centred ? Math.min(Math.max(0, L.start), length) : 0;
   const pitch = L.kind === 'grid' ? (L.pitch > 0 ? L.pitch : 32) : 0;
   const ticks = pitch && pos.length && !centred && pitch * kx >= 3 ? Array.from({ length: Math.floor((length - L.start) / pitch + 1e-6) + 1 }, (_, i) => L.start + i * pitch) : [];
   const note = !view.conn ? 'pick a connector' : !pos.length ? 'nothing fits on this length' : centred ? 'centred — the end distances do not fit' : '';
@@ -1307,6 +1326,8 @@ function LaneTrack({ view, length, selected, clash, onPatch }: { view: LineView;
     <svg ref={svg} viewBox={`0 0 ${VW} ${VH}`} className="block w-full select-none" style={{ fontFamily: UI_FONT, touchAction: 'none', cursor: grab ? 'grabbing' : undefined }}
       onPointerMove={move} onPointerUp={drop} onPointerCancel={drop}>
       <rect x={X0} y={yT} width={X1 - X0} height={hS} fill={selected ? '#f6ecd9' : PT.fill} />
+      {frontZone > 0 && <rect x={X0} y={yT} width={frontZone * kx} height={hS} fill="url(#yago-lane-keepout)" opacity={0.75} />}
+      {frontZone > 0 && <line x1={xOf(frontZone)} y1={yT} x2={xOf(frontZone)} y2={yT + hS} stroke="#8a8073" strokeWidth={0.9} strokeDasharray="2.5 2" />}
       {minZone > 0 && <rect x={xOf(length - minZone)} y={yT} width={minZone * kx} height={hS} fill="url(#yago-lane-keepout)" opacity={0.75} />}
       {minZone > 0 && <line x1={xOf(length - minZone)} y1={yT} x2={xOf(length - minZone)} y2={yT + hS} stroke="#8a8073" strokeWidth={0.9} strokeDasharray="2.5 2" />}
       {ticks.map((d, i) => <line key={`t${i}`} x1={xOf(d)} y1={yT} x2={xOf(d)} y2={yT + 3.5} stroke="#a89f92" strokeWidth={0.7} />)}
@@ -1400,7 +1421,29 @@ function ConnectorLane({ view, selected, length, clash, connectors, removable, o
           )}
           {l.kind === 'steps' && (
             <>
-              <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>{front}{rearMin}</div>
+              <div className="flex items-center gap-2 h-[24px] pl-1" title="How the front and rear values are used">
+                <span className="yago-label shrink-0">Ends</span>
+                <div className="flex-1 min-w-0"><Segmented items={STEP_ENDS_SEG} active={stepEndsOf(l)} height={20}
+                  // Ortalanmaya geçince iki uç tek değer: arka = ön.
+                  onPick={k => onPatch({ stepEnds: k as StepEnds, endFixed: undefined, ...(k === 'centre' ? { end: l.start } : {}) })} /></div>
+              </div>
+              {stepEndsOf(l) === 'centre' ? (
+                <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
+                  <EditCell label="Ends min" title="Smallest distance of the first and the last connector from the front and the rear (mm) — both ends always get the same distance">
+                    {mm(l.start, v => onPatch({ start: v, end: v }))}</EditCell>
+                  <div className="yago-cell h-[28px] px-2 flex items-center gap-1" title={`On a ${fmt1(length)} mm joint the pattern is centred: this much stays at the front and at the rear`}>
+                    <span className="yago-label shrink-0">Now</span><span className="flex-1 min-w-0" />
+                    <span className="text-[12px] font-semibold tabular-nums text-stone-800">{n ? fmt1(linePositions(l, length)[0]) : '—'}</span><Unit /><span className={`shrink-0 ${MUTED}`}>each end</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
+                  {front}
+                  {stepEndsOf(l) === 'both'
+                    ? <EditCell label="Rear fixed" title="Exact distance of the last connector from the rear (end) of the joint (mm)">{mm(l.end, v => onPatch({ end: v }))}</EditCell>
+                    : rearMin}
+                </div>
+              )}
               <div className="flex flex-col" style={{ rowGap: QB_CELL_ROW.rowGap }}>
                 {l.steps.map((s, i) => (
                   <div key={i} className="yago-cell h-[28px] pl-2 pr-1 flex items-center gap-1" onClick={stop}
@@ -1626,8 +1669,17 @@ function ConnectorLayoutEditor({ draft, setDraft, onSave, onCancel }: { draft: C
           {rows.map((row, i) => (row.gap ? (
             <div key={`gap-${row.min}`} className="h-[32px] pl-2.5 pr-1 flex items-center gap-2 rounded-[9px] border border-dashed border-[#d6cfc3]" data-gap={rangeLabel(row.min, row.max)}>
               <span className="shrink-0 w-[82px] text-[11.5px] font-semibold tabular-nums text-stone-400">{rangeLabel(row.min, row.max)}</span>
-              <span className="flex-1 min-w-0 truncate yago-hint">no connectors on joints of this length</span>
-              <CardAction compact icon={Plus} label="Add" className="!h-[22px] !px-2" title="Put connectors on joints of this length" onClick={() => fillGap(row.min, row.max)} />
+              {/* Aralıklar küçükten büyüğe kurulur: ilk aralığın ALTINDAKİ boşluk yalnız bilgi (düğme yok — her + yukarı, kaldığı yerden devam eder);
+                  orayı kapsamak için ilk aralığın "from"u düşürülür. Aradaki boşluk iki sınırıyla, sondaki boşluk Add range gibi doldurulur. */}
+              {i === 0 ? (
+                <span className="flex-1 min-w-0 truncate yago-hint" title="To put connectors on shorter joints, lower “Joint from” of the first range">
+                  no connectors below {row.max + 1} mm</span>
+              ) : (
+                <>
+                  <span className="flex-1 min-w-0 truncate yago-hint">no connectors on joints of this length</span>
+                  <CardAction compact icon={Plus} label="Add" className="!h-[22px] !px-2" title={row.max > 0 ? 'Put connectors on joints of this length' : `Add the next range — it starts at ${row.min} mm, you type where it ends`} onClick={() => fillGap(row.min, row.max)} />
+                </>
+              )}
             </div>
           ) : (
             <RangeCard key={row.rule.id} rule={row.rule} open={row.rule.id === openRule} lineId={lineId} length={lenOfRule(row.rule)} scale={Math.sqrt(lenOfRule(row.rule) / longest)}

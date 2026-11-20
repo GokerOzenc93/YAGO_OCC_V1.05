@@ -489,6 +489,7 @@ export type LayoutKind = 'ends' | 'grid' | 'steps' | 'list';
 export interface LayoutStep { d: number; n: number; c?: number }
 /** 'list' noktası: baştan ya da sondan `d` mm · 'mid' = birleşimin TAM ORTASINDAN `d` mm (0 = tam orta, eksi = öne, artı = arkaya). */
 export interface LayoutPoint { from: 'start' | 'end' | 'mid'; d: number; c?: number }
+export type StepEnds = 'front' | 'both' | 'centre';
 export interface LayoutLine {
   id: string; connectorId: string | null; kind: LayoutKind;
   /** Kural kimliği: aynı kuralın bağlayıcı satırları bunu paylaşır (boy aralıkları da aynıdır); yoksa satır tek başına bir kuraldır. */
@@ -496,6 +497,11 @@ export interface LayoutLine {
   /** Geçerli olduğu birleşim boyu (mm, ikisi de dahil; boy tam mm'ye yuvarlanarak bakılır). `max` 0 = üst sınır yok. */
   min: number; max: number;
   start: number; end: number; midFrom: number; pitch: number; steps: LayoutStep[]; points: LayoutPoint[];
+  /** 'steps' uçları: 'front' (varsayılan) = ön SABİT `start`, arka EN AZ `end` · 'both' = ön + arka SABİT · 'centre' = ön ve arka EŞİT, en az
+   *  `start` — adım deseni ortalanır (delikler arası adımlar bozulmaz). */
+  stepEnds?: StepEnds;
+  /** ESKİ (16. tur): `true` = 'both'. Okurken `stepEndsOf` çevirir; arayüz seçince silinir. */
+  endFixed?: boolean;
   /** ESKİ (8. tur): satırda 2. bağlayıcı + nokta başına seçim. Açılışta ayrı satırlara çevrilir (ConnectorService.migrateConnectorGroups). */
   connector2Id?: string | null; use?: { start?: number; mid?: number; end?: number };
 }
