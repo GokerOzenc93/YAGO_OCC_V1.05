@@ -447,14 +447,16 @@ export const stepEndsOf = (l: Pick<LayoutLine, 'stepEnds' | 'endFixed'>): NonNul
 export const rearIsMin = (l: Pick<LayoutLine, 'kind' | 'stepEnds' | 'endFixed'>): boolean => l.kind === 'grid' || (l.kind === 'steps' && stepEndsOf(l) !== 'both');
 export const frontIsMin = (l: Pick<LayoutLine, 'kind' | 'stepEnds' | 'endFixed'>): boolean => l.kind === 'steps' && stepEndsOf(l) === 'centre';
 /** Elle girilen liste mi ('list' + eşit aralık kipi değil). */
-export const isHandList = (l: Pick<LayoutLine, 'kind' | 'listMode'>): boolean => l.kind === 'list' && l.listMode !== 'equal';
-export const LIST_EQUAL_COUNT = 3;
+export const isHandList = (l: Pick<LayoutLine, 'kind' | 'listMode'>): boolean => l.kind === 'list' && (l.listMode ?? 'hand') === 'hand';
+export const LIST_EQUAL_COUNT = 3, LIST_EQUAL_GAP = 300;
 export function linePositions(l: LayoutLine, length: number): number[] {
   if (!(length > 0)) return [];
   const uniq = (list: number[]) => [...new Set(list.map(round1))].sort((x, y) => x - y);
-  if (l.kind === 'list' && l.listMode === 'equal') {
-    // Uçlar SABİT, aradakiler eşit aralık: `count` bağlayıcı (uçlar dahil); 1 ya da uçlar sığmıyorsa tek bağlayıcı ortada.
-    const a = Math.max(0, l.start), b = length - Math.max(0, l.end), n = Math.max(1, Math.round(l.count ?? LIST_EQUAL_COUNT));
+  if (l.kind === 'list' && (l.listMode === 'equal' || l.listMode === 'gap')) {
+    // Uçlar SABİT, aradakiler eşit aralık: `count` bağlayıcı (uçlar dahil) — 'gap'te adet, aralık `gap`'e en yakın çıkacak şekilde hesaplanır.
+    // 1 bağlayıcı ya da uçlar sığmıyorsa tek bağlayıcı ortada.
+    const a = Math.max(0, l.start), b = length - Math.max(0, l.end);
+    const n = l.listMode === 'gap' ? Math.max(1, Math.round((b - a) / Math.max(1, l.gap ?? LIST_EQUAL_GAP))) + 1 : Math.max(1, Math.round(l.count ?? LIST_EQUAL_COUNT));
     if (n === 1 || b - a < 1) return [round1(length / 2)];
     return uniq(Array.from({ length: Math.min(n, 80) }, (_, i) => a + ((b - a) * i) / (n - 1)));
   }
@@ -505,6 +507,7 @@ export function lineSummary(l: LayoutLine): string {
     return ends === 'centre' ? `${st} · centred, min ${f(l.start)}` : `${f(l.start)} + ${st} · ${ends === 'both' ? 'rear' : 'min'} ${f(l.end)}`;
   }
   if (l.listMode === 'equal') return `${f(l.start)} / ${f(l.end)} · ${Math.max(1, Math.round(l.count ?? LIST_EQUAL_COUNT))} equal`;
+  if (l.listMode === 'gap') return `${f(l.start)} / ${f(l.end)} · equal ≈ ${f(l.gap ?? LIST_EQUAL_GAP)}`;
   return l.points.map(p => (p.from === 'mid' ? (p.d ? `mid${p.d > 0 ? '+' : '−'}${f(Math.abs(p.d))}` : 'mid') : `${p.from === 'end' ? '←' : ''}${f(p.d)}${p.from === 'end' ? '' : '→'}`)).join(' · ') || 'empty';
 }
 export const lineRangeText = (l: Pick<LayoutLine, 'min' | 'max'>): string =>

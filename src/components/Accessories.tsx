@@ -30,7 +30,7 @@ import {
   connOpSummary, connShapeClosed, connShapePoints, connSurfaceCoords, connSurfaceDepth, connSurfaceExtent, connSurfacePoint, connThickness, connectorUseCount, deleteConnector, addSampleConnector,
   edgeRulesOf, newConnHole, newConnOp, newConnPart, newConnector, panelTypeDef, panelTypeLabel, panelTypeShort, saveConnector, setEdgeGroup, setSurfaceRule,
   surfaceLabel, surfaceRuleOf, typeEdgeCount, LAYOUT_KINDS, MAX_LAYOUT_POINTS, MAX_LAYOUT_STEPS, cloneLayoutSet, deleteLayoutSet, layoutKindLabel, layoutUseCount, lineApplies,
-  linePositions, lineRangeText, lineSummary, newLayoutLine, pointD, pointPos, rearIsMin, frontIsMin, stepEndsOf, isHandList, LIST_EQUAL_COUNT, newLayoutSet, saveLayoutSet, holeFaceHint, holeFaceOptions, CONNECTOR_GROUPS, defaultSetOf, groupLabel, newRuleLine, ruleIdOf, setDefaultLayout, setGroupOf, setsOfGroup,
+  linePositions, lineRangeText, lineSummary, newLayoutLine, pointD, pointPos, rearIsMin, frontIsMin, stepEndsOf, isHandList, LIST_EQUAL_COUNT, LIST_EQUAL_GAP, newLayoutSet, saveLayoutSet, holeFaceHint, holeFaceOptions, CONNECTOR_GROUPS, defaultSetOf, groupLabel, newRuleLine, ruleIdOf, setDefaultLayout, setGroupOf, setsOfGroup,
 } from './ConnectorService';
 import { standardLegRules } from './LegLayout';
 import { syncPlinthSetsUsingPreset } from './PlinthService';
@@ -1145,7 +1145,7 @@ const KIND_HELP: Record<LayoutKind, string> = {
   ends: 'One connector at a fixed distance from the front, one at a fixed distance from the rear. Once the joint reaches the “Middle ≥” length, a third one goes exactly in the middle.',
   grid: 'The first connector sits exactly at the front distance; the others land on the 32 mm grid counted from it. The rear value is a minimum: the last connector takes the grid hole nearest the rear that still keeps it, and whatever is left over stays at the rear. Once the joint reaches “Middle ≥”, one more goes on the grid hole nearest the middle.',
   steps: 'Walks from the front: the first connector at the front distance, then step 1, step 2, step 3 … one after another, each putting a connector. Ends: front fixed + rear minimum, both fixed, or both minimum and centred (equal front and rear).',
-  list: 'By hand: every connector is typed in — its distance and whether it is measured from the front, the rear or the middle. Equal spacing: fixed front and rear, the connectors in between share the rest equally.',
+  list: 'By hand: every connector is typed in — its distance and whether it is measured from the front, the rear or the middle. Equal spacing: fixed front and rear, the connectors in between share the rest equally — by a count you give, or by an approximate gap (the count then follows the length).',
 };
 /** Dört kural, resimli kart olarak (seçili = turuncu çerçeve + onay). */
 function LayoutKindCards({ value, onPick }: { value: LayoutKind; onPick: (k: LayoutKind) => void }) {
@@ -1175,7 +1175,8 @@ const POINT_SEG: SegItem[] = [
 type PointFrom = LayoutLine['points'][number]['from'];
 const LIST_MODE_SEG: SegItem[] = [
   { key: 'hand', label: 'By hand', title: 'Type every position yourself — from the front, the rear or the middle' },
-  { key: 'equal', label: 'Equal spacing', title: 'Front and rear fixed; the connectors in between share the rest equally' },
+  { key: 'equal', label: 'Equal · count', title: 'Front and rear fixed; you give how many connectors, the ones in between share the rest equally' },
+  { key: 'gap', label: 'Equal · gap', title: 'Front and rear fixed; you give an approximate gap — the count follows the joint length, the gaps stay equal' },
 ];
 const STEP_ENDS_SEG: SegItem[] = [
   { key: 'front', label: 'Front fixed', title: 'Front exact, rear a minimum — the leftover of the steps stays at the rear' },
@@ -1190,7 +1191,7 @@ const KIND_HINT: Record<LayoutKind, string> = {
   ends: 'Fixed distance from both ends; one more exactly in the middle once the joint reaches “Middle ≥”.',
   grid: 'Front is exact, the others sit on the grid counted from it. Rear is a minimum — the leftover stays at the rear.',
   steps: 'Holes step by step (step 1, step 2 …). “Ends” says how the front and the rear are used — hover each choice for details.',
-  list: 'By hand: type each position — from the front, the rear or the middle (click the strip to add, double-click to remove). Equal spacing: fixed ends, equal gaps.',
+  list: 'By hand: type each position — from the front, the rear or the middle (click the strip to add, double-click to remove). Equal · count / Equal · gap: fixed ends, equal gaps — you give the count or an approximate gap.',
 };
 
 /* BOY ARALIKLARI — düzenleyicide aralıklar ÜST ÜSTE BİNMEZ: birleşim boyu ekseni ardışık aralıklara bölünür, her aralık kendi bağlayıcılarını
@@ -1473,25 +1474,28 @@ function ConnectorLane({ view, selected, length, clash, connectors, removable, o
           {l.kind === 'list' && (
             <div className="flex items-center gap-2 h-[24px] pl-1" title="How the positions are given">
               <span className="yago-label shrink-0">Positions</span>
-              <div className="flex-1 min-w-0 max-w-[280px]"><Segmented items={LIST_MODE_SEG} active={l.listMode === 'equal' ? 'equal' : 'hand'} height={20}
-                onPick={k => onPatch(k === 'equal' ? { listMode: 'equal', count: l.count ?? LIST_EQUAL_COUNT } : { listMode: undefined })} /></div>
+              <div className="flex-1 min-w-0"><Segmented items={LIST_MODE_SEG} active={l.listMode ?? 'hand'} height={20}
+                onPick={k => onPatch(k === 'equal' ? { listMode: 'equal', count: l.count ?? LIST_EQUAL_COUNT } : k === 'gap' ? { listMode: 'gap', gap: l.gap ?? LIST_EQUAL_GAP } : { listMode: undefined })} /></div>
             </div>
           )}
-          {l.kind === 'list' && l.listMode === 'equal' && (() => {
+          {l.kind === 'list' && (l.listMode === 'equal' || l.listMode === 'gap') && (() => {
             const p = linePositions(l, length), gap = p.length >= 2 ? p[1] - p[0] : 0;
             return (
               <>
                 <div className="grid gap-x-1" style={{ ...QB_CELL_ROW, gridTemplateColumns: '1.1fr 1.02fr 0.96fr' }}>
                   {front}
                   <EditCell label="From rear" title="Exact distance of the last connector from the rear (end) of the joint (mm)">{mm(l.end, v => onPatch({ end: v }))}</EditCell>
-                  <EditCell label="Count" title="How many connectors in total, the two end ones included — the ones in between are spread with equal gaps">
-                    <QbNum value={l.count ?? LIST_EQUAL_COUNT} min={1} max={40} w={34} onCommit={v => onPatch({ count: Math.round(v) })} /></EditCell>
+                  {l.listMode === 'gap'
+                    ? <EditCell label="Gap ≈" title="Approximate gap between connectors (mm) — the count is chosen so the real, equal gap comes out closest to this">
+                      {mm(l.gap ?? LIST_EQUAL_GAP, v => onPatch({ gap: Math.max(1, v) }), 1)}</EditCell>
+                    : <EditCell label="Count" title="How many connectors in total, the two end ones included — the ones in between are spread with equal gaps">
+                      <QbNum value={l.count ?? LIST_EQUAL_COUNT} min={1} max={40} w={34} onCommit={v => onPatch({ count: Math.round(v) })} /></EditCell>}
                 </div>
-                <div className="yago-hint px-1">{gap > 0 ? `On a ${fmt1(length)} mm joint: ${fmt1(gap)} mm between connectors.` : p.length === 1 ? 'One connector, in the middle.' : ''}</div>
+                <div className="yago-hint px-1" data-equal-readout>{gap > 0 ? `On a ${fmt1(length)} mm joint: ${l.listMode === 'gap' ? `${p.length} connectors, ` : ''}${fmt1(gap)} mm between connectors.` : p.length === 1 ? 'One connector, in the middle.' : ''}</div>
               </>
             );
           })()}
-          {l.kind === 'list' && l.listMode !== 'equal' && (
+          {isHandList(l) && (
             <div className="flex flex-col" style={{ rowGap: QB_CELL_ROW.rowGap }}>
               {l.points.map((p, i) => (
                 <div key={i} className="yago-cell h-[28px] pl-2 pr-1 flex items-center gap-1.5" onClick={stop}>
@@ -1580,7 +1584,7 @@ function RangeCard({ rule, open, lineId, length, scale, hasNext, connectors, foc
                 ? <input type="range" min={lo} max={top} step={span <= 200 ? 1 : span <= 1000 ? 5 : 10} value={Math.min(top, length)} onChange={e => onLength(Number(e.target.value))}
                   className="flex-1 min-w-0 h-[14px] cursor-pointer" style={{ accentColor: SEL }} />
                 : <span className="flex-1 min-w-0 truncate yago-hint">this range is a single length</span>}
-              <div className="yago-cell shrink-0 h-[24px] pl-1 pr-0.5 flex items-center"><QbNum value={length} min={lo} max={max > 0 ? max : 9999} w={40} onCommit={onLength} /><Unit /></div>
+              <div className="yago-cell shrink-0 h-[24px] pl-1 pr-0.5 flex items-center"><QbNum value={length} min={lo} max={max > 0 ? max : 9999} w={48} onCommit={onLength} /><Unit /></div>
               {length > lo && <CardAction compact icon={Scissors} label={`Split at ${fmt1(length)}`} className="!h-[24px] !px-2"
                 title={`Other connectors from ${fmt1(length)} mm on: cuts this range in two at the previewed length — the upper part starts as a copy you can change`} onClick={onSplit} />}
             </div>

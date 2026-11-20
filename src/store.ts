@@ -502,7 +502,8 @@ export interface LayoutLine {
   stepEnds?: StepEnds;
   /** 'list' kipi: 'hand' (varsayılan) = `points` elle · 'equal' = önden `start` + arkadan `end` SABİT, `count` bağlayıcı (uçlar dahil) arası EŞİT
    *  (`points` saklanır, elle kipe dönülünce geri gelir). */
-  listMode?: 'hand' | 'equal'; count?: number;
+  /** 'gap' = uçlar yine SABİT, adet OTOMATİK: aralık `gap`'e (yaklaşık) en yakın çıkacak kadar bağlayıcı, aralar eşit. */
+  listMode?: 'hand' | 'equal' | 'gap'; count?: number; gap?: number;
   /** ESKİ (16. tur): `true` = 'both'. Okurken `stepEndsOf` çevirir; arayüz seçince silinir. */
   endFixed?: boolean;
   /** ESKİ (8. tur): satırda 2. bağlayıcı + nokta başına seçim. Açılışta ayrı satırlara çevrilir (ConnectorService.migrateConnectorGroups). */
