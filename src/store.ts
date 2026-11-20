@@ -500,6 +500,9 @@ export interface LayoutLine {
   /** 'steps' uçları: 'front' (varsayılan) = ön SABİT `start`, arka EN AZ `end` · 'both' = ön + arka SABİT · 'centre' = ön ve arka EŞİT, en az
    *  `start` — adım deseni ortalanır (delikler arası adımlar bozulmaz). */
   stepEnds?: StepEnds;
+  /** 'list' kipi: 'hand' (varsayılan) = `points` elle · 'equal' = önden `start` + arkadan `end` SABİT, `count` bağlayıcı (uçlar dahil) arası EŞİT
+   *  (`points` saklanır, elle kipe dönülünce geri gelir). */
+  listMode?: 'hand' | 'equal'; count?: number;
   /** ESKİ (16. tur): `true` = 'both'. Okurken `stepEndsOf` çevirir; arayüz seçince silinir. */
   endFixed?: boolean;
   /** ESKİ (8. tur): satırda 2. bağlayıcı + nokta başına seçim. Açılışta ayrı satırlara çevrilir (ConnectorService.migrateConnectorGroups). */
