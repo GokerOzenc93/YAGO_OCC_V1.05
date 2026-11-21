@@ -643,6 +643,10 @@ export interface AppState {
   selectedPanelRowParentId: string | null;
   setSelectedPanelRow: (i: number | string | null, parentId?: string | null) => void;
   panelSelectMode: boolean; setPanelSelectMode: (b: boolean) => void;
+  /** Sol kenar çubuğu ↔ sahne: `sidebarOpenTick` artınca şerit açılır (gövdeye çift tık); `sidebarInset` = sabitli açık şeridin genişliği —
+   *  3B görünüm soldan o kadar daralır (yüzen / kapalı panelde 0). */
+  sidebarOpenTick: number; requestSidebarOpen: () => void;
+  sidebarInset: number; setSidebarInset: (px: number) => void;
   faceEditMode: boolean; setFaceEditMode: (b: boolean) => void;
 
   panelGroups: PanelGroup[];
@@ -959,6 +963,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSelectedPanelRow: (i, parentId) => set({ ...(i !== null ? NO_GROUP_SEL : {}), selectedPanelRow: i, selectedPanelRowParentId: parentId || null }),
   panelSelectMode: false,
   setPanelSelectMode: (b) => set({ ...NO_GROUP_SEL, panelSelectMode: b, selectedPanelRowParentId: null }),
+  sidebarOpenTick: 0, requestSidebarOpen: () => set((s) => ({ sidebarOpenTick: s.sidebarOpenTick + 1 })),
+  sidebarInset: 0, setSidebarInset: (px) => { if (get().sidebarInset !== px) set({ sidebarInset: px }); },
   faceEditMode: false, setFaceEditMode: (b) => set({ faceEditMode: b }),
 
   panelGroups: [],

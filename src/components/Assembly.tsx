@@ -35,8 +35,7 @@ import {
 import {
   round1, localBboxOf, effectiveBodyGeometry, confirmRefFaceExtrude, executeFaceExtrude, executeFaceExtrudeOuter, confirmPanelMoveRef, executePanelMoveFixed, executePanelMove,
   confirmPanelRotateRef, executePanelRotate, type ExtrudeStep, type TransformStep, updateExtrudeStep, updateTransformStep, deleteExtrudeStep,
-  deleteTransformStep, createPanelFromVirtualFace, convertReplicadToThreeGeometry, genId, getFacesAndGroups, isFlatNormal, dominantAxisLabel,
-  findExistingStepForFace, isPostSketchFace,
+  deleteTransformStep, createPanelFromVirtualFace, convertReplicadToThreeGeometry, genId,
 } from './Geometry';
 import {
   effectiveJoins, panelOrderFor, baseLiftOf, confirmRefCavityExtrude, executeCavityExtrude, executeCavityExtrudeOuter, updateCavityStep, deleteCavityStep, groupName,
@@ -2778,13 +2777,13 @@ function useScrollIntoView(rows: React.MutableRefObject<Map<number | string, HTM
 export function AssemblyPanel() {
   const {
     selectedShapeId, shapes, selectedPanelRow, virtualFaces, panelGroups, selectedPanelGroupId, volumePickMode, volumePickGroupId,
-    faceExtrudeMode, faceExtrudeTargetPanelId, faceExtrudeSelectedFace, faceExtrudeClickPoint, faceExtrudeValueMode, faceExtrudeCavityGroupId,
+    faceExtrudeMode, faceExtrudeTargetPanelId, faceExtrudeClickPoint, faceExtrudeValueMode, faceExtrudeCavityGroupId,
     faceExtrudeCavityFaceNormal, panelMoveMode, panelMoveTargetPanelId, panelMoveAxis, panelRotateMode, panelRotateTargetPanelId, panelRotateAxis,
     doorGroups, selectedDoorGroupId, doorRefPickGroupId, backGroups, selectedBackGroupId, backRefPickGroupId, quickBodyMode, quickBodyConfig, quickBodyBusy,
     plinthSets, faceExtrudePlinthId, raycastMode, doorPickMode, backPickMode, plinthPickMode,
   } = useStoreFields(
     'selectedShapeId', 'shapes', 'selectedPanelRow', 'virtualFaces', 'panelGroups', 'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId',
-    'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'faceExtrudeClickPoint', 'faceExtrudeValueMode', 'faceExtrudeCavityGroupId',
+    'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeClickPoint', 'faceExtrudeValueMode', 'faceExtrudeCavityGroupId',
     'faceExtrudeCavityFaceNormal', 'panelMoveMode', 'panelMoveTargetPanelId', 'panelMoveAxis', 'panelRotateMode', 'panelRotateTargetPanelId', 'panelRotateAxis',
     'doorGroups', 'selectedDoorGroupId', 'doorRefPickGroupId', 'backGroups', 'selectedBackGroupId', 'backRefPickGroupId', 'quickBodyMode', 'quickBodyConfig',
     'quickBodyBusy', 'plinthSets', 'faceExtrudePlinthId', 'raycastMode', 'doorPickMode', 'backPickMode', 'plinthPickMode',
@@ -3005,26 +3004,6 @@ export function AssemblyPanel() {
     setPanelMoveTargetPanelId(activePanelId); setPanelMoveAxis(null); setPanelMoveValue(0);
   }, [panelMoveMode, activePanelId, panelMoveTargetPanelId]);
 
-  // Seçilen yüzde mevcut extrude adımı varsa değeri (ve ref dışında modu) şeride yüklenir.
-  useEffect(() => {
-    if (faceExtrudeSelectedFace === null || !activePanel?.geometry || faceExtrudeCavityGroupId) return;
-    // Çizimin açtığı yüz (çizim SONRASI adım): kendi listesinde, yüz olduğu gibi (eksene yaslanmaz).
-    const post = isPostSketchFace(activePanel, faceExtrudeSelectedFace);
-    const steps = (post ? activePanel.parameters?.postExtrudeSteps : activePanel.parameters?.extrudeSteps) || []; if (!steps.length) return;
-    const { groups } = getFacesAndGroups(activePanel.geometry);
-    let g = groups[faceExtrudeSelectedFace]; if (!g) return;
-    const gn = g.normal.clone().normalize();
-    if (!post && !isFlatNormal(gn, 0.9)) {
-      const flat = groups
-        .filter(f => { const fn = f.normal.clone().normalize(); return isFlatNormal(fn, 0.9) && dominantAxisLabel(fn) === dominantAxisLabel(gn); })
-        .sort((a, b) => a.center.distanceTo(g!.center) - b.center.distanceTo(g!.center))[0];
-      if (flat) g = flat;
-    }
-    const existing = findExistingStepForFace(steps, g.normal.clone().normalize(), g.center.clone());
-    // Ref akışı bozulmasın: ref modunda mod yazılmaz.
-    if (existing) { setFaceExtrudeThickness(existing.value); if (faceExtrudeValueMode !== 'ref') setFaceExtrudeValueMode(existing.isFixed ? 'fixed' : 'dyn'); }
-  }, [faceExtrudeSelectedFace, activePanelId, shapes]);
-
   // Garanti çıkış: yalnız "açık satırın paneli === hedef" iken; rebuild sırasında anlık null çıkış sayılmaz.
   const uiLeftPanel = (targetId: string | null) => selectedPanelRow === null || (!!activePanelId && targetId !== activePanelId);
   // Hacim düzenlemenin geçerlilik koşulu: grup bu gövdede ve kartı AÇIK (tümü seçili ya da bir üye satırı açık).
@@ -3090,6 +3069,8 @@ export function AssemblyPanel() {
   const rowDone = () => setSelectedPanelRow(null);
   /* Şerit önizlemenin ÜSTÜNDE olmalı (altındayken 500px önizlemenin altında kalıp görünmüyordu). */
   const renderExpandedBody = (vf: VirtualFace, vp: Shape | undefined) => {
+    // Extrude satırda DÜĞME DEĞİL: sahnede, seçili panelin kenar oklarıyla yapılır (Scene.PanelSceneExtrude). Haritada yalnız "başka araç
+    // açılınca kapansın" diye durur.
     const tools = {
       extrude: [faceExtrudeMode, faceExtrudeTargetPanelId, setFaceExtrudeMode, setFaceExtrudeTargetPanelId],
       move: [panelMoveMode, panelMoveTargetPanelId, setPanelMoveMode, setPanelMoveTargetPanelId],
@@ -3098,7 +3079,7 @@ export function AssemblyPanel() {
     type Tool = keyof typeof tools;
     // Sketch: Drawing panelinin yüz seçimi yalnız BU panelde açılır; panel çizim yüzüyken düğme etkin görünür (tekrar tık → zemine dön).
     const sketching = !!vp && draftIso?.targetId === vp.id;
-    const tool = sketching ? 'sketch' : (Object.keys(tools) as Tool[]).find(k => tools[k][0] && tools[k][1] === vp?.id) ?? null;
+    const tool = sketching ? 'sketch' : (['move', 'rotate'] as Tool[]).find(k => tools[k][0] && tools[k][1] === vp?.id) ?? null;
     // Aynı araca tık → kapanır; başka araca → açık olan kapanır, yenisi bu panelde açılır.
     const pickTool = (k: string) => {
       if (!vp) return;
@@ -3117,12 +3098,10 @@ export function AssemblyPanel() {
     return (
       <div className={CARD_BODY} style={{ borderTop: CARD_BODY_STYLE.borderTop }} onClick={stop}>
         <Segmented active={tool} onPick={pickTool} items={[
-          { key: 'extrude', label: 'Extrude', Icon: MoveVertical, title: 'Face extrude — pick a face in the 3D view, then Fixed / Dyn / Ref', disabled: dis },
           { key: 'move', label: 'Move', Icon: Move, title: 'Move the panel — Relative / Absolute / To point', disabled: dis },
           { key: 'rotate', label: 'Rotate', Icon: RotateCw, title: 'Rotate the panel — Angle / Aim at face', disabled: dis },
           { key: 'sketch', label: 'Sketch', Icon: PenLine, title: 'Draw on a face of this panel, then cut it out or give the panel that shape', disabled: dis },
         ]} />
-        <ExtrudeDock panel={activePanel} draft={extrudeThicknessStr} setDraft={setExtrudeThicknessStr} onDone={rowDone} />
         <MoveDock panel={activePanel} draft={moveValueStr} setDraft={setMoveValueStr} onDone={rowDone} />
         <RotateDock panel={activePanel} draft={rotateValueStr} setDraft={setRotateValueStr} onDone={rowDone} />
         <PanelTypeStrip vf={vf} panel={vp} />

@@ -1207,7 +1207,7 @@ const RESIZE_GRIP_BG = 'linear-gradient(135deg,transparent 50%,rgba(60,50,40,0.2
 
 export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyContent: React.ReactNode; accessoriesContent?: React.ReactNode }> =
   ({ parametersContent, assemblyContent, accessoriesContent }) => {
-  const { selectedShapeId } = useStoreFields('selectedShapeId');
+  const { selectedShapeId, sidebarOpenTick } = useStoreFields('selectedShapeId', 'sidebarOpenTick');
   const [initial] = useState(readSidebarLayout);
   // Açılışta her zaman sola yaslı ve KAPALI başlar; kaydedilen kip yalnız yüzen panelin konum/boyutu için okunur.
   const [mode, setMode] = useState<SidebarMode>('docked');
@@ -1344,6 +1344,18 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyCon
 
   const isVisible = mode !== 'docked' || isOpen || isPinned;
   const docked = mode === 'docked', floating = mode === 'floating';
+  // Sahneden açma isteği (gövdeye çift tık): sola yaslı şerit sabitlenerek açılır; gövde sekmesi değilse Assembly'ye geçilir.
+  useEffect(() => {
+    if (!sidebarOpenTick) return;
+    if (mode === 'docked') { setIsOpen(true); setIsPinned(true); }
+    setActiveTab(t => (t === 'accessories' ? 'assembly' : t));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebarOpenTick]);
+  // Açık sabit şerit sahneyi ÖRTMEZ: genişliği store'a yazılır, 3B görünüm soldan o kadar daralır (DraftViewport).
+  useEffect(() => {
+    useAppStore.getState().setSidebarInset(docked && isVisible ? SIDEBAR_WIDTH : 0);
+    return () => useAppStore.getState().setSidebarInset(0);
+  }, [docked, isVisible]);
   const tabPane = (tab: SidebarTab, content: React.ReactNode, empty: React.ReactNode, needShape = true) => (
     <div style={{ display: activeTab === tab ? 'block' : 'none' }}>{selectedShapeId || !needShape ? content : empty}</div>
   );

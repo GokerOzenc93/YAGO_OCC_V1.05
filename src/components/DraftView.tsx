@@ -1915,6 +1915,8 @@ export const DrawingPanel: React.FC = () => {
   );
 };
 
+/** Sol kenar çubuğunun kayma süresi (Ui.Sidebar `duration-300`). */
+const SIDEBAR_SLIDE_MS = 300;
 /** 3B görünüm sarmalayıcısı: panel açılınca hemen daralır, kapanınca kayma bitince genişler (tuval tek kez boyutlanır). */
 export const DraftViewport: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const open = useDraft(s => s.panelOpen);
@@ -1924,7 +1926,15 @@ export const DraftViewport: React.FC<{ children: React.ReactNode }> = ({ childre
     const t = window.setTimeout(() => setInset(0), PANEL_SLIDE_MS);
     return () => window.clearTimeout(t);
   }, [open]);
-  return <div style={{ position: 'absolute', top: 0, left: 0, bottom: 0, right: inset }}>{children}</div>;
+  // Sol kenar çubuğu (sabitli açık şerit) sahneyi örtmez: görünüm soldan da daralır. Açılırken hemen, kapanırken şerit kayıp bittikten sonra.
+  const sb = useAppStore(st => st.sidebarInset);
+  const [left, setLeft] = useState(sb);
+  useEffect(() => {
+    if (sb) { setLeft(sb); return; }
+    const t = window.setTimeout(() => setLeft(0), SIDEBAR_SLIDE_MS);
+    return () => window.clearTimeout(t);
+  }, [sb]);
+  return <div style={{ position: 'absolute', top: 0, left, bottom: 0, right: inset }}>{children}</div>;
 };
 
 /** Durum çubuğu parçası: etkin düzlem, çizim nesnesi sayısı ve imleç koordinatı. */
