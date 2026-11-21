@@ -2780,13 +2780,13 @@ export function AssemblyPanel() {
     faceExtrudeMode, faceExtrudeTargetPanelId, faceExtrudeClickPoint, faceExtrudeValueMode, faceExtrudeCavityGroupId,
     faceExtrudeCavityFaceNormal, panelMoveMode, panelMoveTargetPanelId, panelMoveAxis, panelRotateMode, panelRotateTargetPanelId, panelRotateAxis,
     doorGroups, selectedDoorGroupId, doorRefPickGroupId, backGroups, selectedBackGroupId, backRefPickGroupId, quickBodyMode, quickBodyConfig, quickBodyBusy,
-    plinthSets, faceExtrudePlinthId, raycastMode, doorPickMode, backPickMode, plinthPickMode,
+    plinthSets, faceExtrudePlinthId, raycastMode, doorPickMode, backPickMode, plinthPickMode, sceneExtrudePanelId,
   } = useStoreFields(
     'selectedShapeId', 'shapes', 'selectedPanelRow', 'virtualFaces', 'panelGroups', 'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId',
     'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeClickPoint', 'faceExtrudeValueMode', 'faceExtrudeCavityGroupId',
     'faceExtrudeCavityFaceNormal', 'panelMoveMode', 'panelMoveTargetPanelId', 'panelMoveAxis', 'panelRotateMode', 'panelRotateTargetPanelId', 'panelRotateAxis',
     'doorGroups', 'selectedDoorGroupId', 'doorRefPickGroupId', 'backGroups', 'selectedBackGroupId', 'backRefPickGroupId', 'quickBodyMode', 'quickBodyConfig',
-    'quickBodyBusy', 'plinthSets', 'faceExtrudePlinthId', 'raycastMode', 'doorPickMode', 'backPickMode', 'plinthPickMode',
+    'quickBodyBusy', 'plinthSets', 'faceExtrudePlinthId', 'raycastMode', 'doorPickMode', 'backPickMode', 'plinthPickMode', 'sceneExtrudePanelId',
   );
   // Eylemler sabittir (store kurulurken tanımlanır) → abonelik gerekmez.
   const {
@@ -3020,10 +3020,12 @@ export function AssemblyPanel() {
       return;
     }
     if (faceExtrudeMode && uiLeftPanel(faceExtrudeTargetPanelId)) stopExtrude();
+    // Sahne extrude aracı satırın panelinde açılır; satır kapanınca / başka panele geçilince kapanır.
+    if (sceneExtrudePanelId && uiLeftPanel(sceneExtrudePanelId)) useAppStore.getState().setSceneExtrudePanelId(null);
     if (panelMoveMode && uiLeftPanel(panelMoveTargetPanelId)) { setPanelMoveAxis(null); setPanelMoveMode(false); }
     if (panelRotateMode && uiLeftPanel(panelRotateTargetPanelId)) { setPanelRotateAxis(null); setPanelRotateMode(false); }
   }, [activePanelId, selectedPanelRow, selectedShapeId, selectedPanelGroupId, panelGroups, faceExtrudeMode, faceExtrudeTargetPanelId, faceExtrudeCavityGroupId,
-    faceExtrudePlinthId, plinthSets, panelMoveMode, panelMoveTargetPanelId, panelRotateMode, panelRotateTargetPanelId]);
+    faceExtrudePlinthId, plinthSets, panelMoveMode, panelMoveTargetPanelId, panelRotateMode, panelRotateTargetPanelId, sceneExtrudePanelId]);
 
   // Hacim yüzü seçilince o eksendeki mevcut hacim adımı şeride yüklenir.
   useEffect(() => {
@@ -3069,8 +3071,8 @@ export function AssemblyPanel() {
   const rowDone = () => setSelectedPanelRow(null);
   /* Şerit önizlemenin ÜSTÜNDE olmalı (altındayken 500px önizlemenin altında kalıp görünmüyordu). */
   const renderExpandedBody = (vf: VirtualFace, vp: Shape | undefined) => {
-    // Extrude satırda DÜĞME DEĞİL: sahnede, seçili panelin kenar oklarıyla yapılır (Scene.PanelSceneExtrude). Haritada yalnız "başka araç
-    // açılınca kapansın" diye durur.
+    // Extrude düğmesi yalnız sahne aracını açar / kapatır (sceneExtrudePanelId); tip seçimi, değer ve önizleme sahnede, okların üzerinde
+    // (Scene.PanelSceneExtrude). Haritadaki extrude girdisi yalnız "başka araç açılınca seçili kenar düşsün" diye durur.
     const tools = {
       extrude: [faceExtrudeMode, faceExtrudeTargetPanelId, setFaceExtrudeMode, setFaceExtrudeTargetPanelId],
       move: [panelMoveMode, panelMoveTargetPanelId, setPanelMoveMode, setPanelMoveTargetPanelId],
@@ -3079,10 +3081,19 @@ export function AssemblyPanel() {
     type Tool = keyof typeof tools;
     // Sketch: Drawing panelinin yüz seçimi yalnız BU panelde açılır; panel çizim yüzüyken düğme etkin görünür (tekrar tık → zemine dön).
     const sketching = !!vp && draftIso?.targetId === vp.id;
-    const tool = sketching ? 'sketch' : (['move', 'rotate'] as Tool[]).find(k => tools[k][0] && tools[k][1] === vp?.id) ?? null;
+    const sceneEx = !!vp && sceneExtrudePanelId === vp.id;
+    const tool = sketching ? 'sketch' : sceneEx ? 'extrude' : (['move', 'rotate'] as Tool[]).find(k => tools[k][0] && tools[k][1] === vp?.id) ?? null;
+    const setSceneEx = useAppStore.getState().setSceneExtrudePanelId;
     // Aynı araca tık → kapanır; başka araca → açık olan kapanır, yenisi bu panelde açılır.
     const pickTool = (k: string) => {
       if (!vp) return;
+      if (k === 'extrude') {
+        if (sketching) void exitFace();
+        for (const [on, , off] of Object.values(tools)) if (on) off(false);
+        setSceneEx(sceneEx ? null : vp.id);
+        return;
+      }
+      setSceneEx(null);
       if (k === 'sketch') {
         for (const [on, , off] of Object.values(tools)) if (on) off(false);
         if (sketching) void exitFace(); else beginFacePick(vp.id);
@@ -3098,6 +3109,7 @@ export function AssemblyPanel() {
     return (
       <div className={CARD_BODY} style={{ borderTop: CARD_BODY_STYLE.borderTop }} onClick={stop}>
         <Segmented active={tool} onPick={pickTool} items={[
+          { key: 'extrude', label: 'Extrude', Icon: MoveVertical, title: 'Extrude — arrows appear on the panel edges in the 3D view', disabled: dis },
           { key: 'move', label: 'Move', Icon: Move, title: 'Move the panel — Relative / Absolute / To point', disabled: dis },
           { key: 'rotate', label: 'Rotate', Icon: RotateCw, title: 'Rotate the panel — Angle / Aim at face', disabled: dis },
           { key: 'sketch', label: 'Sketch', Icon: PenLine, title: 'Draw on a face of this panel, then cut it out or give the panel that shape', disabled: dis },

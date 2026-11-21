@@ -647,6 +647,11 @@ export interface AppState {
    *  3B görünüm soldan o kadar daralır (yüzen / kapalı panelde 0). */
   sidebarOpenTick: number; requestSidebarOpen: () => void;
   sidebarInset: number; setSidebarInset: (px: number) => void;
+  /** Sahne extrude aracı (Assembly › panel satırı › Extrude): okların çizildiği panel. null = araç kapalı. Kapanınca o paneldeki yüz extrude da düşer. */
+  sceneExtrudePanelId: string | null; setSceneExtrudePanelId: (id: string | null) => void;
+  /** Sahne extrude'un durum çubuğu satırı: üzerine gelinen / seçili okun tipi ve ne yaptığı (Scene yazar, StatusBar çizer). */
+  sceneExStatus: { type: 'fixed' | 'dyn' | 'ref' | null; text: string } | null;
+  setSceneExStatus: (s: { type: 'fixed' | 'dyn' | 'ref' | null; text: string } | null) => void;
   faceEditMode: boolean; setFaceEditMode: (b: boolean) => void;
 
   panelGroups: PanelGroup[];
@@ -965,6 +970,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPanelSelectMode: (b) => set({ ...NO_GROUP_SEL, panelSelectMode: b, selectedPanelRowParentId: null }),
   sidebarOpenTick: 0, requestSidebarOpen: () => set((s) => ({ sidebarOpenTick: s.sidebarOpenTick + 1 })),
   sidebarInset: 0, setSidebarInset: (px) => { if (get().sidebarInset !== px) set({ sidebarInset: px }); },
+  sceneExtrudePanelId: null,
+  setSceneExtrudePanelId: (id) => {
+    const s = get();
+    if (s.sceneExtrudePanelId === id) return;
+    const prev = s.sceneExtrudePanelId;
+    const dropFace = !!prev && s.faceExtrudeMode && s.faceExtrudeTargetPanelId === prev && !s.faceExtrudeCavityGroupId && !s.faceExtrudePlinthId;
+    set({ sceneExtrudePanelId: id, ...(dropFace ? { faceExtrudeMode: false, faceExtrudeSelectedFace: null, faceExtrudeRefCandidate: null, faceExtrudeTargetPanelId: null } : {}) });
+  },
+  sceneExStatus: null,
+  setSceneExStatus: (v) => {
+    const c = get().sceneExStatus;
+    if (c === v || (c && v && c.type === v.type && c.text === v.text)) return;
+    set({ sceneExStatus: v });
+  },
   faceEditMode: false, setFaceEditMode: (b) => set({ faceEditMode: b }),
 
   panelGroups: [],

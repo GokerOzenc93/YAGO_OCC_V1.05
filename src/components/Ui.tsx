@@ -352,8 +352,23 @@ function BusyStatus({ view, live }: { view: NonNullable<ReturnType<typeof useApp
   );
 }
 
+/** Sahne extrude satırı: üzerine gelinen / seçili okun tipi (renkli nokta + ad) ve ne yaptığı. Okun yanında yazı yok — açıklama burada. */
+const EX_STATUS_CLR = { fixed: '#1f5578', dyn: '#d9540a', ref: '#a16207' } as const;
+const EX_STATUS_NAME = { fixed: 'Fixed', dyn: 'Dyn', ref: 'Ref' } as const;
+const ExtrudeStatus: React.FC<{ status: { type: 'fixed' | 'dyn' | 'ref' | null; text: string } }> = ({ status }) => (
+  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, overflow: 'hidden' }}>
+    <span style={{ color: TOKENS.labelClr, fontSize: '11px', fontWeight: 420, letterSpacing: '0.04em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>Extrude</span>
+    {status.type && <>
+      <span style={{ width: 7, height: 7, borderRadius: 4, background: EX_STATUS_CLR[status.type], flexShrink: 0 }} />
+      <span style={{ color: EX_STATUS_CLR[status.type], fontSize: '11.5px', fontWeight: 620, whiteSpace: 'nowrap' }}>{EX_STATUS_NAME[status.type]}</span>
+    </>}
+    <span style={{ color: '#57534e', fontSize: '11.5px', fontWeight: 460, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{status.text}</span>
+  </div>
+);
+
 export const StatusBar: React.FC = () => {
-  const { shapes, selectedShapeId, vertexEditMode, selectedVertexIndex } = useStoreFields('shapes', 'selectedShapeId', 'vertexEditMode', 'selectedVertexIndex');
+  const { shapes, selectedShapeId, vertexEditMode, selectedVertexIndex, sceneExStatus } =
+    useStoreFields('shapes', 'selectedShapeId', 'vertexEditMode', 'selectedVertexIndex', 'sceneExStatus');
   const selectedShape = shapeById(selectedShapeId, shapes);
   const vertexModCount = selectedShape?.vertexModifications?.length || 0;
   const { busy, view } = useBusyView();
@@ -381,6 +396,7 @@ export const StatusBar: React.FC = () => {
           valueColor={TOKENS.infoClr} mono /></>
       )}
       {vertexModCount > 0 && <><VSep /><LabelValue label="Edits" value={vertexModCount} valueColor={TOKENS.modClr} mono /></>}
+      {sceneExStatus && <><VSep /><ExtrudeStatus status={sceneExStatus} /></>}
       <DraftStatus />
       </>}
       <div style={{ position: 'relative', marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
@@ -1288,12 +1304,12 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyCon
   useEffect(() => {
     if (mode !== 'docked') return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || !(isOpen || isPinned)) return;
+      if (e.key !== 'Escape' || e.defaultPrevented || !(isOpen || isPinned)) return;
       // Escape şerit girdisinde / aktif panel aracında "iptal"dir — o durumlarda kenar çubuğu KAPANMAZ.
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       const st = useAppStore.getState();
-      if (st.faceExtrudeMode || st.panelMoveMode || st.panelRotateMode || escapeOwners.size) return;
+      if (st.faceExtrudeMode || st.panelMoveMode || st.panelRotateMode || st.sceneExtrudePanelId || escapeOwners.size) return;
       setIsOpen(false); setIsPinned(false);
     };
     window.addEventListener('keydown', onKey);

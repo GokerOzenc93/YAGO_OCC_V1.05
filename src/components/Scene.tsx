@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import React, { useMemo, useRef, useEffect, useState, useCallback, useLayoutEffect } from 'react';
 import { Line, TransformControls, PerspectiveCamera, OrthographicCamera, Html, OrbitControls, GizmoHelper } from '@react-three/drei';
 import { useThree, useFrame, Canvas } from '@react-three/fiber';
+import { RefreshCw } from 'lucide-react';
 import {
   type DoorGroup, engineLoad, entryGate, useAppStore, shapeById, useStoreFields, ViewMode, type VirtualFace, childPanelsOf, vfOfPanel, type FilletInfo, type CavityPick,
   type XformDelta, applyXformDelta, Tool, type Shape, CameraType, requestRebuild,
@@ -36,7 +37,7 @@ import {
   BACK_GAP, backPickRect, rayBackEntry, backCandidatesAt, backStackAt,
 } from './BackService';
 import { panelStampsRegions } from './PanelEngine';
-import { ErrorBoundary, UI_FONT, MONO_FONT } from './Ui';
+import { ErrorBoundary, MONO_FONT } from './Ui';
 import { DraftLayer } from './DraftView';
 import { useDraft } from './Draft';
 
@@ -3559,18 +3560,14 @@ function RotateRefConfirmOnRightClick() {
 
 /* ─────────────────────────── SAHNE EXTRUDE ───────────────────────────
    Tek başına seçili panelin her düz yüzünde: Fixed / Dyn modunda OK, Ref modunda NOKTA. Tip (Fixed / Dyn / Ref) HER OKUN KENDİSİNE aittir: okun yanındaki
-   küçük düğme (SceneExTypeBtn) her basışta o okun tipini çevirir, okun dönmesi tipi anlatır. Değer girişi okun ucunda, çerçevesiz. Ok kenarın GİDECEĞİ yöne bakar: Fixed içeri (kenar karşı kenardan ölçülen sabit
+   döngü düğmesi (SceneExTypeBtn) o okun tipini çevirir, okun dönmesi tipi anlatır; açıklama durum çubuğunda. Araç Assembly'deki
+   Extrude düğmesiyle açılır (sceneExtrudePanelId). Değer girişi okun ucunda, çerçevesiz. Ok kenarın GİDECEĞİ yöne bakar: Fixed içeri (kenar karşı kenardan ölçülen sabit
    ölçüye çekilir), Dyn dışarı (değer kadar oynar); girilen değer yönü değiştirirse ok da döner. Üzerine gelinen / seçili kenarın nereye
    gideceğini akan hayalet çizgiler ve taranan hacim gösterir (kısalma kırmızı, uzama mavi). Adım motoru aynı: executeFaceExtrude / ref onayı. */
 
 type SceneExMode = 'fixed' | 'dyn' | 'ref';
 const SCENE_EX_ORDER: SceneExMode[] = ['fixed', 'dyn', 'ref'];
 const SCENE_EX_LABEL: Record<SceneExMode, string> = { fixed: 'Fixed', dyn: 'Dyn', ref: 'Ref' };
-const SCENE_EX_HELP: Record<SceneExMode, string> = {
-  fixed: 'Fixed — the edge goes to a fixed size, measured from the opposite edge',
-  dyn: 'Dyn — the edge moves by a value from where it is now (+ out, − in)',
-  ref: 'Ref — click the point, then the face the edge should reach; right-click confirms',
-};
 /** Okların tipi panel başına, oturum boyunca hatırlanır (anahtar: yüzün kalıcı adı — `SceneFace.key`). Kayda yazılmaz. */
 const _exTypes = new Map<string, Record<string, SceneExMode>>();
 const SCENE_EX = {
@@ -3681,9 +3678,9 @@ function sceneFacesOf(panel: Shape): SceneFace[] {
   return out;
 }
 
-/** Sahne extrude hedefi: tek başına seçili panel satırının paneli. Başka araç / yerleştirme / çizim / gövde düzenleme açıkken yok. */
+/** Sahne extrude hedefi: tek başına seçili panel satırının paneli, Extrude aracı O panelde açıkken. Başka araç / yerleştirme / çizim / gövde düzenleme açıkken yok. */
 function useSceneExtrudePanel(): Shape | null {
-  const s = useStoreFields('shapes', 'selectedShapeId', 'selectedPanelRow', 'panelMoveMode', 'panelRotateMode', 'raycastMode', 'volumePickMode',
+  const s = useStoreFields('shapes', 'selectedShapeId', 'selectedPanelRow', 'sceneExtrudePanelId', 'panelMoveMode', 'panelRotateMode', 'raycastMode', 'volumePickMode',
     'doorPickMode', 'backPickMode', 'plinthPickMode', 'quickBodyMode', 'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeCavityGroupId',
     'faceExtrudePlinthId', 'doorRefPickGroupId', 'backRefPickGroupId', 'vertexEditMode', 'faceEditMode', 'filletMode');
   const drafting = useDraft(st => !!st.isolate || !!st.bodyPreview || !!st.planePick);
@@ -3694,6 +3691,7 @@ function useSceneExtrudePanel(): Shape | null {
   const panel = typeof row === 'number' ? childPanelsOf(s.selectedShapeId, s.shapes).find(p => p.parameters?.faceIndex === row)
     : row.startsWith('vf-') ? s.shapes.find(p => p.type === 'panel' && p.parameters?.virtualFaceId === row.slice(3)) : undefined;
   if (!panel?.geometry || panel.parameters?.parentShapeId !== s.selectedShapeId) return null;
+  if (panel.id !== s.sceneExtrudePanelId) return null;   // yalnız Assembly'deki Extrude düğmesiyle açılır
   if (s.faceExtrudeMode && (s.faceExtrudeCavityGroupId || s.faceExtrudePlinthId || s.faceExtrudeTargetPanelId !== panel.id)) return null;
   return panel;
 }
@@ -3759,18 +3757,28 @@ const fmtEx = (v: number) => String(round1(v));
 const EX_HALO = '0 0 2px #fffdf9,0 0 2px #fffdf9,0 0 4px #fffdf9,0 0 6px #fffdf9,0 1px 1px rgba(255,253,249,0.9)';
 const EX_TEXT: React.CSSProperties = { fontFamily: MONO_FONT, fontWeight: 650, color: SCENE_EX.ink, textShadow: EX_HALO, userSelect: 'none', whiteSpace: 'nowrap' };
 
-/** Okun yanındaki tip düğmesi: o okun tipini çevirir (Fixed → Dyn → Ref). Harf = şimdiki tip, renk = tipin rengi. */
+/** Okun yanındaki DEĞİŞTİR düğmesi: yalnız döngü simgesi (yazı yok — okun kendisi tipi gösterir, açıklama durum çubuğunda). Basınca o okun
+ *  tipi Fixed → Dyn → Ref çevrilir; simge her basışta yarım tur döner, üzerine gelince hafifçe döner ve tipin renginde kenar alır. */
 function SceneExTypeBtn({ type, onCycle, onHover }: { type: SceneExMode; onCycle: () => void; onHover: (h: boolean) => void }) {
-  const c = SCENE_EX[type].main, next = SCENE_EX_ORDER[(SCENE_EX_ORDER.indexOf(type) + 1) % SCENE_EX_ORDER.length];
+  const c = SCENE_EX[type].main;
+  const [hov, setHov] = useState(false);
+  const [turns, setTurns] = useState(0);
+  const hover = (h: boolean) => { setHov(h); onHover(h); };
   return (
-    <button type="button" title={`${SCENE_EX_HELP[type]}\nClick to switch this arrow → ${SCENE_EX_LABEL[next]}`}
-      onClick={e => { e.stopPropagation(); onCycle(); }} onMouseDown={e => e.preventDefault()} onPointerDown={e => e.stopPropagation()}
-      onMouseEnter={() => onHover(true)} onMouseLeave={() => onHover(false)} onContextMenu={e => e.preventDefault()}
+    <button type="button" aria-label="Switch arrow type"
+      onClick={e => { e.stopPropagation(); setTurns(t => t + 1); onCycle(); }} onMouseDown={e => e.preventDefault()} onPointerDown={e => e.stopPropagation()}
+      onMouseEnter={() => hover(true)} onMouseLeave={() => hover(false)} onContextMenu={e => e.preventDefault()}
       style={{
-        pointerEvents: 'auto', width: 16, height: 16, borderRadius: 8, padding: 0, margin: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-        border: `1px solid ${c}`, background: '#fffdf9', color: c, fontFamily: UI_FONT, fontSize: 9, fontWeight: 750, lineHeight: 1, cursor: 'pointer',
-        boxShadow: '0 1px 2px rgba(40,30,20,0.2)', outline: 'none',
-      }}>{SCENE_EX_LABEL[type][0]}</button>
+        pointerEvents: 'auto', width: 20, height: 20, borderRadius: 10, padding: 0, margin: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: hov ? '#ffffff' : 'rgba(255,253,249,0.94)', color: c, cursor: 'pointer', outline: 'none',
+        border: `1px solid ${hov ? c : 'rgba(60,50,40,0.16)'}`,
+        boxShadow: hov ? `0 0 0 3px ${c}1f,0 2px 6px -2px rgba(40,30,20,0.35)` : '0 1px 3px rgba(40,30,20,0.18),inset 0 1px 0 #fff',
+        transform: `scale(${hov ? 1.1 : 1})`, transition: 'transform 0.15s, border-color 0.15s, box-shadow 0.15s, background 0.15s, color 0.2s',
+      }}>
+      <RefreshCw size={11} strokeWidth={2.3} style={{
+        display: 'block', transform: `rotate(${turns * 180 + (hov ? 30 : 0)}deg)`, transition: 'transform 0.38s cubic-bezier(0.34,1.4,0.5,1)',
+      }} />
+    </button>
   );
 }
 
@@ -4048,6 +4056,7 @@ export function PanelSceneExtrude({ panel }: { panel: Shape }) {
   const [types, setTypes] = useState<Record<string, SceneExMode>>(() => _exTypes.get(panel.id) ?? {});
   const typeOf = (f: SceneFace): SceneExMode => types[f.key] ?? 'fixed';
   const [hover, setHover] = useState<number | null>(null);
+  const [swHover, setSwHover] = useState<number | null>(null);
   const [entry, setEntry] = useState<{ key: string; text: string } | null>(null);
   const activeGi = S.faceExtrudeMode && S.faceExtrudeTargetPanelId === panel.id ? S.faceExtrudeSelectedFace : null;
   const active = activeGi !== null ? faces.find(f => f.gi === activeGi) ?? null : null;
@@ -4117,6 +4126,22 @@ export function PanelSceneExtrude({ panel }: { panel: Shape }) {
   }, [mode, active, S.faceExtrudeRefCandidate, faces, world]);
   const hovered = hover !== null ? faces.find(f => f.gi === hover) ?? null : null;
   const previewFace = active ?? hovered;
+  // Durum çubuğu: okun yanında yazı yok — tip ve ne yaptığı burada.
+  const swFace = swHover !== null ? faces.find(f => f.gi === swHover) ?? null : null;
+  const refCand = !!S.faceExtrudeRefCandidate && S.faceExtrudeRefCandidate.faceGroupIndex >= 0;
+  const status: { type: SceneExMode | null; text: string } = swFace
+    ? { type: typeOf(swFace), text: `switch this arrow → ${SCENE_EX_LABEL[SCENE_EX_ORDER[(SCENE_EX_ORDER.indexOf(typeOf(swFace)) + 1) % 3]]}` }
+    : active && mode
+      ? { type: mode, text: mode === 'ref'
+          ? (refCand ? 'right-click to confirm · click again for the face behind · Esc cancels' : 'click the face the edge should reach · Esc cancels')
+          : mode === 'fixed' ? `type the size from the opposite edge (now ${fmtEx(active.span)} mm) · Enter applies · Esc cancels`
+          : 'type how far it moves: + out, − in · Enter applies · Esc cancels' }
+      : hovered
+        ? { type: typeOf(hovered), text: typeOf(hovered) === 'fixed' ? `the edge goes to a size measured from the opposite edge (now ${fmtEx(hovered.span)} mm)`
+            : typeOf(hovered) === 'dyn' ? 'the edge moves from where it is now: + out, − in' : 'the edge goes up to a face you pick, and follows it' }
+        : { type: null, text: 'click an arrow to move that edge · the round button next to an arrow switches its type (Fixed · Dyn · Ref)' };
+  useEffect(() => { useAppStore.getState().setSceneExStatus(status); }, [status.type, status.text]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => useAppStore.getState().setSceneExStatus(null), []);
   const pType = previewFace ? typeOf(previewFace) : 'fixed', PC = SCENE_EX[pType];
   const previewAmount = !previewFace ? null
     : pType === 'ref' ? (previewFace === active ? refAmount : null)
@@ -4125,7 +4150,8 @@ export function PanelSceneExtrude({ panel }: { panel: Shape }) {
     <group>
       {faces.map((f, i) => {
         const t = typeOf(f), C = SCENE_EX[t], isActive = f === active, lit = isActive || hover === f.gi;
-        const typeBtn = <SceneExTypeBtn type={t} onCycle={() => cycleType(f)} onHover={h => hoverFace(f.gi, h)} />;
+        const typeBtn = <SceneExTypeBtn type={t} onCycle={() => cycleType(f)}
+          onHover={h => { hoverFace(f.gi, h); setSwHover(cur => (h ? f.gi : cur === f.gi ? null : cur)); }} />;
         if (t === 'ref') {
           return (
             <SceneExDot key={f.key} position={world[i].origin} normal={world[i].normal} rail={world[i].rail} thick={f.thick} selected={isActive}
@@ -4201,6 +4227,8 @@ const Scene: React.FC = () => {
         if (st.backPickMode) { st.setBackPickMode(false); return; }
         if (st.plinthPickMode) { st.setPlinthPickMode(false); return; }
         if (isPlinthRow(st.selectedPanelRow)) { finishPlinthEdit(); return; }   // seçili baza seti: önce seti bırak
+        // Sahne extrude: seçili kenar yoksa araç kapanır. preventDefault → kenar çubuğunun Esc'i (aynı tuşta) şeridi kapatmasın.
+        if (st.sceneExtrudePanelId && !st.faceExtrudeMode) { e.preventDefault(); st.setSceneExtrudePanelId(null); return; }
         if (st.faceExtrudeMode || st.panelMoveMode || st.panelRotateMode) {
           if (st.faceExtrudeMode) { st.setFaceExtrudeSelectedFace(null); st.setFaceExtrudeRefCandidate(null); st.setFaceExtrudeMode(false); }
           if (st.panelMoveMode) { st.setPanelMoveAxis(null); st.setPanelMoveMode(false); }
