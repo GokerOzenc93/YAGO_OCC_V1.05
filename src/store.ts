@@ -606,6 +606,8 @@ export enum SnapType {
 }
 export enum OrthoMode { ON = 'on', OFF = 'off' }
 
+/** Sahne aracının (Extrude / Move / Rotate) durum çubuğu satırı: araç adı, tip ve ne yapılacağı. */
+export type SceneToolStatus = { label: string; type: 'fixed' | 'dyn' | 'ref' | null; text: string };
 export type RefFacePick = { panelId: string; faceGroupIndex: number; normalWorld: Vec3; pointWorld: Vec3 };
 type FilletFaceData = { normal: Vec3; center: Vec3; planeD?: number };
 
@@ -650,8 +652,8 @@ export interface AppState {
   /** Sahne extrude aracı (Assembly › panel satırı › Extrude): okların çizildiği panel. null = araç kapalı. Kapanınca o paneldeki yüz extrude da düşer. */
   sceneExtrudePanelId: string | null; setSceneExtrudePanelId: (id: string | null) => void;
   /** Sahne extrude'un durum çubuğu satırı: üzerine gelinen / seçili okun tipi ve ne yaptığı (Scene yazar, StatusBar çizer). */
-  sceneExStatus: { type: 'fixed' | 'dyn' | 'ref' | null; text: string } | null;
-  setSceneExStatus: (s: { type: 'fixed' | 'dyn' | 'ref' | null; text: string } | null) => void;
+  sceneExStatus: SceneToolStatus | null;
+  setSceneExStatus: (s: SceneToolStatus | null) => void;
   faceEditMode: boolean; setFaceEditMode: (b: boolean) => void;
 
   panelGroups: PanelGroup[];
@@ -768,7 +770,6 @@ export interface AppState {
   panelMoveMode: boolean; setPanelMoveMode: (b: boolean) => void;
   panelMoveTargetPanelId: string | null; setPanelMoveTargetPanelId: (id: string | null) => void;
   panelMoveAxis: AxisDir | null; setPanelMoveAxis: (a: AxisDir | null) => void;
-  panelMoveValue: number; setPanelMoveValue: (v: number) => void;
   panelMoveValueMode: 'dyn' | 'fixed' | 'ref'; setPanelMoveValueMode: (m: 'dyn' | 'fixed' | 'ref') => void;
   panelMoveRefSourceVertex: Vec3 | null; setPanelMoveRefSourceVertex: (v: Vec3 | null) => void;
   panelMoveRefTargetPanelId: string | null; setPanelMoveRefTargetPanelId: (id: string | null) => void;
@@ -778,7 +779,6 @@ export interface AppState {
   panelRotateTargetPanelId: string | null; setPanelRotateTargetPanelId: (id: string | null) => void;
   panelRotatePivot: Vec3 | null; setPanelRotatePivot: (p: Vec3 | null) => void;
   panelRotateAxis: 'x' | 'y' | 'z' | null; setPanelRotateAxis: (a: 'x' | 'y' | 'z' | null) => void;
-  panelRotateValue: number; setPanelRotateValue: (v: number) => void;
   /** null = mod HENÜZ seçilmedi (sahnede nokta/halka yok). 'ref': pivot → nişan → eksen → referans yüz → sağ tık. */
   panelRotateValueMode: 'dyn' | 'ref' | null; setPanelRotateValueMode: (m: 'dyn' | 'ref' | null) => void;
   /** Dönen panelin referansa NİŞAN alan kendi noktası. */
@@ -981,7 +981,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   sceneExStatus: null,
   setSceneExStatus: (v) => {
     const c = get().sceneExStatus;
-    if (c === v || (c && v && c.type === v.type && c.text === v.text)) return;
+    if (c === v || (c && v && c.label === v.label && c.type === v.type && c.text === v.text)) return;
     set({ sceneExStatus: v });
   },
   faceEditMode: false, setFaceEditMode: (b) => set({ faceEditMode: b }),
@@ -1135,13 +1135,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPanelMoveMode: (b) => set({
     panelMoveMode: b,
     ...(!b ? {
-      panelMoveTargetPanelId: null, panelMoveAxis: null, panelMoveValue: 0, panelMoveValueMode: 'dyn' as const,
+      panelMoveTargetPanelId: null, panelMoveAxis: null, panelMoveValueMode: 'dyn' as const,
       panelMoveRefSourceVertex: null, panelMoveRefTargetPanelId: null, panelMoveRefTargetVertex: null,
     } : {}),
   }),
   panelMoveTargetPanelId: null, setPanelMoveTargetPanelId: (id) => set({ panelMoveTargetPanelId: id }),
   panelMoveAxis: null, setPanelMoveAxis: (a) => set({ panelMoveAxis: a }),
-  panelMoveValue: 0, setPanelMoveValue: (v) => set({ panelMoveValue: v }),
   panelMoveValueMode: 'dyn',
   setPanelMoveValueMode: (m) => set({ panelMoveValueMode: m, panelMoveRefSourceVertex: null, panelMoveRefTargetPanelId: null, panelMoveRefTargetVertex: null }),
   panelMoveRefSourceVertex: null, setPanelMoveRefSourceVertex: (v) => set({ panelMoveRefSourceVertex: v }),
@@ -1152,18 +1151,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   panelRotateMode: false,
   setPanelRotateMode: (b) => set({
     panelRotateMode: b,
-    panelRotatePivot: null, panelRotateAxis: null, panelRotateValue: 0,
-    panelRotateValueMode: null, panelRotateRefArmVertex: null, panelRotateRefFace: null,
+    panelRotatePivot: null, panelRotateAxis: null,
+    panelRotateValueMode: b ? 'dyn' : null, panelRotateRefArmVertex: null, panelRotateRefFace: null,
     ...(!b ? { panelRotateTargetPanelId: null } : {}),
   }),
   panelRotateTargetPanelId: null, setPanelRotateTargetPanelId: (id) => set({ panelRotateTargetPanelId: id }),
   panelRotatePivot: null, setPanelRotatePivot: (p) => set({ panelRotatePivot: p }),
   panelRotateAxis: null, setPanelRotateAxis: (a) => set({ panelRotateAxis: a }),
-  panelRotateValue: 0, setPanelRotateValue: (v) => set({ panelRotateValue: v }),
   // Mod seçimi/değişimi akışı BAŞA alır (yarım kalmış seçim taşınmaz).
   panelRotateValueMode: null,
   setPanelRotateValueMode: (m) => set({
-    panelRotateValueMode: m, panelRotatePivot: null, panelRotateAxis: null, panelRotateValue: 0,
+    panelRotateValueMode: m, panelRotatePivot: null, panelRotateAxis: null,
     panelRotateRefArmVertex: null, panelRotateRefFace: null,
   }),
   panelRotateRefArmVertex: null, setPanelRotateRefArmVertex: (v) => set({ panelRotateRefArmVertex: v }),

@@ -8,7 +8,7 @@ import { createClient } from '@supabase/supabase-js';
 import * as THREE from 'three';
 import { Canvas } from '@react-three/fiber';
 import { PerspectiveCamera, OrbitControls } from '@react-three/drei';
-import { useStoreFields, shapeById, ViewMode, type Shape, Tool, CameraType, OrthoMode, useAppStore, childPanelsOf, requestRebuild } from '../store';
+import { useStoreFields, shapeById, ViewMode, type Shape, Tool, CameraType, OrthoMode, useAppStore, childPanelsOf, requestRebuild, type SceneToolStatus } from '../store';
 import {
   translatedBboxOf, createReplicadBox, convertReplicadToThreeGeometry, type Vec3, performBooleanCut, getReplicadVertices, evaluateExpression,
   axisIndexOf, applyShapeChanges, rebuildBodySolid,
@@ -352,12 +352,12 @@ function BusyStatus({ view, live }: { view: NonNullable<ReturnType<typeof useApp
   );
 }
 
-/** Sahne extrude satırı: üzerine gelinen / seçili okun tipi (renkli nokta + ad) ve ne yaptığı. Okun yanında yazı yok — açıklama burada. */
+/** Sahne aracı satırı (Extrude / Move / Rotate): araç adı, tipi (renkli nokta + ad) ve ne yapılacağı. Sahnede yazı yok — açıklama burada. */
 const EX_STATUS_CLR = { fixed: '#1f5578', dyn: '#d9540a', ref: '#a16207' } as const;
 const EX_STATUS_NAME = { fixed: 'Fixed', dyn: 'Dyn', ref: 'Ref' } as const;
-const ExtrudeStatus: React.FC<{ status: { type: 'fixed' | 'dyn' | 'ref' | null; text: string } }> = ({ status }) => (
+const ExtrudeStatus: React.FC<{ status: SceneToolStatus }> = ({ status }) => (
   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, overflow: 'hidden' }}>
-    <span style={{ color: TOKENS.labelClr, fontSize: '11px', fontWeight: 420, letterSpacing: '0.04em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>Extrude</span>
+    <span style={{ color: TOKENS.labelClr, fontSize: '11px', fontWeight: 420, letterSpacing: '0.04em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{status.label}</span>
     {status.type && <>
       <span style={{ width: 7, height: 7, borderRadius: 4, background: EX_STATUS_CLR[status.type], flexShrink: 0 }} />
       <span style={{ color: EX_STATUS_CLR[status.type], fontSize: '11.5px', fontWeight: 620, whiteSpace: 'nowrap' }}>{EX_STATUS_NAME[status.type]}</span>

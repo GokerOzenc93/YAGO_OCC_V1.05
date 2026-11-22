@@ -33,8 +33,8 @@ import {
   setDoorJointRef, setDoorJointOverlay,
 } from './DoorService';
 import {
-  round1, localBboxOf, effectiveBodyGeometry, confirmRefFaceExtrude, executeFaceExtrude, executeFaceExtrudeOuter, confirmPanelMoveRef, executePanelMoveFixed, executePanelMove,
-  confirmPanelRotateRef, executePanelRotate, type ExtrudeStep, type TransformStep, updateExtrudeStep, updateTransformStep, deleteExtrudeStep,
+  round1, localBboxOf, effectiveBodyGeometry, confirmRefFaceExtrude, executeFaceExtrude, executeFaceExtrudeOuter,
+  type ExtrudeStep, type TransformStep, updateExtrudeStep, updateTransformStep, deleteExtrudeStep,
   deleteTransformStep, createPanelFromVirtualFace, convertReplicadToThreeGeometry, genId,
 } from './Geometry';
 import {
@@ -93,19 +93,16 @@ export const dockAxisTag = (color: string): React.CSSProperties => ({
   flexShrink: 0, fontSize: 10, fontWeight: 700, fontFamily: UI_FONT, letterSpacing: '0.06em', color, height: 22, lineHeight: '22px', padding: '0 7px',
   borderRadius: 5, background: color === '#44403c' ? '#ece7e0' : '#f3f0ea',
 });
-export function DockStatus({ ready = false, dot, text, title, trailing }: {
-  ready?: boolean; dot?: string; text: string; title?: string; trailing?: React.ReactNode;
-}) {
+export function DockStatus({ ready = false, text, title }: { ready?: boolean; text: string; title?: string }) {
   return (
     <div title={title} style={{
       flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 26, padding: '0 9px', borderRadius: 6,
       background: ready ? 'rgba(22,163,74,0.07)' : 'rgba(60,50,40,0.045)', border: ready ? '1px solid rgba(22,163,74,0.22)' : '1px solid transparent',
     }}>
-      <span style={{ width: 5, height: 5, borderRadius: '50%', background: dot ?? (ready ? '#16a34a' : INK.faint), flexShrink: 0 }} />
+      <span style={{ width: 5, height: 5, borderRadius: '50%', background: ready ? '#16a34a' : INK.faint, flexShrink: 0 }} />
       <span style={{ fontSize: 11, fontWeight: 500, color: ready ? '#15803d' : INK.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {text}
       </span>
-      {trailing}
     </div>
   );
 }
@@ -185,14 +182,11 @@ const DOCK_MODE_DEFS: Record<string, Omit<DockMode, 'key'>> = {
 };
 export const dockModes = (keys: string[], overrides: Record<string, Partial<DockMode>> = {}): DockMode[] =>
   keys.map(k => ({ key: k, ...DOCK_MODE_DEFS[k], ...(overrides[k] || {}) } as DockMode));
-export function DockModeBar({ modes, active, onPick, trailing }: {
-  modes: DockMode[]; active: string | null; onPick: (k: string) => void; trailing?: React.ReactNode;
-}) {
+export function DockModeBar({ modes, active, onPick }: { modes: DockMode[]; active: string | null; onPick: (k: string) => void }) {
   const items = modes.map(m => ({ key: m.key, label: m.label, Icon: m.Icon, title: m.title || `${m.label} — ${m.sub}` }));
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '5px 5px 0' }}>
       <div style={{ flex: 1, minWidth: 0 }}><Segmented active={active} onPick={onPick} items={items} /></div>
-      {trailing}
     </div>
   );
 }
@@ -1876,15 +1870,7 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
 type Ax = 'u' | 'v';
 type DraftProps = { draft: string; setDraft: (s: string) => void };
 
-/* ───────────── ŞERİTLER (Extrude · Hacim · Taşı · Döndür) ───────────── */
-
-/** Eksen etiketi + sayı girişi (Taşı / Döndür). */
-const axisInput = (axis: string, { draft, setDraft }: DraftProps, setValue: (v: number) => void, onEnter: () => void, onEscape: () => void) => (
-  <>
-    <span style={dockAxisTag(AXIS_COLORS[axis] || '#44403c')}>{axis.toUpperCase()}</span>
-    <NumInput autoFocus draft={draft} setDraft={setDraft} setValue={setValue} fallback={0} onEnter={onEnter} onEscape={onEscape} />
-  </>
-);
+/* ───────────── ŞERİTLER (Hacim · Baza seti extrude) — panelin Extrude / Move / Rotate araçları sahnededir (Scene) ───────────── */
 
 /** Ok uygulaması sürerken ikinci onay yok sayılır (Enter + düğme aynı anda). */
 let _arrowApplyBusy = false;
@@ -1993,127 +1979,6 @@ export function ExtrudeDock({ panel, cavity, plinth, draft, setDraft, onDone }: 
   );
 }
 const AXIS_LABEL: Record<string, string> = { 'x+': '+X', 'x-': '−X', 'y+': '+Y', 'y-': '−Y', 'z+': '+Z', 'z-': '−Z' };
-
-const MOVE_REF_STEPS = ['Pick the source point', 'Pick the target panel', 'Pick the target point', 'Ready — right-click to confirm'];
-export function MoveDock({ panel, onDone, ...draft }: DraftProps & { panel?: Shape; onDone?: () => void }) {
-  const {
-    panelMoveMode, panelMoveAxis, panelMoveValue, panelMoveValueMode, panelMoveRefSourceVertex, panelMoveRefTargetPanelId, panelMoveRefTargetVertex,
-  } = useStoreFields('panelMoveMode', 'panelMoveAxis', 'panelMoveValue', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId',
-    'panelMoveRefTargetVertex');
-  if (!panel || !panelMoveMode) return null;
-  const {
-    setPanelMoveAxis, setPanelMoveMode, setPanelMoveValue, setPanelMoveValueMode, setPanelMoveRefSourceVertex, setPanelMoveRefTargetPanelId,
-    setPanelMoveRefTargetVertex, setSelectedPanelRow, updateShape,
-  } = useAppStore.getState();
-  const isRef = panelMoveValueMode === 'ref', hasAxis = panelMoveAxis !== null;
-  const refStep = !panelMoveRefSourceVertex ? 0 : !panelMoveRefTargetPanelId ? 1 : !panelMoveRefTargetVertex ? 2 : 3;
-  const refReady = isRef && refStep === 3;
-  const exit = () => { setPanelMoveAxis(null); setPanelMoveMode(false); if (isRef) setSelectedPanelRow(null); };
-  const onApply = async () => {
-    if (isRef) { if (!refReady) return; await confirmPanelMoveRef(); setSelectedPanelRow(null); }
-    else {
-      if (!hasAxis) return;
-      const move = panelMoveValueMode === 'fixed' ? executePanelMoveFixed : executePanelMove;
-      await move({ panelShape: panel, axis: panelMoveAxis!, value: panelMoveValue, updateShape });
-    }
-    setPanelMoveAxis(null); setPanelMoveValue(0); draft.setDraft('0'); setPanelMoveMode(false);
-    onDone?.();
-  };
-  return (
-    <div style={DOCK_SHELL}>
-      <DockModeBar active={panelMoveValueMode}
-        modes={dockModes(['dyn', 'fixed', 'ref'], {
-          dyn: { sub: 'Relative' }, fixed: { sub: 'Absolute', title: 'Fixed — absolute position' }, ref: { sub: 'To point' },
-        })}
-        onPick={k => {
-          setPanelMoveValueMode(k as 'dyn' | 'fixed' | 'ref');
-          if (k === 'ref') { setPanelMoveAxis(null); return; }
-          setPanelMoveRefSourceVertex(null); setPanelMoveRefTargetPanelId(null); setPanelMoveRefTargetVertex(null);
-        }} />
-      <div style={DOCK_ROW}>
-        {isRef ? <DockStatus ready={refReady} text={MOVE_REF_STEPS[refStep]} />
-          : !hasAxis ? <DockStatus text="Pick a direction arrow in the 3D view" />
-          : axisInput(panelMoveAxis!, draft, setPanelMoveValue, onApply, () => { setPanelMoveAxis(null); setPanelMoveMode(false); })}
-        <ApplyBtn enabled={isRef ? refReady : hasAxis} onClick={onApply} />
-        <ExitBtn onClick={exit} />
-      </div>
-    </div>
-  );
-}
-
-const ROTATE_REF_STEPS: Array<[string, string]> = [
-  ['1/4 · Pivot point', 'The point the panel rotates around (its own corners or center)'],
-  ['2/4 · Aim point', 'The point that will TOUCH the reference face — another point on the SAME panel'],
-  ['3/4 · Axis ring', 'Rotation axis: pick the X / Y / Z ring in the scene'],
-  ['4/4 · Reference face', 'Click a face on another panel (click the same spot again for the face behind). The panel rotates until the aim point touches it.'],
-  ['Ready — right-click to confirm', 'Right-click anywhere in the scene — the link is kept and the reference panel edge is beveled to the slope'],
-];
-/* Döndürme ref modu: onaydan sonra bağ KALICIDIR — referans taşındıkça panel nişan noktasıyla yeniden döner. */
-export function RotateDock({ panel, onDone, ...draft }: DraftProps & { panel?: Shape; onDone?: () => void }) {
-  const { panelRotateMode, panelRotatePivot, panelRotateAxis, panelRotateValue, panelRotateValueMode, panelRotateRefArmVertex, panelRotateRefFace } =
-    useStoreFields('panelRotateMode', 'panelRotatePivot', 'panelRotateAxis', 'panelRotateValue', 'panelRotateValueMode', 'panelRotateRefArmVertex',
-      'panelRotateRefFace');
-  if (!panel || !panelRotateMode) return null;
-  const { setPanelRotateAxis, setPanelRotatePivot, setPanelRotateMode, setPanelRotateValue, setPanelRotateValueMode, setSelectedPanelRow, updateShape } =
-    useAppStore.getState();
-  const isRef = panelRotateValueMode === 'ref';
-  const hasPivot = panelRotatePivot !== null, hasAxis = panelRotateAxis !== null, hasArm = panelRotateRefArmVertex !== null;
-  const refReady = isRef && hasPivot && hasArm && hasAxis && !!panelRotateRefFace;
-  const exit = () => { setPanelRotateAxis(null); setPanelRotatePivot(null); setPanelRotateMode(false); if (isRef) setSelectedPanelRow(null); };
-  const onApply = async () => {
-    if (isRef) { if (!refReady) return; await confirmPanelRotateRef(); setPanelRotateMode(false); setSelectedPanelRow(null); onDone?.(); return; }
-    if (!hasAxis || !hasPivot) return;
-    await executePanelRotate({ panelShape: panel, axis: panelRotateAxis!, value: panelRotateValue, pivot: panelRotatePivot!, updateShape });
-    setPanelRotateAxis(null); setPanelRotateValue(0); draft.setDraft('0');
-    onDone?.();
-  };
-  const modeBar = (trailing?: React.ReactNode) => (
-    <DockModeBar trailing={trailing} active={panelRotateValueMode}
-      modes={dockModes(['dyn', 'ref'], {
-        dyn: { sub: 'Angle', title: 'Enter an angle: pivot → axis → degrees' },
-        ref: { sub: 'Aim at face', title: 'Rotate to a reference: pivot → aim point → axis → reference face → right-click' },
-      })}
-      onPick={k => { setPanelRotateValueMode(k as 'dyn' | 'ref'); draft.setDraft('0'); }} />
-  );
-  // Mod seçilene kadar gizmo null döner (sahnede nokta/halka yok).
-  if (panelRotateValueMode === null) return (
-    <div style={DOCK_SHELL}>
-      {modeBar(<div style={{ display: 'flex', alignItems: 'center' }}><ExitBtn onClick={exit} /></div>)}
-      <div style={{ padding: '5px 10px 7px', fontSize: 10.5, fontWeight: 500, color: '#a8a29e', fontFamily: UI_FONT }}>Choose a rotation mode</div>
-    </div>
-  );
-  if (isRef) {
-    const [text, hint] = ROTATE_REF_STEPS[!hasPivot ? 0 : !hasArm ? 1 : !hasAxis ? 2 : !panelRotateRefFace ? 3 : 4];
-    return (
-      <div style={DOCK_SHELL}>
-        {modeBar()}
-        <div style={DOCK_ROW}>
-          <DockStatus ready={refReady} text={text} title={hint} trailing={hasAxis && (
-            <span style={{ marginLeft: 'auto', fontSize: 10.5, fontWeight: 700, color: AXIS_COLORS[panelRotateAxis!] || '#44403c' }}>{panelRotateAxis!.toUpperCase()}</span>
-          )} />
-          <ApplyBtn enabled={refReady} onClick={onApply} />
-          <ExitBtn onClick={exit} />
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div style={DOCK_SHELL}>
-      {modeBar()}
-      <div style={DOCK_ROW}>
-        {hasAxis && hasPivot ? (
-          <>
-            {axisInput(panelRotateAxis!, draft, setPanelRotateValue, onApply, () => { setPanelRotateAxis(null); setPanelRotateMode(false); })}
-            <span style={{ fontSize: 12, fontWeight: 500, color: '#a8a29e', marginLeft: -2 }}>°</span>
-            <ApplyBtn enabled onClick={onApply} />
-          </>
-        ) : hasPivot ? <DockStatus dot="#f59e0b" text="Pick an axis (X/Y/Z ring)" />
-          : <DockStatus dot="#06b6d4" text="Pick a pivot point (corners/center)" />}
-        <ExitBtn onClick={exit} />
-      </div>
-    </div>
-  );
-}
 
 /* ───────────── İŞLEM ADIMLARI ───────────── */
 
@@ -2760,11 +2625,6 @@ const missing = (id: string | null, list: Array<{ id: string }>) => !!id && !lis
 /** Normalin baskın ekseni (0 / 1 / 2). */
 const domAxis = (n: number[]) => { const a = n.map(Math.abs); return a.indexOf(Math.max(...a)); };
 
-/** Değer değişince (ilk render hariç) çalışır. */
-function useOnChange<T>(value: T, fn: () => void) {
-  const prev = useRef(value);
-  useEffect(() => { if (prev.current !== value) { prev.current = value; fn(); } }, [value]);
-}
 /** Anahtarlı satırı görünür alana kaydırır (render sonrası 60 ms). */
 function useScrollIntoView(rows: React.MutableRefObject<Map<number | string, HTMLDivElement>>, key: number | string | null) {
   useEffect(() => {
@@ -2778,13 +2638,13 @@ export function AssemblyPanel() {
   const {
     selectedShapeId, shapes, selectedPanelRow, virtualFaces, panelGroups, selectedPanelGroupId, volumePickMode, volumePickGroupId,
     faceExtrudeMode, faceExtrudeTargetPanelId, faceExtrudeClickPoint, faceExtrudeValueMode, faceExtrudeCavityGroupId,
-    faceExtrudeCavityFaceNormal, panelMoveMode, panelMoveTargetPanelId, panelMoveAxis, panelRotateMode, panelRotateTargetPanelId, panelRotateAxis,
+    faceExtrudeCavityFaceNormal, panelMoveMode, panelMoveTargetPanelId, panelRotateMode, panelRotateTargetPanelId,
     doorGroups, selectedDoorGroupId, doorRefPickGroupId, backGroups, selectedBackGroupId, backRefPickGroupId, quickBodyMode, quickBodyConfig, quickBodyBusy,
     plinthSets, faceExtrudePlinthId, raycastMode, doorPickMode, backPickMode, plinthPickMode, sceneExtrudePanelId,
   } = useStoreFields(
     'selectedShapeId', 'shapes', 'selectedPanelRow', 'virtualFaces', 'panelGroups', 'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId',
     'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeClickPoint', 'faceExtrudeValueMode', 'faceExtrudeCavityGroupId',
-    'faceExtrudeCavityFaceNormal', 'panelMoveMode', 'panelMoveTargetPanelId', 'panelMoveAxis', 'panelRotateMode', 'panelRotateTargetPanelId', 'panelRotateAxis',
+    'faceExtrudeCavityFaceNormal', 'panelMoveMode', 'panelMoveTargetPanelId', 'panelRotateMode', 'panelRotateTargetPanelId',
     'doorGroups', 'selectedDoorGroupId', 'doorRefPickGroupId', 'backGroups', 'selectedBackGroupId', 'backRefPickGroupId', 'quickBodyMode', 'quickBodyConfig',
     'quickBodyBusy', 'plinthSets', 'faceExtrudePlinthId', 'raycastMode', 'doorPickMode', 'backPickMode', 'plinthPickMode', 'sceneExtrudePanelId',
   );
@@ -2792,8 +2652,8 @@ export function AssemblyPanel() {
   const {
     updateShape, deleteShape, setSelectedPanelRow, updateVirtualFace, deleteVirtualFace, reorderVirtualFaceGroup, updatePanelGroup,
     setFaceExtrudeMode, setFaceExtrudeTargetPanelId, setFaceExtrudeSelectedFace, setFaceExtrudeThickness, setFaceExtrudeValueMode, setFaceExtrudeRefCandidate,
-    setPanelMoveMode, setPanelMoveTargetPanelId, setPanelMoveAxis, setPanelMoveValue, setPanelRotateMode, setPanelRotateTargetPanelId, setPanelRotateAxis,
-    setPanelRotateValue, setSelectedPanelGroupId, setVolumePickMode, setSelectedDoorGroupId, setDoorRefPickGroupId, setDoorPickMode,
+    setPanelMoveMode, setPanelMoveTargetPanelId, setPanelMoveAxis, setPanelRotateMode, setPanelRotateTargetPanelId, setPanelRotateAxis,
+    setSelectedPanelGroupId, setVolumePickMode, setSelectedDoorGroupId, setDoorRefPickGroupId, setDoorPickMode,
     setSelectedBackGroupId, setBackRefPickGroupId, setBackPickMode, setQuickBodyMode, setQuickBodyConfig, setQuickBodyBusy,
   } = useAppStore.getState();
 
@@ -2821,8 +2681,6 @@ export function AssemblyPanel() {
   const [stepEdit, setStepEdit] = useState<StepEdit>(null);
   const draftIso = useSketch(st => st.isolate);   // çizim yüzü bu gövdenin bir paneliyse o panelin Sketch düğmesi etkin görünür
   const [extrudeThicknessStr, setExtrudeThicknessStr] = useState(() => String(useAppStore.getState().faceExtrudeThickness));
-  const [moveValueStr, setMoveValueStr] = useState('0');
-  const [rotateValueStr, setRotateValueStr] = useState('0');
   const rowRefs = useRef<Map<number | string, HTMLDivElement>>(new Map());
   const rowKeysRef = useRef<{ sid: string | null; keys: Set<string> } | null>(null);
 
@@ -2836,8 +2694,6 @@ export function AssemblyPanel() {
     const ids = leaves.flatMap((id, i) => (want.has(id) && g.memberVfIds[i] ? [g.memberVfIds[i]] : []));
     st.setBackFocusVfIds(ids.length === leaves.length ? [] : ids);
   }, [backNodeSel, backGroups, selectedBackGroupId]);
-  useOnChange(panelMoveAxis, () => { setMoveValueStr('0'); setPanelMoveValue(0); });
-  useOnChange(panelRotateAxis, () => { setRotateValueStr('0'); setPanelRotateValue(0); });
 
   const openCard = (id: string) => setOpenCardId(id);
   /** Store'daki grup seçimlerinden (raf/dikme · kapak · arkalık) koşulu tutanı düşürür; çağrı sırası sabit. */
@@ -3001,7 +2857,7 @@ export function AssemblyPanel() {
   }, [faceExtrudeMode, faceExtrudeCavityGroupId, activePanelId, faceExtrudeTargetPanelId]);
   useEffect(() => {
     if (!panelMoveMode || !activePanelId || activePanelId === panelMoveTargetPanelId) return;
-    setPanelMoveTargetPanelId(activePanelId); setPanelMoveAxis(null); setPanelMoveValue(0);
+    setPanelMoveTargetPanelId(activePanelId); setPanelMoveAxis(null);
   }, [panelMoveMode, activePanelId, panelMoveTargetPanelId]);
 
   // Garanti çıkış: yalnız "açık satırın paneli === hedef" iken; rebuild sırasında anlık null çıkış sayılmaz.
@@ -3067,12 +2923,10 @@ export function AssemblyPanel() {
     };
   };
 
-  /** İşlem onaylanınca açık panel satırı kapanır. */
-  const rowDone = () => setSelectedPanelRow(null);
   /* Şerit önizlemenin ÜSTÜNDE olmalı (altındayken 500px önizlemenin altında kalıp görünmüyordu). */
   const renderExpandedBody = (vf: VirtualFace, vp: Shape | undefined) => {
-    // Extrude düğmesi yalnız sahne aracını açar / kapatır (sceneExtrudePanelId); tip seçimi, değer ve önizleme sahnede, okların üzerinde
-    // (Scene.PanelSceneExtrude). Haritadaki extrude girdisi yalnız "başka araç açılınca seçili kenar düşsün" diye durur.
+    // Extrude / Move / Rotate düğmeleri yalnız sahne aracını açar / kapatır; tip seçimi, değer ve önizleme sahnede (Scene.PanelSceneExtrude,
+    // PanelMoveGizmo, PanelRotateGizmo). Extrude `sceneExtrudePanelId` ile, Move / Rotate kendi mod bayraklarıyla açılır. Haritadaki extrude girdisi yalnız "başka araç açılınca seçili kenar düşsün" diye durur.
     const tools = {
       extrude: [faceExtrudeMode, faceExtrudeTargetPanelId, setFaceExtrudeMode, setFaceExtrudeTargetPanelId],
       move: [panelMoveMode, panelMoveTargetPanelId, setPanelMoveMode, setPanelMoveTargetPanelId],
@@ -3110,12 +2964,10 @@ export function AssemblyPanel() {
       <div className={CARD_BODY} style={{ borderTop: CARD_BODY_STYLE.borderTop }} onClick={stop}>
         <Segmented active={tool} onPick={pickTool} items={[
           { key: 'extrude', label: 'Extrude', Icon: MoveVertical, title: 'Extrude — arrows appear on the panel edges in the 3D view', disabled: dis },
-          { key: 'move', label: 'Move', Icon: Move, title: 'Move the panel — Relative / Absolute / To point', disabled: dis },
-          { key: 'rotate', label: 'Rotate', Icon: RotateCw, title: 'Rotate the panel — Angle / Aim at face', disabled: dis },
+          { key: 'move', label: 'Move', Icon: Move, title: 'Move — arrows and corner points appear on the panel in the 3D view', disabled: dis },
+          { key: 'rotate', label: 'Rotate', Icon: RotateCw, title: 'Rotate — pivot points and axis rings appear on the panel in the 3D view', disabled: dis },
           { key: 'sketch', label: 'Sketch', Icon: PenLine, title: 'Draw on a face of this panel, then cut it out or give the panel that shape', disabled: dis },
         ]} />
-        <MoveDock panel={activePanel} draft={moveValueStr} setDraft={setMoveValueStr} onDone={rowDone} />
-        <RotateDock panel={activePanel} draft={rotateValueStr} setDraft={setRotateValueStr} onDone={rowDone} />
         <PanelTypeStrip vf={vf} panel={vp} />
         <div className={`${PREVIEW_FRAME} mt-1.5`} style={{ height: PREVIEW_HEIGHT, background: PREVIEW_BG }}>
           {activeDims && activePanel

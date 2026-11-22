@@ -18,7 +18,8 @@ import {
   pointInTriangle3D, findPanelCoveringPoint, groupIndexOfFace, panelHasRotation, createGroupBoundaryEdges, applyFillets, matchCurvedFaceGroup,
   convertReplicadToThreeGeometry, type AxisLetter, type AxisDir, axisDirToVec, uniqueMeshPoints, resolveBaseVertices, composeVertexTargets,
   confirmPanelMoveRef, confirmPanelRotateRef, resetRefFacePick, axisIndexOf, getReplicadVertices, round1, swingPoints,
-  footprintGeometry, isPostSketchFace, dominantAxisLabel, executeFaceExtrude,
+  footprintGeometry, isPostSketchFace, dominantAxisLabel, executeFaceExtrude, mapAxisToVfLocal, angleToTouchPlane, executePanelMove, executePanelMoveFixed,
+  executePanelRotate,
 } from './Geometry';
 import { connectorPartInstances, placementTypeFor } from './ConnectorService';
 import {
@@ -36,7 +37,7 @@ import {
   vfBackBound, isBackPanel, splitBackAtPanel, backPreviewStamp, backPickObstacle, collectBackCuts, BACK_THICKNESS, confirmBackPick, backSlabPolygon,
   BACK_GAP, backPickRect, rayBackEntry, backCandidatesAt, backStackAt,
 } from './BackService';
-import { panelStampsRegions } from './PanelEngine';
+import { panelStampsRegions, panelStepRotation } from './PanelEngine';
 import { ErrorBoundary, MONO_FONT } from './Ui';
 import { DraftLayer } from './DraftView';
 import { useDraft } from './Draft';
@@ -2155,7 +2156,6 @@ const AXIS_RGB: Record<AxisLetter, { main: string; hover: string }> = {
 };
 const vertEq = (a: Vec3 | null, b: Vec3, tol = 0.5) =>
   !!a && Math.abs(a[0] - b[0]) < tol && Math.abs(a[1] - b[1]) < tol && Math.abs(a[2] - b[2]) < tol;
-const eq = (a: Vec3 | null, b: Vec3) => !!a && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 const hoverCursor = (on: boolean) => { document.body.style.cursor = on ? 'pointer' : 'default'; };
 const worldOf = (v: THREE.Vector3, m: THREE.Matrix4): Vec3 => { const w = v.clone().applyMatrix4(m); return [w.x, w.y, w.z]; };
 
@@ -2180,9 +2180,13 @@ interface GizmoDotProps {
 const DotMat = ({ color, opacity = 1 }: { color: string; opacity?: number }) =>
   <meshBasicMaterial color={color} transparent opacity={opacity} depthTest={false} depthWrite={false} toneMapped={false} />;
 
+/** İmlecin üzerinde durduğu nokta: tuval seviyesindeki seçiciler (MoveRefPanelPicker) nokta tıklamasını panel tıklaması saymasın. */
+let _hoveredDot: THREE.Group | null = null;
 export function GizmoDot({ position, isSelected, accent = '#44403c', onClick, groupRef }: GizmoDotProps) {
   const [hovered, setHovered] = useState(false);
   const g = useRef<THREE.Group | null>(null);
+  // Nokta, üzerindeyken kaldırılırsa (kaynak köşe seçilince liste kapanır) pointerout gelmez → iz burada silinir.
+  useEffect(() => { const el = g.current; return () => { if (_hoveredDot === el) _hoveredDot = null; }; }, []);
   const filled = hovered || isSelected;
   const diameterPx = isSelected ? 12 : hovered ? 13 : 10;
   useFrame(({ camera, size }) => {
@@ -2208,10 +2212,10 @@ export function GizmoDot({ position, isSelected, accent = '#44403c', onClick, gr
       </mesh>
       <mesh geometry={DOT_UNIT} renderOrder={DOT_RENDER_ORDER + 2} raycast={noRaycast}><DotMat color={filled ? DOT_IVORY : accent} /></mesh>
       <mesh geometry={DOT_UNIT} scale={0.6} renderOrder={DOT_RENDER_ORDER + 3} raycast={noRaycast}><DotMat color={filled ? accent : DOT_IVORY} /></mesh>
-      <mesh geometry={DOT_UNIT} scale={2.4} raycast={hitRaycast}
+      <mesh name="gz-dot" geometry={DOT_UNIT} scale={2.4} raycast={hitRaycast}
         onClick={e => { e.stopPropagation(); onClick(position); }}
-        onPointerOver={e => { e.stopPropagation(); setHovered(true); hoverCursor(true); }}
-        onPointerOut={() => { setHovered(false); hoverCursor(false); }}>
+        onPointerOver={e => { e.stopPropagation(); setHovered(true); hoverCursor(true); _hoveredDot = g.current; }}
+        onPointerOut={() => { setHovered(false); hoverCursor(false); if (_hoveredDot === g.current) _hoveredDot = null; }}>
         <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
       </mesh>
     </group>
@@ -2383,11 +2387,7 @@ function OriginSphere({ position, size, baseLength }: { position: Vec3; size: nu
   );
 }
 
-/** Altı ok + merkez: panelin dünya kutusunun yüz merkezlerinden dışarı (taşıma ve ok-extrude gizmoları aynı yerleşimi kullanır). */
-function useArrowLayout(freshPanel: Shape) {
-  return useMemo(() => arrowLayoutOf(localBboxOf(freshPanel.geometry), getShapeMatrix(freshPanel), freshPanel.position),
-    [freshPanel.position, freshPanel.rotation, freshPanel.scale, freshPanel.geometry]);
-}
+/** Altı ok + merkez: kutunun yüz merkezlerinden dışarı (hacim / baza seti ok-extrude gizmosu). */
 type ArrowLayout = { centerOrigin: Vec3; axisOrigins: Record<string, Vec3>; arrowLength: number };
 /** Yerel kutu (`mat` ile dünyaya) → ok yerleşimi; kutu yoksa tüm oklar `fallback` noktasında. */
 function arrowLayoutOf(bbox: THREE.Box3 | null | undefined, mat: THREE.Matrix4, fallback: Vec3): ArrowLayout {
@@ -2412,43 +2412,6 @@ function arrowLayoutOf(bbox: THREE.Box3 | null | undefined, mat: THREE.Matrix4, 
     } as Record<string, Vec3>,
     arrowLength: maxDim * 0.2,
   };
-}
-
-export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
-  const s = useStoreFields('panelMoveAxis', 'setPanelMoveAxis', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'setPanelMoveRefSourceVertex',
-    'panelMoveRefTargetPanelId', 'setPanelMoveRefTargetPanelId', 'panelMoveRefTargetVertex', 'setPanelMoveRefTargetVertex', 'shapes');
-  const { panelMoveRefSourceVertex: srcVertex, panelMoveRefTargetPanelId: targetId, panelMoveRefTargetVertex: tgtVertex, shapes } = s;
-  const isRefMode = s.panelMoveValueMode === 'ref';
-  const freshPanel = useMemo(() => shapeById(panelShape.id, shapes) || panelShape, [shapes, panelShape.id, panelShape]);
-  const { centerOrigin, axisOrigins, arrowLength } = useArrowLayout(freshPanel);
-  const sourceVertices = useMemo(() => (isRefMode && freshPanel.geometry ? computeRealCorners(freshPanel) : []), [isRefMode, freshPanel]);
-  const targetPanel = useMemo(() => (isRefMode && targetId ? shapeById(targetId, shapes) || null : null), [isRefMode, targetId, shapes]);
-  const targetVertices = useMemo(() => (targetPanel?.geometry ? computeRealCorners(targetPanel) : []), [targetPanel]);
-  const allMarks = useMemo(() => [...sourceVertices.map(v => ({ pos: v, group: 0 })), ...targetVertices.map(v => ({ pos: v, group: 1 }))],
-    [sourceVertices, targetVertices]);
-  const refAt = useDotOverlap(allMarks, i => vertEq(allMarks[i].group ? tgtVertex : srcVertex, allMarks[i].pos));
-  const needsTargetPanel = !!srcVertex && !targetId;
-  const pickSource = (pos: Vec3) => { s.setPanelMoveRefSourceVertex(pos); s.setPanelMoveRefTargetPanelId(null); s.setPanelMoveRefTargetVertex(null); };
-  return (
-    <group>
-      {!isRefMode && (
-        <>
-          <OriginSphere position={centerOrigin} size={arrowLength * 0.055} baseLength={arrowLength} />
-          {MOVE_AXES.map(({ axis, color, hover }) => (
-            <MoveArrow key={axis} axisLabel={axis} color={color} hoverColor={hover} origin={axisOrigins[axis]} length={arrowLength}
-              onSelect={a => s.setPanelMoveAxis(a === s.panelMoveAxis ? null : a)} selectedAxis={s.panelMoveAxis} />
-          ))}
-        </>
-      )}
-      {isRefMode && !needsTargetPanel && sourceVertices.map((v, i) => (
-        <GizmoDot key={`src-${i}`} position={v} isSelected={vertEq(srcVertex, v)} groupRef={refAt(i)} onClick={pickSource} />
-      ))}
-      {isRefMode && targetId && targetVertices.map((v, i) => (
-        <GizmoDot key={`tgt-${i}`} position={v} isSelected={vertEq(tgtVertex, v)} accent="#ea580c" onClick={s.setPanelMoveRefTargetVertex}
-          groupRef={refAt(sourceVertices.length + i)} />
-      ))}
-    </group>
-  );
 }
 
 /* Ok-extrude gizmosu (hacim · baza seti): taşıma gizmosuyla aynı oklar; ok tıklaması yalnız seçer, uygulama şeritteki onayda (ExtrudeDock). */
@@ -2726,120 +2689,6 @@ function PlinthVolume({ region }: { region: PlinthRegion }) {
       <mesh geometry={m.geo} raycast={noRaycast} renderOrder={6}><FillMat color={PICK_COLORS.selected} opacity={SEL_COLORS.volumeActiveOpacity} /></mesh>
       {m.edgePts.length >= 2 && <EdgeLines points={m.edgePts} color={PICK_COLORS.selectedEdge} width={SEL_COLORS.edgeWidth} order={7} />}
     </>
-  );
-}
-
-type RotationRingProps = { center: Vec3; axis: AxisLetter; radius: number; onSelect: (axis: AxisLetter) => void; selectedAxis: AxisLetter | null };
-function RotationRing({ center, axis, radius, onSelect, selectedAxis }: RotationRingProps) {
-  const [hovered, setHovered] = useState(false);
-  const isSelected = selectedAxis === axis;
-  const anySelected = selectedAxis !== null;
-  const colors = AXIS_RGB[axis];
-  const { geometry, eulerRotation, labelPos } = useMemo(() => {
-    const points: THREE.Vector3[] = [];
-    for (let i = 0; i <= 64; i++) { const a = (i / 64) * Math.PI * 2; points.push(new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0)); }
-    const euler = axis === 'x' ? new THREE.Euler(0, Math.PI / 2, 0) : axis === 'y' ? new THREE.Euler(Math.PI / 2, 0, 0) : new THREE.Euler(0, 0, 0);
-    const lPos: Vec3 = axis === 'x' ? [center[0], center[1], center[2] + radius + 10]
-      : axis === 'y' ? [center[0] + radius + 10, center[1], center[2]] : [center[0], center[1] + radius + 10, center[2]];
-    return { geometry: new THREE.BufferGeometry().setFromPoints(points), eulerRotation: euler, labelPos: lPos };
-  }, [center, axis, radius]);
-  const lineColor = hovered && !isSelected ? colors.hover : colors.main;
-  const lineOpacity = isSelected ? 1 : hovered ? 0.95 : anySelected ? 0.16 : 0.62;
-  const lineObj = useMemo(() => {
-    const line = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: lineColor, transparent: true, opacity: lineOpacity, depthTest: false }));
-    line.position.set(center[0], center[1], center[2]);
-    line.rotation.copy(eulerRotation);
-    line.renderOrder = RENDER_ORDER;
-    return line;
-  }, [geometry, lineColor, lineOpacity, center, eulerRotation]);
-  const labelDimmed = anySelected && !isSelected && !hovered;
-  return (
-    <group>
-      {isSelected && (
-        <mesh position={center} rotation={[eulerRotation.x, eulerRotation.y, eulerRotation.z]} renderOrder={RENDER_ORDER - 1}>
-          <circleGeometry args={[radius, 64]} />
-          <meshBasicMaterial color={colors.main} transparent opacity={0.15} depthTest={false} side={THREE.DoubleSide} />
-        </mesh>
-      )}
-      <primitive object={lineObj} />
-      <AxisLabel position={labelPos} text={axis.toUpperCase()} onClick={() => onSelect(axis)} onHover={setHovered}
-        style={{
-          background: isSelected ? colors.main : 'transparent', color: isSelected ? '#fff' : '#000', fontSize: '12px', fontWeight: 900,
-          letterSpacing: '0.06em', borderRadius: '4px', boxShadow: isSelected ? '0 1px 6px rgba(0,0,0,0.28)' : 'none',
-          textShadow: isSelected ? 'none' : '0 0 4px #fff, 0 0 8px #fff',
-          opacity: labelDimmed ? 0.4 : 1, transition: 'opacity 0.12s ease', lineHeight: '1.4', minWidth: '22px',
-        }} />
-    </group>
-  );
-}
-
-function computeFaceCenters(panelShape: Shape): Vec3[] {
-  if (!panelShape.geometry) return [];
-  const corners = uniqueMeshPoints(panelShape.geometry, 100);
-  if (corners.length < 8) return [];
-  let minD = Infinity;
-  const thickDir = new THREE.Vector3(0, 1, 0);
-  for (let i = 0; i < corners.length; i++) for (let j = i + 1; j < corners.length; j++) {
-    const d = corners[i].distanceTo(corners[j]);
-    if (d > 0.01 && d < minD) { minD = d; thickDir.copy(corners[j]).sub(corners[i]).normalize(); }
-  }
-  const projs = corners.map(c => c.dot(thickDir));
-  const mid = (Math.min(...projs) + Math.max(...projs)) / 2;
-  const g1: THREE.Vector3[] = [], g2: THREE.Vector3[] = [];
-  corners.forEach((c, i) => (projs[i] <= mid ? g1 : g2).push(c));
-  const avg = (pts: THREE.Vector3[]) => { const c = new THREE.Vector3(); for (const p of pts) c.add(p); return c.divideScalar(pts.length || 1); };
-  const mat = getShapeMatrix(panelShape);
-  return [avg(g1), avg(g2)].map(p => worldOf(p, mat));
-}
-
-type PivotKind = 'vertex' | 'center';
-
-export function PanelRotateGizmo({ panelShape }: { panelShape: Shape }) {
-  const s = useStoreFields('panelRotatePivot', 'setPanelRotatePivot', 'panelRotateAxis', 'setPanelRotateAxis', 'panelRotateValueMode',
-    'panelRotateRefArmVertex', 'setPanelRotateRefArmVertex', 'setPanelRotateRefFace');
-  const { panelRotatePivot: pivot, panelRotateRefArmVertex: arm } = s;
-  const { setPanelRotatePivot, setPanelRotateAxis, setPanelRotateRefArmVertex, setPanelRotateRefFace } = s;
-  const modeChosen = s.panelRotateValueMode !== null;
-  const isRefMode = s.panelRotateValueMode === 'ref';
-  const hasPivot = pivot !== null;
-  const showRings = modeChosen && hasPivot && (!isRefMode || arm !== null);
-  const pivots = useMemo<Array<{ pos: Vec3; kind: PivotKind }>>(() => [
-    ...computeRealCorners(panelShape).map(p => ({ pos: p, kind: 'vertex' as const })),
-    ...computeFaceCenters(panelShape).map(p => ({ pos: p, kind: 'center' as const })),
-  ], [panelShape.position, panelShape.rotation, panelShape.scale, panelShape.geometry]);
-  const ringRadius = useMemo(() => {
-    const bb = localBboxOf(panelShape.geometry);
-    if (!bb) return 40;
-    const sz = bb.getSize(new THREE.Vector3());
-    return Math.max(sz.x, sz.y, sz.z) * 0.35;
-  }, [panelShape.geometry]);
-  const refAt = useDotOverlap(useMemo(() => pivots.map(pv => ({ pos: pv.pos, group: 0 })), [pivots]),
-    i => eq(pivot, pivots[i].pos) || vertEq(arm, pivots[i].pos));
-
-  // dyn: her tıklama pivotu yeniden belirler. ref: 1. tık pivot, 2. tık NİŞAN; seçili pivota tekrar tık akışı sıfırlar.
-  const resetAfterPivot = () => { setPanelRotateAxis(null); setPanelRotateRefArmVertex(null); setPanelRotateRefFace(null); };
-  const handleOwnDotClick = (point: Vec3) => {
-    if (!isRefMode) { setPanelRotatePivot(point); setPanelRotateAxis(null); return; }
-    if (!hasPivot) { setPanelRotatePivot(point); resetAfterPivot(); return; }
-    if (eq(pivot, point)) { setPanelRotatePivot(null); resetAfterPivot(); return; }
-    setPanelRotateRefArmVertex(point); setPanelRotateAxis(null); setPanelRotateRefFace(null);
-  };
-  const handleAxisSelect = (axis: AxisLetter) => {
-    setPanelRotateAxis(axis === s.panelRotateAxis ? null : axis);
-    if (isRefMode) setPanelRotateRefFace(null);   // eksen değişti → referans seçimi baştan
-  };
-  if (!modeChosen) return null;
-  return (
-    <group>
-      {pivots.map((pv, i) => {
-        const isArm = isRefMode && vertEq(arm, pv.pos);
-        return <GizmoDot key={`pivot-${i}`} position={pv.pos} groupRef={refAt(i)} onClick={() => handleOwnDotClick(pv.pos)}
-          isSelected={eq(pivot, pv.pos) || isArm} accent={isArm ? '#0d9488' : pv.kind === 'center' ? '#ea580c' : '#44403c'} />;
-      })}
-      {showRings && (['x', 'y', 'z'] as AxisLetter[]).map(a => (
-        <RotationRing key={a} center={pivot!} axis={a} radius={ringRadius} onSelect={handleAxisSelect} selectedAxis={s.panelRotateAxis} />
-      ))}
-    </group>
   );
 }
 
@@ -3473,6 +3322,7 @@ function MoveRefPanelPicker({ shapes }: { shapes: any[] }) {
     const canvas = gl.domElement;
     const handler = (ev: MouseEvent) => {
       if (ev.button !== 0) return;
+      if (_hoveredDot?.visible && _hoveredDot.parent) return;   // hedef KÖŞE tıklandı: hedef panel değişmesin (köşe eski panelin, panel öndeki olurdu)
       const rect = canvas.getBoundingClientRect();
       const ndcX = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
       const ndcY = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
@@ -3532,10 +3382,8 @@ function MoveRefConfirmOnRightClick() {
   const { panelMoveMode, panelMoveValueMode, panelMoveRefSourceVertex } = useStoreFields('panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex');
   return <RefConfirmOnRightClick active={panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex} ready={moveRefReady}
     confirm={async () => {
-      await confirmPanelMoveRef();
-      const st = useAppStore.getState();
-      st.setPanelMoveMode(false);
-      st.setSelectedPanelRow(null);
+      if (!(await confirmPanelMoveRef())) return;   // aynı noktaya taşıma: seçim durur
+      useAppStore.getState().setPanelMoveValueMode('ref');   // seçimler sıfırlanır, araç açık kalır (sıradaki taşıma için)
       _movePickState = null;
     }} />;
 }
@@ -3550,10 +3398,8 @@ function RotateRefConfirmOnRightClick() {
   const { panelRotateMode, panelRotateValueMode, panelRotatePivot } = useStoreFields('panelRotateMode', 'panelRotateValueMode', 'panelRotatePivot');
   return <RefConfirmOnRightClick active={panelRotateMode && panelRotateValueMode === 'ref' && !!panelRotatePivot} ready={rotateRefReady}
     confirm={async () => {
-      await confirmPanelRotateRef();
-      const st = useAppStore.getState();
-      st.setPanelRotateMode(false);
-      st.setSelectedPanelRow(null);
+      if (!(await confirmPanelRotateRef())) return;   // açı çözülemedi: seçim durur
+      useAppStore.getState().setPanelRotateValueMode('ref');   // seçimler sıfırlanır, araç açık kalır
       resetRefFacePick();
     }} />;
 }
@@ -4013,29 +3859,37 @@ function exEntry(mode: 'fixed' | 'dyn', span: number, text: string) {
   const moving = amount !== null && Math.abs(amount) > 0.01;
   return { value, amount, moving, valid: value !== null && (mode === 'fixed' ? value > 0 : moving && value > -span + 0.5) };
 }
-/** Okun ucundaki değer girişi: KUTUSUZ — yalnız rakam, mod renginde ince alt çizgi ve "mm". Enter uygular, Esc bırakır.
+/** Sahnedeki değer girişi: KUTUSUZ — yalnız rakam, renkli ince alt çizgi ve birim. Enter uygular, Esc bırakır.
  *  Metin durumu BURADA (Html'in kendi DOM kökünde) tutulur: sahne kökündeki durumla denetlenen giriş, tuş aralarında eski değere dönüp
  *  imleci kaydırıyordu. Üst bileşene yalnız önizleme için haber verilir. */
-function SceneExInput({ mode, span, color, onText, onApply }: {
-  mode: 'fixed' | 'dyn'; span: number; color: string; onText: (t: string) => void; onApply: (v: number) => void;
+function SceneNumInput({ initial, placeholder, unit, color, title, parse, onText, onApply, onCancel }: {
+  initial: string; placeholder: string; unit: string; color: string; title: string; parse: (t: string) => { value: number | null; valid: boolean };
+  onText: (t: string) => void; onApply: (v: number) => void; onCancel: () => void;
 }) {
-  const [text, setText] = useState(mode === 'fixed' ? fmtEx(span) : '');
-  const { value, valid } = exEntry(mode, span, text);
+  const [text, setText] = useState(initial);
+  const { value, valid } = parse(text);
   const line = valid || !text ? color : '#dc2626';
   return (
     <div style={{ pointerEvents: 'auto', display: 'flex', alignItems: 'baseline', gap: 3 }} onPointerDown={e => e.stopPropagation()} onContextMenu={e => e.preventDefault()}>
-      <input autoFocus type="text" inputMode="decimal" value={text} placeholder={mode === 'fixed' ? fmtEx(span) : '0'} spellCheck={false}
-        title={mode === 'fixed' ? 'Size from the opposite edge (mm) — Enter applies, Esc cancels' : 'Move from where it is now (mm): + out, − in — Enter applies, Esc cancels'}
+      <input autoFocus type="text" inputMode="decimal" value={text} placeholder={placeholder} spellCheck={false} title={title}
         onFocus={e => e.currentTarget.select()} onChange={e => { setText(e.target.value); onText(e.target.value); }}
-        onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter' && valid && value !== null) onApply(value); if (e.key === 'Escape') stopSceneExtrude(); }}
+        onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter' && valid && value !== null) onApply(value); if (e.key === 'Escape') onCancel(); }}
         style={{
           ...EX_TEXT, userSelect: 'auto', width: `${Math.max(3, text.length + 0.6)}ch`, boxSizing: 'content-box', padding: '0 1px 1px', margin: 0, fontSize: 14,
           lineHeight: 1.2, textAlign: 'center', background: 'transparent', border: 'none', borderBottom: `1.5px solid ${line}`, borderRadius: 0, outline: 'none',
           caretColor: color,
         }} />
-      <span style={{ ...EX_TEXT, fontSize: 10, fontWeight: 600, color: '#6b645c' }}>mm</span>
+      <span style={{ ...EX_TEXT, fontSize: 10, fontWeight: 600, color: '#6b645c' }}>{unit}</span>
     </div>
   );
+}
+/** Extrude okunun girişi: Fixed'de şimdiki ölçüyle dolu gelir. */
+function SceneExInput({ mode, span, color, onText, onApply }: {
+  mode: 'fixed' | 'dyn'; span: number; color: string; onText: (t: string) => void; onApply: (v: number) => void;
+}) {
+  return <SceneNumInput initial={mode === 'fixed' ? fmtEx(span) : ''} placeholder={mode === 'fixed' ? fmtEx(span) : '0'} unit="mm" color={color}
+    title={mode === 'fixed' ? 'Size from the opposite edge (mm) — Enter applies, Esc cancels' : 'Move from where it is now (mm): + out, − in — Enter applies, Esc cancels'}
+    parse={t => exEntry(mode, span, t)} onText={onText} onApply={onApply} onCancel={stopSceneExtrude} />;
 }
 
 let _sceneExBusy = false;
@@ -4140,7 +3994,7 @@ export function PanelSceneExtrude({ panel }: { panel: Shape }) {
         ? { type: typeOf(hovered), text: typeOf(hovered) === 'fixed' ? `the edge goes to a size measured from the opposite edge (now ${fmtEx(hovered.span)} mm)`
             : typeOf(hovered) === 'dyn' ? 'the edge moves from where it is now: + out, − in' : 'the edge goes up to a face you pick, and follows it' }
         : { type: null, text: 'click an arrow to move that edge · the round button next to an arrow switches its type (Fixed · Dyn · Ref)' };
-  useEffect(() => { useAppStore.getState().setSceneExStatus(status); }, [status.type, status.text]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { useAppStore.getState().setSceneExStatus({ label: 'Extrude', ...status }); }, [status.type, status.text]);   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => useAppStore.getState().setSceneExStatus(null), []);
   const pType = previewFace ? typeOf(previewFace) : 'fixed', PC = SCENE_EX[pType];
   const previewAmount = !previewFace ? null
@@ -4181,6 +4035,425 @@ export function PanelSceneExtrude({ panel }: { panel: Shape }) {
           color={pType === 'ref' ? SCENE_EX.ref.lit : previewAmount < 0 ? SCENE_EX.shrink : SCENE_EX.grow}
           measure={pType === 'fixed' && previewFace === active ? { from: active!.span } : null} />
       )}
+    </group>
+  );
+}
+
+/* ─────────────────────────── SAHNE TAŞIMA + DÖNDÜRME ───────────────────────────
+   Extrude ile aynı düzen: araç Assembly'deki Move / Rotate düğmesiyle açılır; tip sahnedeki döngü düğmesiyle çevrilir, değer okun / halkanın
+   ucundaki kutusuz girişe yazılır, panelin gideceği yer akan hayalet çizgilerle görünür, açıklama durum çubuğundadır.
+   TAŞIMA  — Dyn / Fixed: altı ok (panelin o anki dönüş çerçevesinde, motorla aynı eksenler); ok → mesafe. Ref: köşe noktaları (kaynak → hedef panel →
+             hedef köşe → sağ tık). Dyn ve Fixed aynı kadar taşır; fark gövde boyutlanınca: Dyn oranla ölçeklenir, Fixed mm olarak sabit kalır.
+   DÖNDÜRME — Dyn: eksen noktası → halka (X / Y / Z) → açı. Ref: eksen noktası → nişan noktası → halka → referans yüz → sağ tık. */
+
+const numOf = (t: string): number | null => { const p = parseFloat(t.replace(',', '.')); return Number.isFinite(p) ? p : null; };
+const nextOf = <T,>(order: T[], cur: T): T => order[(order.indexOf(cur) + 1) % order.length];
+
+/** Panelin TAMAMININ gideceği yer: hedefte net çizgi + şimdiki yerden hedefe akan hayalet çizgiler. `pose(e, o)`: 0..1 ilerlemede panelin duruşunu
+ *  (panel-yerel) `o`ya yazar. `demo`: değer yokken yalnız yön gösterimi (hedef çizgisi yok). */
+function ScenePanelGhost({ matrix, edges, color, demo, pose }: {
+  matrix: THREE.Matrix4; edges: Vec3[]; color: string; demo: boolean; pose: (e: number, o: THREE.Object3D) => void;
+}) {
+  const echoes = useRef<Array<THREE.Group | null>>([]), target = useRef<THREE.Group>(null);
+  const N = 3;
+  useFrame(({ clock }) => {
+    if (target.current) pose(1, target.current);
+    for (let i = 0; i < N; i++) {
+      const g = echoes.current[i];
+      if (!g) continue;
+      const p = (clock.elapsedTime / 1.6 + i / N) % 1;
+      pose(p * p * (3 - 2 * p), g);
+      const line: any = g.children[0];
+      if (line?.material) line.material.opacity = Math.sin(Math.PI * p) * (demo ? 0.7 : 0.9);
+    }
+  });
+  if (edges.length < 2) return null;
+  return (
+    <group matrix={matrix} matrixAutoUpdate={false}>
+      {!demo && <group ref={target}><EdgeLines points={edges} color={color} width={2.2} order={16} /></group>}
+      {Array.from({ length: N }, (_, i) => (
+        <group key={i} ref={el => { echoes.current[i] = el; }}>
+          <Line points={edges} segments color={color} lineWidth={demo ? 1.3 : 1.6} transparent opacity={0} depthTest={false} depthWrite={false} renderOrder={15} raycast={noRaycast} />
+        </group>
+      ))}
+    </group>
+  );
+}
+
+/** Aracın tip düğmesi (panelin ortasında): extrude'daki döngü düğmesinin aynısı, bütün gizmonun tipini çevirir. */
+function SceneTypeSwitch({ position, shift, type, onCycle, onHover }: {
+  position: Vec3; shift?: string; type: SceneExMode; onCycle: () => void; onHover: (h: boolean) => void;
+}) {
+  return (
+    <Html position={position} center zIndexRange={[66, 56]} style={{ pointerEvents: 'none' }}>
+      <div style={{ pointerEvents: 'none', transform: shift }}><SceneExTypeBtn type={type} onCycle={onCycle} onHover={onHover} /></div>
+    </Html>
+  );
+}
+
+const MOVE_DIRS: AxisDir[] = ['x+', 'x-', 'y+', 'y-', 'z+', 'z-'];
+const MOVE_TYPES: SceneExMode[] = ['dyn', 'fixed', 'ref'];
+let _sceneMoveBusy = false;
+export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
+  const s = useStoreFields('panelMoveAxis', 'setPanelMoveAxis', 'panelMoveValueMode', 'setPanelMoveValueMode', 'panelMoveRefSourceVertex',
+    'setPanelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'setPanelMoveRefTargetPanelId', 'panelMoveRefTargetVertex', 'setPanelMoveRefTargetVertex',
+    'shapes', 'virtualFaces');
+  const { panelMoveRefSourceVertex: srcVertex, panelMoveRefTargetPanelId: targetId, panelMoveRefTargetVertex: tgtVertex, shapes } = s;
+  const type = s.panelMoveValueMode as SceneExMode, isRef = type === 'ref', C = SCENE_EX[type];
+  const panel = useMemo(() => shapeById(panelShape.id, shapes) || panelShape, [shapes, panelShape.id, panelShape]);
+  const matrix = useMemo(() => getShapeMatrix(panel), [panel.position, panel.rotation, panel.scale]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const frame = useMemo(() => panelStepRotation(panel, s.virtualFaces), [panel.parameters?.transformSteps, s.virtualFaces]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const edges = useMemo(() => safeEdgePoints(panel.geometry, EDGE_ANGLE_THRESHOLD) ?? [], [panel.geometry]);
+  // Oklar: panelin dönüş çerçevesindeki ±X / ±Y / ±Z; her ok panelin o yöndeki en dış noktasından çıkar.
+  const layout = useMemo(() => {
+    const pos = panel.geometry?.getAttribute('position') as THREE.BufferAttribute | undefined;
+    const bb = localBboxOf(panel.geometry);
+    if (!pos || !bb) return null;
+    const c = bb.getCenter(new THREE.Vector3()), sz = bb.getSize(new THREE.Vector3()), v = new THREE.Vector3();
+    const arrows = MOVE_DIRS.map(axis => {
+      const dir = axisDirToVec(axis).applyQuaternion(frame).normalize();
+      let ext = 0;
+      for (let i = 0; i < pos.count; i++) { const d = v.fromBufferAttribute(pos, i).sub(c).dot(dir); if (d > ext) ext = d; }
+      return { axis, dir, origin: worldOf(c.clone().addScaledVector(dir, ext), matrix), normal: dir.clone().transformDirection(matrix) };
+    });
+    return { arrows, center: worldOf(c, matrix), base: THREE.MathUtils.clamp(Math.max(sz.x, sz.y, sz.z) * 0.12, 34, 96) };
+  }, [panel.geometry, frame, matrix]);
+  const [hover, setHover] = useState<AxisDir | null>(null);
+  const [swHover, setSwHover] = useState(false);
+  const [entry, setEntry] = useState<{ key: string; text: string } | null>(null);
+  const axis = isRef ? null : s.panelMoveAxis;
+  const entryKey = axis ? `${axis}|${type}` : '';
+  const value = entry && entry.key === entryKey ? numOf(entry.text) : null;
+  const moving = value !== null && Math.abs(value) > 0.001;
+
+  const apply = async (v: number) => {
+    if (!axis || _sceneMoveBusy) return;
+    const st = useAppStore.getState();
+    const fresh = shapeById(panel.id, st.shapes);
+    if (!fresh) return;
+    _sceneMoveBusy = true;
+    try { await (type === 'fixed' ? executePanelMoveFixed : executePanelMove)({ panelShape: fresh, axis, value: v, updateShape: st.updateShape }); }
+    catch (e) { console.error('[YAGO][SAHNE-TAŞIMA] uygulanamadı:', e); }
+    finally { _sceneMoveBusy = false; }
+    useAppStore.getState().setPanelMoveAxis(null);
+  };
+  const cycle = () => {
+    const next = nextOf(MOVE_TYPES, type) as 'dyn' | 'fixed' | 'ref';
+    s.setPanelMoveValueMode(next);
+    if (next === 'ref') s.setPanelMoveAxis(null);
+  };
+
+  // Ref: kaynak / hedef köşe noktaları (mevcut akış) + seçilen iki nokta arasındaki yol.
+  const sourceVertices = useMemo(() => (isRef && panel.geometry ? computeRealCorners(panel) : []), [isRef, panel]);
+  const targetPanel = useMemo(() => (isRef && targetId ? shapeById(targetId, shapes) || null : null), [isRef, targetId, shapes]);
+  const targetVertices = useMemo(() => (targetPanel?.geometry ? computeRealCorners(targetPanel) : []), [targetPanel]);
+  const allMarks = useMemo(() => [...sourceVertices.map(v => ({ pos: v, group: 0 })), ...targetVertices.map(v => ({ pos: v, group: 1 }))],
+    [sourceVertices, targetVertices]);
+  const refAt = useDotOverlap(allMarks, i => vertEq(allMarks[i].group ? tgtVertex : srcVertex, allMarks[i].pos));
+  const needsTargetPanel = !!srcVertex && !targetId;
+  const pickSource = (pos: Vec3) => { s.setPanelMoveRefSourceVertex(pos); s.setPanelMoveRefTargetPanelId(null); s.setPanelMoveRefTargetVertex(null); };
+
+  // Önizleme: panel-yerel öteleme vektörü.
+  const lit = axis ?? hover;
+  const litArrow = lit && layout ? layout.arrows.find(a => a.axis === lit) ?? null : null;
+  const shift = useMemo(() => {
+    if (isRef) {
+      if (!srcVertex || !tgtVertex) return null;
+      const inv = matrix.clone().invert();
+      return { d: new THREE.Vector3(...tgtVertex).applyMatrix4(inv).sub(new THREE.Vector3(...srcVertex).applyMatrix4(inv)), demo: false };
+    }
+    if (!litArrow || !layout) return null;
+    return axis && moving ? { d: litArrow.dir.clone().multiplyScalar(value!), demo: false } : { d: litArrow.dir.clone().multiplyScalar(layout.base * 1.1), demo: true };
+  }, [isRef, srcVertex, tgtVertex, matrix, litArrow, layout, axis, moving, value]);
+
+  const refStep = !srcVertex ? 0 : !targetId ? 1 : !tgtVertex ? 2 : 3;
+  const status = swHover ? `switch the move type → ${SCENE_EX_LABEL[nextOf(MOVE_TYPES, type)]}`
+    : isRef ? ['click a corner of this panel to move from', 'click the panel to move to (click again for the one behind)', 'click the corner it should land on',
+      'right-click to confirm · Esc cancels'][refStep]
+    : axis ? `type the distance along ${AXIS_DISPLAY[axis]} (− moves the other way) · Enter applies · Esc cancels`
+    : `${hover ? `move along ${AXIS_DISPLAY[hover]}: click` : 'click an arrow'}, type the distance — ${type === 'fixed' ? 'stays the same in mm' : 'scales in proportion'} when the body is resized`;
+  useEffect(() => { useAppStore.getState().setSceneExStatus({ label: 'Move', type, text: status }); }, [type, status]);
+  useEffect(() => () => useAppStore.getState().setSceneExStatus(null), []);
+  if (!layout) return null;
+  return (
+    <group>
+      {!isRef && layout.arrows.map((a, i) => {
+        const isActive = a.axis === axis;
+        return (
+          <SceneExArrow key={a.axis} origin={a.origin} normal={a.normal} rail={null} sign={isActive && value !== null && value < 0 ? -1 : 1} base={layout.base}
+            color={C.main} litColor={C.lit} lit={isActive || hover === a.axis} active={isActive} compact={false} phase={i * 1.1}
+            tip={hover === a.axis && !isActive ? AXIS_DISPLAY[a.axis] : null}
+            onPick={() => s.setPanelMoveAxis(isActive ? null : a.axis)} onHover={h => setHover(cur => (h ? a.axis : cur === a.axis ? null : cur))}>
+            {isActive ? (
+              <SceneNumInput key={entryKey} initial="" placeholder="0" unit="mm" color={C.main}
+                title={`Distance along ${AXIS_DISPLAY[a.axis]} (mm) — Enter applies, Esc cancels`}
+                parse={t => { const v = numOf(t); return { value: v, valid: v !== null && Math.abs(v) > 0.001 }; }}
+                onText={t => setEntry({ key: entryKey, text: t })} onApply={v => { void apply(v); }} onCancel={() => useAppStore.getState().setPanelMoveAxis(null)} />
+            ) : null}
+          </SceneExArrow>
+        );
+      })}
+      {isRef && !needsTargetPanel && sourceVertices.map((v, i) => (
+        <GizmoDot key={`src-${i}`} position={v} isSelected={vertEq(srcVertex, v)} accent={SCENE_EX.ref.main} groupRef={refAt(i)} onClick={pickSource} />
+      ))}
+      {isRef && targetId && targetVertices.map((v, i) => (
+        <GizmoDot key={`tgt-${i}`} position={v} isSelected={vertEq(tgtVertex, v)} accent="#ea580c" onClick={s.setPanelMoveRefTargetVertex}
+          groupRef={refAt(sourceVertices.length + i)} />
+      ))}
+      {isRef && srcVertex && tgtVertex && <EdgeLines points={[srcVertex, tgtVertex]} color={SCENE_EX.ref.main} width={1.6} order={17} />}
+      {shift && (
+        <ScenePanelGhost matrix={matrix} edges={edges} demo={shift.demo} color={isRef ? SCENE_EX.ref.lit : C.lit}
+          pose={(e, o) => { o.position.copy(shift.d).multiplyScalar(e); }} />
+      )}
+      <SceneTypeSwitch position={layout.center} shift="translate(0, 26px)" type={type} onCycle={cycle} onHover={setSwHover} />
+    </group>
+  );
+}
+
+/** Dönüş halkası: eksene dik çember (çizgi + görünmez simit vuruş alanı) ve üzerinde eksen harfi (kutusuz). Açı girişi harfin üstünde açılır. */
+function SceneRotateRing({ center, normal, labelDir, radius, letter, color, selected, dimmed, disabled, onPick, onHover, children }: {
+  center: Vec3; normal: THREE.Vector3; /** çember üstünde harfin duracağı yön (eksene dik, dünya) */ labelDir: THREE.Vector3; radius: number; letter: string;
+  color: string; selected: boolean; dimmed: boolean; /** seçilemez (soluk, tıklanmaz) */ disabled?: boolean; onPick: () => void; onHover: (h: boolean) => void;
+  children?: React.ReactNode;
+}) {
+  const [hov, setHov] = useState(false);
+  const quat = useMemo(() => new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal.clone().normalize()), [normal]);
+  const pts = useMemo(() => Array.from({ length: 97 }, (_, i): Vec3 => { const a = (i / 96) * Math.PI * 2; return [Math.cos(a) * radius, Math.sin(a) * radius, 0]; }), [radius]);
+  const labelPos = useMemo<Vec3>(() => [center[0] + labelDir.x * radius, center[1] + labelDir.y * radius, center[2] + labelDir.z * radius], [center, labelDir, radius]);
+  const hover = (h: boolean) => { setHov(h); onHover(h); hoverCursor(h); };
+  const on = !disabled && (selected || hov);
+  const fade = disabled ? 0.12 : dimmed ? 0.18 : 0.7;
+  return (
+    <group>
+      <group position={center} quaternion={quat}>
+        <Line points={pts} color={color} lineWidth={selected ? 2.8 : hov ? 2.3 : 1.5} transparent opacity={on ? 1 : fade} depthTest={false} depthWrite={false}
+          renderOrder={RENDER_ORDER} raycast={noRaycast} />
+        {selected && (
+          <mesh renderOrder={RENDER_ORDER - 1} raycast={noRaycast}>
+            <circleGeometry args={[radius, 64]} />
+            <meshBasicMaterial color={color} transparent opacity={0.07} depthTest={false} depthWrite={false} side={THREE.DoubleSide} />
+          </mesh>
+        )}
+        {!disabled && (
+          <mesh name="sx-ring" raycast={frontHitRaycast} onClick={e => { e.stopPropagation(); onPick(); }} onPointerDown={stopEvent}
+            onPointerOver={e => { e.stopPropagation(); hover(true); }} onPointerOut={() => hover(false)}>
+            <torusGeometry args={[radius, radius * 0.05, 8, 64]} />
+            <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} side={THREE.DoubleSide} />
+          </mesh>
+        )}
+      </group>
+      <Html position={labelPos} center zIndexRange={[64, 54]} style={{ pointerEvents: 'none' }}>
+        <div onClick={e => { e.stopPropagation(); if (!disabled) onPick(); }} onMouseEnter={() => { if (!disabled) hover(true); }} onMouseLeave={() => hover(false)}
+          style={{ ...EX_TEXT, pointerEvents: disabled ? 'none' : 'auto', cursor: 'pointer', fontFamily: FONT, fontSize: 12, fontWeight: 800, color, padding: '1px 4px',
+            opacity: on ? 1 : disabled ? 0.25 : dimmed ? 0.35 : 0.9 }}>{letter}</div>
+      </Html>
+      {children && (
+        <Html position={labelPos} center zIndexRange={[70, 60]} style={{ pointerEvents: 'none' }}>
+          <div style={{ pointerEvents: 'none', transform: 'translate(0, -24px)', whiteSpace: 'nowrap' }}>{children}</div>
+        </Html>
+      )}
+    </group>
+  );
+}
+
+/** Dönüş açısı dilimi: eksen noktasında, halka düzleminde 0 → açı (dünya koordinatları). */
+function SceneAngleSector({ center, normal, toward, fallback, radius, deg, color }: {
+  center: Vec3; normal: THREE.Vector3; /** dilimin başladığı yön (düzleme izdüşer); eksene paralelse `fallback` */ toward: THREE.Vector3; fallback: THREE.Vector3;
+  radius: number; deg: number; color: string;
+}) {
+  const { fill, arc } = useMemo(() => {
+    const c = new THREE.Vector3(...center), n = normal.clone().normalize();
+    const flat = (v: THREE.Vector3) => v.clone().addScaledVector(n, -v.dot(n));
+    let u = flat(toward);
+    if (u.lengthSq() < 1) u = flat(fallback);
+    u.normalize();
+    const w = new THREE.Vector3().crossVectors(n, u);
+    const rad = (deg * Math.PI) / 180, steps = Math.max(6, Math.ceil(Math.abs(deg) / 4));
+    const at = (t: number) => c.clone().addScaledVector(u, Math.cos(t) * radius).addScaledVector(w, Math.sin(t) * radius);
+    const pos: number[] = [], line: Vec3[] = [[c.x, c.y, c.z]];
+    for (let i = 0; i < steps; i++) {
+      const a = at((rad * i) / steps), b = at((rad * (i + 1)) / steps);
+      pos.push(c.x, c.y, c.z, a.x, a.y, a.z, b.x, b.y, b.z);
+      if (i === 0) line.push([a.x, a.y, a.z]);
+      line.push([b.x, b.y, b.z]);
+    }
+    line.push([c.x, c.y, c.z]);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    return { fill: g, arc: line };
+  }, [center, normal, toward, fallback, radius, deg]);
+  useEffect(() => () => fill.dispose(), [fill]);
+  return (
+    <>
+      <mesh geometry={fill} renderOrder={14} raycast={noRaycast}><OverlayMat color={new THREE.Color(color).getHex()} opacity={0.3} /></mesh>
+      <Line points={arc} color={color} lineWidth={2} depthTest={false} depthWrite={false} transparent renderOrder={16} raycast={noRaycast} />
+    </>
+  );
+}
+
+function computeFaceCenters(panelShape: Shape): Vec3[] {
+  if (!panelShape.geometry) return [];
+  const corners = uniqueMeshPoints(panelShape.geometry, 100);
+  if (corners.length < 8) return [];
+  let minD = Infinity;
+  const thickDir = new THREE.Vector3(0, 1, 0);
+  for (let i = 0; i < corners.length; i++) for (let j = i + 1; j < corners.length; j++) {
+    const d = corners[i].distanceTo(corners[j]);
+    if (d > 0.01 && d < minD) { minD = d; thickDir.copy(corners[j]).sub(corners[i]).normalize(); }
+  }
+  const projs = corners.map(c => c.dot(thickDir));
+  const mid = (Math.min(...projs) + Math.max(...projs)) / 2;
+  const g1: THREE.Vector3[] = [], g2: THREE.Vector3[] = [];
+  corners.forEach((c, i) => (projs[i] <= mid ? g1 : g2).push(c));
+  const avg = (pts: THREE.Vector3[]) => { const c = new THREE.Vector3(); for (const p of pts) c.add(p); return c.divideScalar(pts.length || 1); };
+  const mat = getShapeMatrix(panelShape);
+  return [avg(g1), avg(g2)].map(p => worldOf(p, mat));
+}
+
+type PivotKind = 'vertex' | 'center';
+const ROTATE_TYPES: SceneExMode[] = ['dyn', 'ref'];
+const ROT_LETTERS: AxisLetter[] = ['x', 'y', 'z'];
+let _sceneRotateBusy = false;
+export function PanelRotateGizmo({ panelShape }: { panelShape: Shape }) {
+  const s = useStoreFields('panelRotatePivot', 'setPanelRotatePivot', 'panelRotateAxis', 'setPanelRotateAxis', 'panelRotateValueMode', 'setPanelRotateValueMode',
+    'panelRotateRefArmVertex', 'setPanelRotateRefArmVertex', 'panelRotateRefFace', 'setPanelRotateRefFace', 'virtualFaces');
+  const { panelRotatePivot: pivot, panelRotateRefArmVertex: arm, panelRotateRefFace: refFace } = s;
+  const { setPanelRotatePivot, setPanelRotateAxis, setPanelRotateRefArmVertex, setPanelRotateRefFace } = s;
+  const type: SceneExMode = s.panelRotateValueMode === 'ref' ? 'ref' : 'dyn', isRef = type === 'ref', C = SCENE_EX[type];
+  const hasPivot = pivot !== null, axis = s.panelRotateAxis;
+  const showRings = hasPivot && (!isRef || arm !== null);
+  const vf = vfOfPanel(panelShape, s.virtualFaces);
+  const matrix = useMemo(() => getShapeMatrix(panelShape), [panelShape.position, panelShape.rotation, panelShape.scale]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const frame = useMemo(() => panelStepRotation(panelShape, s.virtualFaces), [panelShape.parameters?.transformSteps, s.virtualFaces]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const edges = useMemo(() => safeEdgePoints(panelShape.geometry, EDGE_ANGLE_THRESHOLD) ?? [], [panelShape.geometry]);
+  const pivots = useMemo<Array<{ pos: Vec3; kind: PivotKind }>>(() => [
+    ...computeRealCorners(panelShape).map(p => ({ pos: p, kind: 'vertex' as const })),
+    ...computeFaceCenters(panelShape).map(p => ({ pos: p, kind: 'center' as const })),
+  ], [panelShape.position, panelShape.rotation, panelShape.scale, panelShape.geometry]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const { ringRadius, center } = useMemo(() => {
+    const bb = localBboxOf(panelShape.geometry);
+    if (!bb) return { ringRadius: 40, center: panelShape.position as Vec3 };
+    const sz = bb.getSize(new THREE.Vector3());
+    return { ringRadius: Math.max(sz.x, sz.y, sz.z) * 0.35, center: worldOf(bb.getCenter(new THREE.Vector3()), matrix) };
+  }, [panelShape.geometry, matrix]);   // eslint-disable-line react-hooks/exhaustive-deps
+  // Eksenler motorla aynı: harf → VF'ye en yakın yerel eksen (`mapAxisToVfLocal`) → birikmiş dönüş çerçevesi. Dünya = gövde dönüşüyle.
+  const axes = useMemo(() => Object.fromEntries(ROT_LETTERS.map(l => {
+    const m = mapAxisToVfLocal(vf, l);
+    const local = (m ? new THREE.Vector3(...m) : axisDirToVec(`${l}+`)).normalize().applyQuaternion(frame).normalize();
+    return [l, { local, world: local.clone().transformDirection(matrix) }];
+  })) as Record<AxisLetter, { local: THREE.Vector3; world: THREE.Vector3 }>, [vf, frame, matrix]);
+  // Ref: nişan noktası bir eksenin ÜZERİNDEYSE o eksende dönmez (açı tanımsız) → o halka seçilemez.
+  const blocked = useMemo(() => {
+    const out: Record<AxisLetter, boolean> = { x: false, y: false, z: false };
+    if (!isRef || !pivot || !arm) return out;
+    const a0 = new THREE.Vector3(...arm).sub(new THREE.Vector3(...pivot));
+    for (const l of ROT_LETTERS) out[l] = new THREE.Vector3().crossVectors(axes[l].world, a0).length() < 0.5;
+    return out;
+  }, [isRef, pivot, arm, axes]);
+  const anyBlocked = blocked.x || blocked.y || blocked.z;
+  const refAt = useDotOverlap(useMemo(() => pivots.map(pv => ({ pos: pv.pos, group: 0 })), [pivots]),
+    i => vertEq(pivot, pivots[i].pos) || vertEq(arm, pivots[i].pos));
+  const [hover, setHover] = useState<AxisLetter | null>(null);
+  const [swHover, setSwHover] = useState(false);
+  const [entry, setEntry] = useState<{ key: string; text: string } | null>(null);
+  const entryKey = axis && pivot ? `${axis}|${pivot.join(',')}` : '';
+  const value = entry && entry.key === entryKey ? numOf(entry.text) : null;
+  const turning = value !== null && Math.abs(value) > 0.001;
+
+  // dyn: her tıklama eksen noktasını yeniden belirler. ref: 1. tık eksen noktası, 2. tık NİŞAN; seçili noktaya tekrar tık akışı sıfırlar.
+  const resetAfterPivot = () => { setPanelRotateAxis(null); setPanelRotateRefArmVertex(null); setPanelRotateRefFace(null); };
+  const handleOwnDotClick = (point: Vec3) => {
+    if (!isRef) { setPanelRotatePivot(point); setPanelRotateAxis(null); return; }
+    if (!hasPivot) { setPanelRotatePivot(point); resetAfterPivot(); return; }
+    if (vertEq(pivot, point)) { setPanelRotatePivot(null); resetAfterPivot(); return; }
+    setPanelRotateRefArmVertex(point); setPanelRotateAxis(null); setPanelRotateRefFace(null);
+  };
+  const handleAxisSelect = (a: AxisLetter) => {
+    if (blocked[a]) return;
+    setPanelRotateAxis(a === axis ? null : a);
+    if (isRef) setPanelRotateRefFace(null);   // eksen değişti → referans seçimi baştan
+  };
+  const apply = async (v: number) => {
+    if (isRef || !axis || !pivot || _sceneRotateBusy) return;
+    const st = useAppStore.getState();
+    const fresh = shapeById(panelShape.id, st.shapes);
+    if (!fresh) return;
+    _sceneRotateBusy = true;
+    // Motor eksen noktasını GÖVDE-YEREL çözer (VF oranı); sahnedeki nokta dünya koordinatında → taşınmış / dönmüş gövdede yerele çevrilir.
+    const local = new THREE.Vector3(...pivot).applyMatrix4(getShapeMatrix(fresh).clone().invert());
+    try { await executePanelRotate({ panelShape: fresh, axis, value: v, pivot: [local.x, local.y, local.z], updateShape: st.updateShape }); }
+    catch (e) { console.error('[YAGO][SAHNE-DÖNDÜRME] uygulanamadı:', e); }
+    finally { _sceneRotateBusy = false; }
+    useAppStore.getState().setPanelRotateAxis(null);
+  };
+
+  // Önizleme açısı: Dyn'de girilen (yoksa yön gösterimi), Ref'te nişan noktası referans yüze değene kadar.
+  const litAxis = axis ?? hover;
+  const turn = useMemo(() => {
+    if (!pivot || !litAxis || !showRings) return null;
+    if (isRef) {
+      if (!axis || !arm || !refFace || refFace.faceGroupIndex < 0) return null;
+      const sol = angleToTouchPlane(new THREE.Vector3(...pivot), new THREE.Vector3(...arm), axes[axis].world, new THREE.Vector3(...refFace.normalWorld),
+        new THREE.Vector3(...refFace.pointWorld), 0);
+      return sol && Math.abs(sol.deg) > 0.01 ? { deg: sol.deg, demo: false, letter: axis } : null;
+    }
+    return axis && turning ? { deg: value!, demo: false, letter: axis } : { deg: 24, demo: true, letter: litAxis };
+  }, [pivot, litAxis, showRings, isRef, axis, arm, refFace, axes, turning, value]);
+  const pivotLocal = useMemo(() => (pivot ? new THREE.Vector3(...pivot).applyMatrix4(matrix.clone().invert()) : null), [pivot, matrix]);
+  const tmpQ = useRef(new THREE.Quaternion()), tmpV = useRef(new THREE.Vector3());
+
+  // Panel yeniden kurulunca (uygulama / dış değişiklik) seçili nokta artık bir köşe değilse akış başa döner.
+  useEffect(() => {
+    const st = useAppStore.getState();
+    const gone = (p: Vec3 | null) => !!p && !pivots.some(pv => vertEq(p, pv.pos));
+    if (gone(st.panelRotatePivot)) { st.setPanelRotatePivot(null); st.setPanelRotateAxis(null); st.setPanelRotateRefArmVertex(null); st.setPanelRotateRefFace(null); }
+    else if (gone(st.panelRotateRefArmVertex)) { st.setPanelRotateRefArmVertex(null); st.setPanelRotateAxis(null); st.setPanelRotateRefFace(null); }
+  }, [pivots]);
+  const refStep = !hasPivot ? 0 : !arm ? 1 : !axis ? 2 : !refFace ? 3 : 4;
+  const status = swHover ? `switch the rotate type → ${SCENE_EX_LABEL[nextOf(ROTATE_TYPES, type)]}`
+    : isRef ? ['click the point the panel rotates around', 'click the aim point — the point that will touch the reference face',
+      `click a ring to choose the axis${anyBlocked ? ' · the faded ring runs through the aim point, the panel cannot turn around it' : ''}`,
+      'click the face to aim at on another panel (click again for the face behind)', 'right-click to confirm · Esc cancels'][refStep]
+    : !hasPivot ? 'click the point the panel rotates around (corners or face centres)'
+    : !axis ? 'click a ring to choose the axis'
+    : `type the angle around ${axis.toUpperCase()} in degrees (− turns the other way) · Enter applies · Esc cancels`;
+  useEffect(() => { useAppStore.getState().setSceneExStatus({ label: 'Rotate', type, text: status }); }, [type, status]);
+  useEffect(() => () => useAppStore.getState().setSceneExStatus(null), []);
+  return (
+    <group>
+      {pivots.map((pv, i) => {
+        const isArm = isRef && vertEq(arm, pv.pos);
+        return <GizmoDot key={`pivot-${i}`} position={pv.pos} groupRef={refAt(i)} onClick={() => handleOwnDotClick(pv.pos)}
+          isSelected={vertEq(pivot, pv.pos) || isArm} accent={isArm ? '#0d9488' : pv.kind === 'center' ? '#ea580c' : '#44403c'} />;
+      })}
+      {showRings && ROT_LETTERS.map((l, i) => (
+        <SceneRotateRing key={l} center={pivot!} normal={axes[l].world} labelDir={axes[ROT_LETTERS[(i + 1) % 3]].world} radius={ringRadius} letter={l.toUpperCase()}
+          color={AXIS_RGB[l].main} selected={axis === l} dimmed={axis !== null && axis !== l} disabled={blocked[l]} onPick={() => handleAxisSelect(l)}
+          onHover={h => setHover(cur => (h ? l : cur === l ? null : cur))}>
+          {!isRef && axis === l ? (
+            <SceneNumInput key={entryKey} initial="" placeholder="0" unit="°" color={AXIS_RGB[l].main}
+              title={`Angle around ${l.toUpperCase()} (degrees) — Enter applies, Esc cancels`}
+              parse={t => { const v = numOf(t); return { value: v, valid: v !== null && Math.abs(v) > 0.001 }; }}
+              onText={t => setEntry({ key: entryKey, text: t })} onApply={v => { void apply(v); }} onCancel={() => useAppStore.getState().setPanelRotateAxis(null)} />
+          ) : null}
+        </SceneRotateRing>
+      ))}
+      {turn && pivot && pivotLocal && (
+        <>
+          {!turn.demo && (
+            <SceneAngleSector center={pivot} normal={axes[turn.letter].world} radius={ringRadius} deg={turn.deg} color={C.lit}
+              toward={new THREE.Vector3(...center).sub(new THREE.Vector3(...pivot))} fallback={axes[ROT_LETTERS[(ROT_LETTERS.indexOf(turn.letter) + 1) % 3]].world} />
+          )}
+          <ScenePanelGhost matrix={matrix} edges={edges} demo={turn.demo} color={C.lit}
+            pose={(e, o) => {
+              const q = tmpQ.current.setFromAxisAngle(axes[turn.letter].local, (turn.deg * e * Math.PI) / 180);
+              o.quaternion.copy(q);
+              o.position.copy(pivotLocal).sub(tmpV.current.copy(pivotLocal).applyQuaternion(q));
+            }} />
+        </>
+      )}
+      <SceneTypeSwitch position={center} shift="translate(22px, -22px)" type={type} onHover={setSwHover}
+        onCycle={() => s.setPanelRotateValueMode(nextOf(ROTATE_TYPES, type) as 'dyn' | 'ref')} />
     </group>
   );
 }
@@ -4229,12 +4502,23 @@ const Scene: React.FC = () => {
         if (isPlinthRow(st.selectedPanelRow)) { finishPlinthEdit(); return; }   // seçili baza seti: önce seti bırak
         // Sahne extrude: seçili kenar yoksa araç kapanır. preventDefault → kenar çubuğunun Esc'i (aynı tuşta) şeridi kapatmasın.
         if (st.sceneExtrudePanelId && !st.faceExtrudeMode) { e.preventDefault(); st.setSceneExtrudePanelId(null); return; }
-        if (st.faceExtrudeMode || st.panelMoveMode || st.panelRotateMode) {
-          if (st.faceExtrudeMode) { st.setFaceExtrudeSelectedFace(null); st.setFaceExtrudeRefCandidate(null); st.setFaceExtrudeMode(false); }
-          if (st.panelMoveMode) { st.setPanelMoveAxis(null); st.setPanelMoveMode(false); }
-          if (st.panelRotateMode) { st.setPanelRotateAxis(null); st.setPanelRotatePivot(null); st.setPanelRotateMode(false); }
+        // Sahne taşıma / döndürme: Esc bir adım geri alır (eksen → seçimler → araç). preventDefault: kenar çubuğu açık kalsın.
+        if (st.panelMoveMode) {
+          e.preventDefault();
+          if (st.panelMoveAxis) st.setPanelMoveAxis(null);
+          else if (st.panelMoveValueMode === 'ref' && st.panelMoveRefSourceVertex) st.setPanelMoveValueMode('ref');
+          else st.setPanelMoveMode(false);
           return;
         }
+        if (st.panelRotateMode) {
+          e.preventDefault();
+          if (st.panelRotateAxis !== null) { st.setPanelRotateAxis(null); st.setPanelRotateRefFace(null); }
+          else if (st.panelRotateRefArmVertex) st.setPanelRotateRefArmVertex(null);
+          else if (st.panelRotatePivot) st.setPanelRotatePivot(null);
+          else st.setPanelRotateMode(false);
+          return;
+        }
+        if (st.faceExtrudeMode) { st.setFaceExtrudeSelectedFace(null); st.setFaceExtrudeRefCandidate(null); st.setFaceExtrudeMode(false); return; }
         selectShape(null); exitIsolation(); setVertexEditMode(false); setFaceEditMode(false); clearFilletFaces();
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'g') {
         e.preventDefault();
