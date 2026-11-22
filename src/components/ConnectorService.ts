@@ -14,7 +14,7 @@ import {
   type PanelSurfaceRule, type PanelTypeConfig, type PanelTypeId, type PanelTypeRule, type Shape, type VirtualFace, panelOfVf, requestRebuild, shapeById, useAppStore,
   vfOfPanel,
 } from '../store';
-import { type Vec3, effectiveBodyGeometry, footprintGeometry, genId, localBboxOf, panelHasRotation, round1 } from './Geometry';
+import { type Vec3, effectiveBodyGeometry, genId, localBboxOf, outlineGeometry, panelHasRotation, round1 } from './Geometry';
 import { type ToolSpec } from './CutWorker';
 import { type HoleCutter, CONNECTOR_LAYOUTS_ID, PANEL_TYPE_CONFIG_ID, holeCutterBox, holeCutterOf, importAccessoryFile, libraryDelete, libraryPut } from './AccessoryService';
 import { isDoorPanel } from './DoorService';
@@ -654,7 +654,8 @@ export const connectorUseCount = (id: string, sets: ConnectorLayoutSet[] = useAp
 // ═════════════════════════════════════════════════ 6. BİRLEŞİMLER: bağlayıcının gerçek panellere atılması ═════════════════════════════════════════════════
 /* BİRLEŞİM = B panelinin UCU (kalınlık yüzü) A panelinin geniş yüzüne dayanıyor. B'nin tipinde o kenar için bağlayıcı tanımlıysa temas
    boyunca bağlayıcı noktaları dizilir; her noktada bağlayıcının delikleri / operasyonları B'ye (yüz + uç) ve A'ya (temas yüzü) kesilir, modeli
-   sahneye konur. Yalnız eksene hizalı (dönmemiş, düz) paneller; kapaklar birleşime girmez. Okunan geometri kesilmemiş olandır (ayak izi). */
+   sahneye konur. Yalnız eksene hizalı (dönmemiş, düz) paneller; kapaklar birleşime girmez. Okunan geometri panelin BİÇİM ağıdır
+   (Geometry.outlineGeometry: çizim uygulanmış, kanal / delik kesilmemiş). */
 export interface PanelJoint {
   key: string; bId: string; aId: string; connector: Connector;
   /** Temas düzleminde, B kalınlığının ortasında, temasın BAŞLANGIÇ ucundaki nokta (gövde-yerel). */
@@ -709,7 +710,8 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
   const body = shapeById(bodyId, st.shapes); if (!body) return [];
   const slabs = st.shapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === bodyId && !isDoorPanel(s) && !s.parameters?.curved && !panelHasRotation(s))
     .map(p => {
-      const vf = vfOfPanel(p, st.virtualFaces), geo = footprintGeometry(p), info = slabInfo(geo); if (!vf || !info) return null;
+      // Biçim ağı: çizimle biçimlenmiş panelde birleşim panelin GERÇEK kenarından okunur (çizim öncesi ayak izinden değil).
+      const vf = vfOfPanel(p, st.virtualFaces), geo = outlineGeometry(p), info = slabInfo(geo); if (!vf || !info) return null;
       // Kalınlık ekseni: VF normali (dar şeritte en küçük ölçü kalınlık olmayabilir); belirsizse en küçük ölçü.
       const na = vf.normal.map(Math.abs), byN = na.indexOf(Math.max(...na));
       const thin = na[byN] > 0.9 ? byN : info.size.indexOf(Math.min(...info.size));

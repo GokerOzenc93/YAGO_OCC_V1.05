@@ -163,7 +163,7 @@ function resolveRefRotateDeg(
 
 export type StepOp =
   | { kind: 'translate'; d: THREE.Vector3 }
-  | { kind: 'refTranslate'; targetPanelId: string; sourceFrac?: Vec3; targetFrac?: Vec3; fallback: THREE.Vector3 }
+  | { kind: 'refTranslate'; targetPanelId: string; sourceFrac?: Vec3; targetFrac?: Vec3; fallback: THREE.Vector3; stepId?: string; sourcePoint?: Vec3 }
   | { kind: 'rotate'; deg: number; pivot: THREE.Vector3; axis: THREE.Vector3 };
 
 // move o ANKİ dönüş çerçevesinde ilerler; REF taşıma katı mevcutken çözülsün diye 'refTranslate' döner.
@@ -182,7 +182,7 @@ export function composeSteps(steps: TransformStep[], vf: VirtualFace): {
       const frozenD = () => toVector3(st._refAxisVec).multiplyScalar(st._refDist);
       if (st.refTargetPanelId && (st.refSourceFrac || st.refTargetFrac || hasFrozen)) {
         ops.push({ kind: 'refTranslate', targetPanelId: st.refTargetPanelId, sourceFrac: st.refSourceFrac, targetFrac: st.refTargetFrac,
-          fallback: hasFrozen ? frozenD() : new THREE.Vector3(0, 0, 0) });
+          fallback: hasFrozen ? frozenD() : new THREE.Vector3(0, 0, 0), stepId: st.id, sourcePoint: st.refSourcePoint });
       } else if (hasFrozen) {
         ops.push({ kind: 'translate', d: frozenD() });
       } else {
@@ -2138,6 +2138,15 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
           let rpWorldBox: THREE.Box3;
           try { rpWorldBox = localBboxOf(convertReplicadToThreeGeometry(rp))!.translate(new THREE.Vector3(...parentPos)); }
           catch { rpWorldBox = new THREE.Box3(new THREE.Vector3(), new THREE.Vector3()); }
+          // KAYNAK NOKTA İLK ÇÖZÜMDE burada orana çevrilir: çözümün kullandığı kutunun (bu adımdan önceki levha) kendisine. Nokta levhanın
+          // içinde de olabilir (çizimle kısalmış köşe) → oran kırpılmaz. Adıma yazılır; sonraki üretimler oranı okur.
+          if (!op.sourceFrac && op.sourcePoint && op.targetFrac && !rpWorldBox.isEmpty()) {
+            const sp = op.sourcePoint, lo = rpWorldBox.min.toArray(), hi = rpWorldBox.max.toArray();
+            const fr = [0, 1, 2].map(k => (hi[k] - lo[k] < 1e-6 ? 0 : (sp[k] - lo[k]) / (hi[k] - lo[k]))) as Vec3;
+            op.sourceFrac = fr;
+            steps = steps.map((s: any) => { if (s.id !== op.stepId) return s; const { refSourcePoint: _drop, ...rest } = s; return { ...rest, refSourceFrac: fr }; }) as TransformStep[];
+            stepsChanged = true;
+          }
           const d = resolveRefTranslateDelta(op, rpWorldBox);
           // TEK KAYNAK: uygulanan delta panele yazılır; damgalama bunu okur (yeniden çözmez).
           refDeltaApplied = vec3(d);
@@ -2295,17 +2304,20 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
           }
         }
       }
+      const rpBare = rp;   // kanal / delik kesilmeden önceki katı (biçim ağı için)
       if (grooved) rp = grooved.rp;
 
       // Çizim adımları: yalnız son geçişte katının üstüne; ayak izi / damga / sıralama çizimden etkilenmez. Sonuç _sketchCache'te.
       let preGeo: THREE.BufferGeometry | null = null;
       let sketched: { rp: any; geometry: THREE.BufferGeometry } | null = null;
       let sketchErrors: Record<string, string> = {};
+      let sketchArgs: { baseGeo: THREE.BufferGeometry; vars: Record<string, number> } | null = null;
       if (feats.length) {
         preGeo = grooved ? grooved.geometry : meshed && meshed.shape === rp ? meshed.geometry : convertReplicadToThreeGeometry(rp);
         const baseGeo = ungrooved ?? preGeo;
         // Parametric adımların formül değişkenleri üst gövdeden okunur (ölçüler + özel parametreler); değerleri önbellek anahtarına girer.
         const vars = feats.some(f => f.mode === 'points') ? sketchVarsOf((shapeById(parentShapeId) ?? parentFresh)?.parameters) : {};
+        sketchArgs = { baseGeo, vars };
         const sig = `${meshSignature(preGeo)}|${meshSignature(baseGeo)}|${stepRot.toArray().map(x => x.toFixed(5)).join(',')}|${sketchFeaturesKey(feats)}|${JSON.stringify(vars)}`;
         const hit = _sketchCache.get(panel.id);
         if (hit && hit.sig === sig) { sketched = hit.rp ? { rp: hit.rp, geometry: hit.geometry! } : null; sketchErrors = hit.errors; }
@@ -2338,6 +2350,29 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       // Katı extrude'dan sonra değişmediyse mevcut mesh yeniden kullanılır (aynı tessellation).
       const geometry = posted ?? (sketched ? sketched.geometry : preGeo ?? (grooved ? grooved.geometry : meshed && meshed.shape === rp ? meshed.geometry : convertReplicadToThreeGeometry(rp)));
       if (ungrooved) ungrooved.userData.groovedUuid = geometry.uuid;
+      // BİÇİM AĞI (`shapedGeometry`, bkz. Geometry.outlineGeometry): çizim / çizim sonrası extrude uygulanmış, kanal / delik / bağlayıcı
+      // kesilmemiş ağ. Kesici yoksa son ağın kendisi; varsa aynı adımlar kesilmemiş katıya bir kez daha uygulanır (sonuç saklanır).
+      let shapedGeo: THREE.BufferGeometry | null = null;
+      if (sketched || posted) {
+        if (!grooved) shapedGeo = geometry;
+        else {
+          const cacheable = !postSteps.some((s: any) => s?.refShapeId);
+          const sig = `${meshSignature(sketchArgs?.baseGeo ?? ungrooved ?? geometry)}|${stepRot.toArray().map(x => x.toFixed(5)).join(',')}|${sketchFeaturesKey(feats)}|${JSON.stringify(sketchArgs?.vars ?? {})}|${JSON.stringify(postSteps)}`;
+          const hit = cacheable ? _shapedCache.get(panel.id) : undefined;
+          if (hit && hit.sig === sig) shapedGeo = hit.geometry;
+          else {
+            try {
+              let bare = rpBare, g: THREE.BufferGeometry | null = null;
+              if (sketched && sketchArgs) { const res = await applySketchFeatures(bare, sketchArgs.baseGeo, feats, stepRot, sketchArgs.vars); if (res.applied) bare = res.shape; }
+              if (posted) { const ext = await applyExtrudeSteps(bare, postSteps, useAppStore.getState().shapes); if (ext && ext.shape !== bare) { bare = ext.shape; g = ext.geometry; } }
+              shapedGeo = g ?? convertReplicadToThreeGeometry(bare);
+              if (_shapedCache.size > 200) _shapedCache.clear();
+              if (cacheable) _shapedCache.set(panel.id, { sig, geometry: shapedGeo });
+            } catch (err) { console.warn('[YAGO][MOTOR] biçim ağı kurulamadı:', panel.id, errMsg(err)); }
+          }
+        }
+        if (shapedGeo && shapedGeo !== geometry) shapedGeo.userData.shapedFor = geometry.uuid;
+      }
       const paramPatch: any = {};
       // Uygulanamayan çizim adımları (boş profil, yüz dışında kalan şekil…) panelde işaretlenir → adım listesinde uyarı.
       if (groove) {
@@ -2354,7 +2389,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       updateShape(panel.id, {
         // Panel geometrisi gövde-yerel → dönüşümü gövdeninkiyle aynı olmalı.
         geometry, position: parentPos, rotation: [...(parentFresh.rotation || [0, 0, 0])] as Vec3, scale: [...(parentFresh.scale || [1, 1, 1])] as Vec3,
-        replicadShape: rp, ungroovedGeometry: ungrooved ?? undefined, holes: grooved?.holes.length ? grooved.holes : undefined,
+        replicadShape: rp, ungroovedGeometry: ungrooved ?? undefined, shapedGeometry: shapedGeo ?? undefined, holes: grooved?.holes.length ? grooved.holes : undefined,
         ...(Object.keys(paramPatch).length ? { parameters: { ...panel.parameters, ...paramPatch } } : {}),
       } as any);
       if (groove) {
@@ -2437,6 +2472,8 @@ const _grooveCache = new Map<string, { sig: string; rp: any; geometry: THREE.Buf
 /** Panelin son üretimde kullandığı bağlayıcı kesici imzası ('' = yok): üretim sonunda güncel imzayla karşılaştırılır (connectorFixup). */
 const _connSig = new Map<string, string>();
 const _sketchCache = new Map<string, { sig: string; rp: any | null; geometry: THREE.BufferGeometry | null; errors: Record<string, string> }>();
+/** Biçim ağı (çizim uygulanmış, kesicisiz) — panel başına son sonuç. */
+const _shapedCache = new Map<string, { sig: string; geometry: THREE.BufferGeometry }>();
 /** BİRİM ARAÇ önbelleği (ConnectorService.ConnUnitCut): kanonik çerçevede birleştirilmiş bağlayıcı aracı (ana iş parçacığı; işçinin kendi
  *  önbelleği var). */
 const _unitTools: UnitCache = new Map();

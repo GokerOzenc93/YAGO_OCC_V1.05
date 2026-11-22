@@ -2419,11 +2419,25 @@ function stepAnchorFrac(group: PanelGroup, anchor?: Vec3 | null): Vec3 | undefin
   return body ? fracInCavity(body, anchor, true) : undefined;
 }
 
+/** Aynı yüzün adımı: eksen + taraf aynı, çıpalar YÜZ DÜZLEMİNDE yakın. Eksen bileşenine bakılmaz — yüz adımla yer değiştirir, sahnede tıklanan
+ *  çıpa da onunla kayar (eski karşılaştırma %15'ten büyük adımdan sonra aynı yüzü tanımıyor, ikinci adım ham hacme takılıp etkisiz kalıyordu).
+ *  Aynı sütunda birden çok adım varsa SON uygulanan alınır (görünen yüz onun sonucudur). `loose`: çıpasız adım her çıpayla eşleşir. */
+function sameFaceStepIndex(steps: CavityStep[], f: { axis: number; side: 1 | -1 }, af: Vec3 | undefined, loose: boolean): number {
+  const [ua, va] = [0, 1, 2].filter(a => a !== f.axis);
+  const near = (a?: Vec3) => (!a || !af ? loose : Math.hypot(a[ua] - af[ua], a[va] - af[va]) < 0.15);
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const g = stepFace(steps[i]);
+    if (g.axis === f.axis && g.side === f.side && near(steps[i].anchorFrac)) return i;
+  }
+  return -1;
+}
+
+/** Aynı yüzün adımı varsa YERİNE yazılır; çıpası eskisinden kalır (adımlar ham hacimden sırayla uygulanır, yüzü ham konumunda bulmalı). */
 function upsertCavityStepAt(steps: CavityStep[], step: CavityStep): CavityStep[] {
-  const f = stepFace(step);
-  const near = (a?: Vec3, b?: Vec3) => !a || !b || Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) < 0.15;
-  const idx = steps.findIndex(s => { const g = stepFace(s); return g.axis === f.axis && g.side === f.side && near(s.anchorFrac, step.anchorFrac); });
-  return idx >= 0 ? steps.map((s, i) => (i === idx ? step : s)) : [...steps, step];
+  const idx = sameFaceStepIndex(steps, stepFace(step), step.anchorFrac, true);
+  if (idx < 0) return [...steps, step];
+  const kept: CavityStep = { ...step, anchorFrac: steps[idx].anchorFrac ?? step.anchorFrac };
+  return steps.map((s, i) => (i === idx ? kept : s));
 }
 
 export async function executeCavityExtrude(groupId: string, faceNormal: Vec3, value: number, isFixed: boolean, anchor?: Vec3 | null): Promise<boolean> {
@@ -2440,32 +2454,23 @@ export async function executeCavityExtrude(groupId: string, faceNormal: Vec3, va
   return true;
 }
 
-/** Ok ile hacim: oka göre hacmin en dış yüzü; çıpasız adım yazılır, aynı yöndekiyle birleşir (dyn toplanır, fixed = değer). */
-export async function executeCavityExtrudeOuter(groupId: string, axis: AxisDirLike, value: number, mode: 'dyn' | 'fixed'): Promise<boolean> {
+/** Sahne oku (VolumeSceneExtrude): yüz ÇIPASIYLA adım. Fixed = o yüzün arkasındaki derinlik değer olur. Dyn = yüz ŞİMDİKİ yerinden değer kadar
+ *  oynar: aynı yüzün önceki adımı varsa onunla birleşir (dyn toplanır, fixed ölçüsü değer kadar değişir, ref'in çözülmüş değerine eklenir);
+ *  yoksa yeni adım yazılır (adımlar sırayla uygulandığından o da şimdiki yüzden başlar). */
+export async function executeCavityExtrudeAt(groupId: string, faceNormal: Vec3, value: number, mode: 'dyn' | 'fixed', anchor?: Vec3 | null): Promise<boolean> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value)) return false;
-  const d = axisDirToVec(axis);
-  const n = axisNormal([d.x, d.y, d.z]);
-  const f = stepFace({ faceNormal: n } as CavityStep);
+  if (mode === 'fixed') return executeCavityExtrude(groupId, faceNormal, value, true, anchor);
+  const n = axisNormal(faceNormal), f = stepFace({ faceNormal: n } as CavityStep), af = stepAnchorFrac(group, anchor);
   const steps = group.cavitySteps || [];
-  const idx = steps.findIndex(s => { const g = stepFace(s); return !s.anchorFrac && g.axis === f.axis && g.side === f.side; });
-  const old = idx >= 0 ? steps[idx] : undefined;
-  let isFixed = mode === 'fixed', v = value;
-  if (!isFixed && old) {
-    if (old.refShapeId) v = (old.resolvedValue ?? 0) + value;
-    else { v = old.value + value; isFixed = old.isFixed; }
-  }
-  v = r1(v);
-  const step: CavityStep = { id: old?.id ?? genId('cav'), faceNormal: n, axisLabel: axisLabelOf(n), value: v, isFixed, timestamp: Date.now() };
-  // Toplam 0'a dönen dyn adımı kalkar (hacim ilk hâline döner).
-  const next = !isFixed && Math.abs(v) < 0.01
-    ? steps.filter((_, i) => i !== idx)
-    : idx >= 0 ? steps.map((s, i) => (i === idx ? step : s)) : [...steps, step];
-  if (next.length === steps.length && idx < 0) return false;
-  await commitCavitySteps(group, next);
+  const old = steps[sameFaceStepIndex(steps, f, af, false)];
+  if (!old) return executeCavityExtrude(groupId, faceNormal, value, false, anchor);
+  const isFixed = !old.refShapeId && old.isFixed;
+  const v = r1((old.refShapeId ? old.resolvedValue ?? 0 : old.value) + value);
+  const step: CavityStep = { id: old.id, faceNormal: n, axisLabel: axisLabelOf(n), value: v, isFixed, timestamp: Date.now(), anchorFrac: old.anchorFrac };
+  await commitCavitySteps(group, !isFixed && Math.abs(v) < 0.01 ? steps.filter(s => s !== old) : steps.map(s => (s === old ? step : s)));
   return true;
 }
-type AxisDirLike = Parameters<typeof axisDirToVec>[0];
 
 export async function executeCavityExtrudeToReference(groupId: string, faceNormal: Vec3, ref: RefFacePick, anchor?: Vec3 | null): Promise<boolean> {
   const group = groupById(groupId);
@@ -2478,16 +2483,6 @@ export async function executeCavityExtrudeToReference(groupId: string, faceNorma
   };
   await commitCavitySteps(group, upsertCavityStepAt(group.cavitySteps || [], step));
   return true;
-}
-
-export async function confirmRefCavityExtrude(): Promise<void> {
-  const st = useAppStore.getState();
-  const gid = st.faceExtrudeCavityGroupId, cand = st.faceExtrudeRefCandidate, n = st.faceExtrudeCavityFaceNormal;
-  if (!gid || !cand || cand.faceGroupIndex < 0 || !n) return;
-  await executeCavityExtrudeToReference(gid, n, cand, st.faceExtrudeClickPoint);
-  st.setFaceExtrudeSelectedFace(null);
-  st.setFaceExtrudeMode(false);
-  st.setFaceExtrudeRefCandidate(null);
 }
 
 export function updateCavityStep(groupId: string, stepId: string, value: number): Promise<void> {

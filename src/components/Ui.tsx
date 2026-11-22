@@ -355,7 +355,7 @@ function BusyStatus({ view, live }: { view: NonNullable<ReturnType<typeof useApp
 /* ───────── DURUM ÇUBUĞU = YÖNLENDİRİCİ ─────────
    Bir araç / kip açıkken durum çubuğunun sol tarafı genel bilgiyi (Objects · Selected · Position) bırakır ve yol gösterir:
    araç adı + tip · numaralı adımlar (bitti ✓ · şimdi · sıradaki) · şimdi ne yapılacağı · sağda tuş ipuçları.
-   Sahne araçları (Extrude / Move / Rotate) yönergeyi kendileri yayınlar (store.sceneExStatus, Scene `useStatusGuide`); yerleştirme ve
+   Sahne araçları (Extrude · Volume · Plinth set / Move / Rotate) yönergeyi kendileri yayınlar (store.sceneExStatus, Scene `useStatusGuide`); yerleştirme ve
    düzenleme kipleri depodan burada türetilir (`useModeGuide`). Araç yokken seçime göre kısa bir ipucu çıkar (`useIdleHint`). */
 const GUIDE_CLR = { fixed: '#1f5578', dyn: '#d9540a', ref: '#a16207' } as const;
 const GUIDE_TYPE = { fixed: 'Fixed', dyn: 'Dyn', ref: 'Ref' } as const;
@@ -425,9 +425,7 @@ const gk = (k: string, t: string) => ({ k, t });
 function useModeGuide(): SceneToolStatus | null {
   const s = useStoreFields('selectedShapeId', 'raycastMode', 'raycastPendingVf', 'volumePickMode', 'volumePickGroupId', 'volumePickCandidates', 'volumePickIndex',
     'doorPickMode', 'doorPickCandidates', 'doorPickIndex', 'backPickMode', 'backPickCandidates', 'backPickIndex', 'plinthPickMode', 'plinthPickCandidates',
-    'plinthPickIndex', 'quickBodyMode', 'faceExtrudeMode', 'faceExtrudeCavityGroupId', 'faceExtrudePlinthId', 'faceExtrudeValueMode', 'faceExtrudeSelectedFace',
-    'faceExtrudeCavityFaceNormal', 'faceExtrudeArrowAxis', 'faceExtrudeRefCandidate', 'vertexEditMode', 'selectedVertexIndex', 'vertexDirection', 'filletMode',
-    'selectedFilletFaces');
+    'plinthPickIndex', 'quickBodyMode', 'vertexEditMode', 'selectedVertexIndex', 'vertexDirection', 'filletMode', 'selectedFilletFaces');
   const exit = [gk('Esc', 'exit')];
   // Tıkla-seç-yerleştir kipleri: aynı yere tekrar tık sıradaki adaya geçer, sağ tık yerleştirir.
   const pick = (label: string, what: string, first: string, n: number, i: number, place = 'place'): SceneToolStatus => !s.selectedShapeId
@@ -452,28 +450,6 @@ function useModeGuide(): SceneToolStatus | null {
     s.plinthPickCandidates.length, s.plinthPickIndex);
   if (s.quickBodyMode) return { label: 'Quick body', type: null, steps: ['Settings', 'Apply'], step: 0,
     text: 'Choose the corner joints, base and back on the left, then Apply', keys: exit };
-  // Hacim / baza seti extrude (şeritten): panel extrude sahne aracıdır, kendi yönergesini yayınlar.
-  if (s.faceExtrudeMode && (s.faceExtrudeCavityGroupId || s.faceExtrudePlinthId)) {
-    const label = s.faceExtrudePlinthId ? 'Plinth set' : 'Volume', vm = s.faceExtrudeValueMode;
-    const arrow = vm === 'arrow' || vm === 'arrowFixed', fixed = vm === 'fixed' || vm === 'arrowFixed';
-    const type = vm === 'ref' ? 'ref' : fixed ? 'fixed' : 'dyn';
-    if (arrow) {
-      const a = s.faceExtrudeArrowAxis;
-      return { label, type, steps: ['Arrow', fixed ? 'Size' : 'Distance'], step: a ? 1 : 0,
-        text: !a ? 'Click an arrow on it in the 3D view' : fixed ? `Type the size along ${axisTxt(a)} on the left` : 'Type how far the outer face moves on the left · negative shrinks',
-        keys: a ? [gk('Enter', 'apply'), gk('Esc', 'exit')] : exit };
-    }
-    const hf = s.faceExtrudeSelectedFace !== null && !!s.faceExtrudeCavityFaceNormal;
-    if (vm === 'ref') {
-      const panel = !!s.faceExtrudeRefCandidate?.panelId, face = panel && (s.faceExtrudeRefCandidate?.faceGroupIndex ?? -1) >= 0;
-      const step = !hf ? 0 : !panel ? 1 : !face ? 2 : 3;
-      return { label, type, steps: ['Face', 'Reference panel', 'Reference face', 'Apply'], step,
-        text: ['Click the face to move', 'Click the panel to reach', 'Click the face to reach', 'Apply with ✓ on the left'][step], keys: exit };
-    }
-    return { label, type, steps: ['Face', fixed ? 'Size' : 'Distance'], step: hf ? 1 : 0,
-      text: !hf ? 'Click the face to move' : fixed ? 'Type the size on the left, then Enter or ✓' : 'Type how far the face moves on the left (negative goes in), then Enter or ✓',
-      keys: hf ? [gk('Enter', 'apply'), gk('Esc', 'exit')] : exit };
-  }
   if (s.vertexEditMode) {
     const step = s.selectedVertexIndex === null ? 0 : !s.vertexDirection ? 1 : 2;
     return { label: 'Vertex', type: null, steps: ['Corner', 'Direction', 'Value'], step,

@@ -1679,6 +1679,13 @@ export function footprintGeometry(panel: any): THREE.BufferGeometry | undefined 
   const ug = panel?.ungroovedGeometry as THREE.BufferGeometry | undefined;
   return ug && panel.geometry && ug.userData?.groovedUuid === panel.geometry.uuid ? ug : panel?.geometry;
 }
+/** Panelin BİÇİM ağı: çizim (Shape / Cut) ve çizim sonrası extrude uygulanmış, kanal / delik / bağlayıcı KESİLMEMİŞ (`shapedGeometry`, motor
+ *  son geçişte yazar). Bağlayıcı birleşimleri ve taşıma / döndürme referans noktaları bunu okur — ayak izi (damga, VF sırası) çizim ÖNCESİ ağda
+ *  kalır. Çizimsiz panelde ayak izi ağının kendisi. */
+export function outlineGeometry(panel: any): THREE.BufferGeometry | undefined {
+  const sg = panel?.shapedGeometry as THREE.BufferGeometry | undefined, g = panel?.geometry as THREE.BufferGeometry | undefined;
+  return sg && g && (sg === g || sg.userData?.shapedFor === g.uuid) ? sg : footprintGeometry(panel);
+}
 /** Panelin yüz düzlemine değen 2B ayak izi; değmiyorsa null (o yüzeyde engel değil). */
 function panelFootprintOnPlane(
   panel: any, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, u: THREE.Vector3, v: THREE.Vector3, planeTolerance = 5.0
@@ -2642,6 +2649,8 @@ export interface MoveTransformStep {
   fixedRef?: number;
   refTargetPanelId?: string;
   refSourceFrac?: Vec3;
+  /** REF taşımada seçilen kaynak nokta (dünya). Motor ilk çözümde KENDİ kutusuna oranlayıp `refSourceFrac` yazar ve bunu siler. */
+  refSourcePoint?: Vec3;
   refTargetFrac?: Vec3;
   _refAxisVec?: Vec3;
   _refDist?: number;
@@ -2786,14 +2795,14 @@ async function executePanelMoveRef(
   const axis = dominantAxisLabel(d).toLowerCase() as AxisDir;
   const fresh = freshShape(panelShape);
   const target = shapeById(targetPanelId);
-  const srcBox = worldBboxOf(fresh, fresh.geometry);
   const tgtBox = target ? worldBboxOf(target, target.geometry) : null;
-  const refSourceFrac = srcBox ? fracInBox(srcBox, sourceVertex) : undefined;
   const refTargetFrac = tgtBox ? fracInBox(tgtBox, targetVertex) : undefined;
   const now = Date.now();
+  // Kaynak nokta ORAN olarak burada hesaplanmaz: motor adımı çözerken levhanın o andaki kutusunu kullanır (extrude / kesim / çizim ÖNCESİ);
+  // oran son geometrinin kutusundan alınınca çizimle biçimlenmiş ya da extrude edilmiş panel seçilen köşeden değil kutu köşesinden taşınıyordu.
   const step: MoveTransformStep = {
-    id: `step-${now}`, type: 'move', axis, value: dist, timestamp: now, refTargetPanelId: targetPanelId,
-    ...(refSourceFrac ? { refSourceFrac } : {}), ...(refTargetFrac ? { refTargetFrac } : {}),
+    id: `step-${now}`, type: 'move', axis, value: round1(dist), timestamp: now, refTargetPanelId: targetPanelId,
+    refSourcePoint: sourceVertex, ...(refTargetFrac ? { refTargetFrac } : {}),
     _refAxisVec: [d.x / dist, d.y / dist, d.z / dist], _refDist: dist,
   };
   return appendStep(fresh, step, updateShape);
@@ -3209,39 +3218,6 @@ export async function executeFaceExtrude({ panelShape: panel, faceGroupIndex, va
   return commitAndRebuild(panel, { [up.key]: up.steps }, updateShape);
 }
 
-/** Ok modu: `axis` yönündeki en dış yüz `delta` büyür; aynı yönün ok adımı varsa toplanır. Adım `outer` → hep en dış yüze uygulanır. */
-export async function executeFaceExtrudeOuter({ panelShape, axis, delta: value, mode = 'dyn', updateShape }: {
-  panelShape: Shape; axis: AxisDir; delta: number; /** fixed: panelin o eksendeki TOPLAM ölçüsü `delta` olur (ok ucundaki Dyn/Fixed) */ mode?: 'dyn' | 'fixed'; updateShape: UpdateShape;
-}): Promise<boolean> {
-  const panel = freshShape(panelShape);
-  if (!panel.geometry) return false;
-  const dir = axisDirToVec(axis);
-  const bbSize = localBboxOf(panel.geometry)?.getSize(new THREE.Vector3());
-  const span = bbSize ? Math.abs(bbSize.dot(new THREE.Vector3(Math.abs(dir.x), Math.abs(dir.y), Math.abs(dir.z)))) : 0;
-  const delta = mode === 'fixed' ? round1(value - span) : value;
-  if (Math.abs(delta) < 0.01) return false;
-  const { groups } = getFacesAndGroups(panel.geometry);
-  let best = -1, bestD = -Infinity;
-  groups.forEach((g, i) => {
-    if (g.normal.clone().normalize().dot(dir) < 0.7) return;
-    const d = g.center.dot(dir);
-    if (d > bestD + 1e-6 || (Math.abs(d - bestD) <= 1e-6 && best >= 0 && g.totalArea > groups[best].totalArea)) { bestD = d; best = i; }
-  });
-  if (best < 0) return false;
-  const face = resolveClickedFace(panel, best);
-  if (!face) return false;
-  const label = dominantAxisLabel(face.faceNormal);
-  const steps = extrudeStepsOf(panel);
-  const idx = steps.findIndex(s => s.outer && s.axisLabel === label);
-  const next = idx >= 0
-    ? steps.map((s, i) => (i === idx ? { ...s, value: round1(s.value + delta), isFixed: false, resolvedValue: undefined } : s))
-    : [...steps, { id: genId('ext'), faceNormal: vec3(face.faceNormal), faceCenter: vec3(face.faceCenter), axisLabel: label, value: round1(delta),
-        isFixed: false, timestamp: Date.now(), outer: true } as ExtrudeStep];
-  // Toplam 0'a dönen ok adımı silinir (listede boş adım kalmasın).
-  const cleaned = next.filter(s => !(s.outer && Math.abs(s.value) < 0.01));
-  return commitAndRebuild(panel, { extrudeSteps: cleaned }, updateShape);
-}
-
 /** Ref extrude: değer rebuild'de referansın güncel düzleminden çözülür (value=0 işaretçi). */
 async function executeFaceExtrudeToReference(
   panel: Shape, faceGroupIndex: number, ref: RefFacePick, clickPoint: Vec3 | undefined, updateShape: UpdateShape,
@@ -3253,63 +3229,8 @@ async function executeFaceExtrudeToReference(
   return commitAndRebuild(panel, { [up.key]: up.steps }, updateShape);
 }
 
-// Referans yüz seçimi: aynı noktaya her tık ışın boyunca arkadaki yüze geçer; döngü durumu modül düzeyinde.
-
+// Referans yüz seçimi sahnededir (Scene › REFERANS SEÇİMİ: panel → yalnız bırak → yüz); burada yalnız renkler.
 export const REF_COLORS = {
   hover: 0xf2d57e, selected: 0xdfae4c, hoverCss: '#f2d57e', selectedCss: '#dfae4c', hoverOpacity: 0.42, selectedOpacity: 0.68,
 } as const;
 
-interface RefFaceCandidate { shapeId: string; faceGroupIndex: number; depth: number; pointWorld: Vec3; normalWorld: Vec3 }
-
-/** Işının deldiği yüz grupları (hedef hariç), derinlik sıralı; düz gruba indirgenir, kopyalar elenir. */
-function gatherRefFaceCandidates(rayOrigin: THREE.Vector3, rayDir: THREE.Vector3, shapes: any[], targetPanelId: string | null): RefFaceCandidate[] {
-  const dir = rayDir.clone().normalize();
-  const out: RefFaceCandidate[] = [];
-  for (const s of shapes) {
-    if (!s?.geometry || s.id === targetPanelId) continue;
-    const M = getShapeMatrix(s);
-    const normalMatrix = new THREE.Matrix3().getNormalMatrix(M);
-    const { faces, groups } = getFacesAndGroups(s.geometry);
-    for (let gi = 0; gi < groups.length; gi++) {
-      const group = groups[gi];
-      const nWorld = group.normal.clone().normalize().applyMatrix3(normalMatrix).normalize();
-      const denom = nWorld.dot(dir);
-      if (Math.abs(denom) < 1e-6) continue;
-      const planePt = group.center.clone().applyMatrix4(M);
-      const t = planePt.clone().sub(rayOrigin).dot(nWorld) / denom;
-      if (t < 0) continue;
-      const hit = rayOrigin.clone().addScaledVector(dir, t);
-      const inside = group.faceIndices.some(fi => {
-        const w = faces[fi]?.vertices.map(q => q.clone().applyMatrix4(M));
-        return !!w && pointInTriangle3D(hit, w[0], w[1], w[2]);
-      });
-      if (!inside) continue;
-      const snapped = snapToFlatGroup(gi, groups);
-      const sNormalWorld = (groups[snapped] || group).normal.clone().normalize().applyMatrix3(normalMatrix).normalize();
-      out.push({ shapeId: s.id, faceGroupIndex: snapped, depth: t, pointWorld: vec3(hit), normalWorld: vec3(sNormalWorld) });
-    }
-  }
-  out.sort((a, b) => a.depth - b.depth);
-  const seen = new Set<string>();
-  return out.filter(c => { const k = `${c.shapeId}#${c.faceGroupIndex}`; if (seen.has(k)) return false; seen.add(k); return true; });
-}
-
-let lastPick: { x: number; y: number; index: number; ctx: string } | null = null;
-const SAME_SPOT_PX = 6;
-
-export function resetRefFacePick() { lastPick = null; }
-
-export function cycleRefFacePickFromEvent(e: any, shapes: any[], targetPanelId: string | null, setCandidate: (v: RefFacePick) => void): boolean {
-  const ray: THREE.Ray | undefined = e?.ray;
-  if (!ray) return false;
-  const cands = gatherRefFaceCandidates(ray.origin.clone(), ray.direction.clone(), shapes, targetPanelId);
-  if (cands.length === 0) return false;
-  const sx = e?.nativeEvent?.clientX ?? 0, sy = e?.nativeEvent?.clientY ?? 0;
-  const ctx = String(targetPanelId ?? '');
-  const sameSpot = !!lastPick && lastPick.ctx === ctx && Math.hypot(sx - lastPick.x, sy - lastPick.y) < SAME_SPOT_PX;
-  const index = sameSpot ? (lastPick!.index + 1) % cands.length : 0;
-  lastPick = { x: sx, y: sy, index, ctx };
-  const c = cands[index];
-  setCandidate({ panelId: c.shapeId, faceGroupIndex: c.faceGroupIndex, normalWorld: c.normalWorld, pointWorld: c.pointWorld });
-  return true;
-}

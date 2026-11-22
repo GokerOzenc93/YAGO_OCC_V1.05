@@ -347,8 +347,7 @@ export interface PanelGroup {
 
 /* ───────── HIZLI GÖVDE (PanelGroupService › hızlı gövde) ───────── */
 /** Taban tipi: düz (yere oturur) / ayaklı (paneller ayak kadar yukarıda) / bazalı (yanlar yere iner, alt panel baza kadar yukarıda). */
-/** 'arrow' = ok modu DYN (her tık değer kadar), 'arrowFixed' = ok modu FIXED (o eksendeki toplam ölçü = değer). */
-export type FaceExtrudeValueMode = 'arrow' | 'arrowFixed' | 'fixed' | 'dyn' | 'ref';
+export type FaceExtrudeValueMode = 'fixed' | 'dyn' | 'ref';
 export type QuickBodyBase = 'plain' | 'legs' | 'plinth';
 /** Hızlı gövde parçaları (VF.quickBody); aynı rolde birden çok yüz → `key#n`. topFront / … = üst / alt panel yerine kayıtlar. */
 export type QuickBodyPartBase = 'top' | 'left' | 'right' | 'bottom' | 'plinth' | 'rearPlinth' | 'topFront' | 'topRear' | 'bottomFront' | 'bottomRear';
@@ -760,9 +759,7 @@ export interface AppState {
   faceExtrudeTargetPanelId: string | null; setFaceExtrudeTargetPanelId: (id: string | null) => void;
   faceExtrudeSelectedFace: number | null; setFaceExtrudeSelectedFace: (i: number | null) => void;
   faceExtrudeClickPoint: Vec3 | null; setFaceExtrudeClickPoint: (p: Vec3 | null) => void;
-  faceExtrudeThickness: number; setFaceExtrudeThickness: (v: number) => void;
   /** 'fixed' = sabit ölçü, 'dyn' = delta, 'ref' = referans yüze bağlı. */
-  /** 'arrow' / 'arrowFixed' = ok modları: yüz seçilmez, 3D'deki oklar panelin EN DIŞ yüzünü büyütür (dyn: değer kadar · fixed: ölçü = değer). */
   faceExtrudeValueMode: FaceExtrudeValueMode; setFaceExtrudeValueMode: (m: FaceExtrudeValueMode) => void;
   faceExtrudeRefCandidate: RefFacePick | null; setFaceExtrudeRefCandidate: (v: RefFacePick | null) => void;
   /** Extrude modu panel yerine raf/dikme grubunun HACMİNİ hedefler. */
@@ -770,8 +767,10 @@ export interface AppState {
   faceExtrudeCavityFaceNormal: Vec3 | null; setFaceExtrudeCavityFaceNormal: (n: Vec3 | null) => void;
   /** Baza seti hacim düzenleme (Volume): hedef set — panel / grup hedefiyle karşılıklı dışlayıcı. */
   faceExtrudePlinthId: string | null; setFaceExtrudePlinthId: (id: string | null) => void;
-  /** Ok modlarında seçili ok: tık yalnız seçer, şeritteki onay uygular. */
-  faceExtrudeArrowAxis: AxisDir | null; setFaceExtrudeArrowAxis: (a: AxisDir | null) => void;
+  /** REFERANS SEÇİMİ (extrude · hacim · döndürme): önce panel / gövde tıklanır → o YALNIZ bırakılır (`refIsolateId`) → yüzü seçilir. Taşımada
+   *  yalnız bırakma hedef panelden türetilir (hedef panel seçili, köşe henüz değil). `refPickNote`: üzerine gelinen yüzün durum çubuğu notu. */
+  refIsolateId: string | null; setRefIsolateId: (id: string | null) => void;
+  refPickNote: string | null; setRefPickNote: (t: string | null) => void;
 
   panelMoveMode: boolean; setPanelMoveMode: (b: boolean) => void;
   panelMoveTargetPanelId: string | null; setPanelMoveTargetPanelId: (id: string | null) => void;
@@ -1115,27 +1114,29 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   faceExtrudeMode: false,
   setFaceExtrudeMode: (b) => set({
-    faceExtrudeMode: b, faceExtrudeSelectedFace: null, faceExtrudeClickPoint: null, faceExtrudeCavityFaceNormal: null, faceExtrudeArrowAxis: null,
+    refIsolateId: null, refPickNote: null,
+    faceExtrudeMode: b, faceExtrudeSelectedFace: null, faceExtrudeClickPoint: null, faceExtrudeCavityFaceNormal: null,
     ...(!b ? { faceExtrudeTargetPanelId: null, faceExtrudeRefCandidate: null, faceExtrudeCavityGroupId: null, faceExtrudePlinthId: null } : {}),
   }),
   faceExtrudeTargetPanelId: null,
   setFaceExtrudeTargetPanelId: (id) => set({
-    faceExtrudeTargetPanelId: id, faceExtrudeArrowAxis: null,
+    faceExtrudeTargetPanelId: id, refIsolateId: null,
     ...(id ? { faceExtrudeCavityGroupId: null, faceExtrudeCavityFaceNormal: null, faceExtrudePlinthId: null } : {}),
   }),
   faceExtrudeCavityGroupId: null,
-  setFaceExtrudeCavityGroupId: (id) => set({ faceExtrudeCavityGroupId: id, faceExtrudeArrowAxis: null,
+  setFaceExtrudeCavityGroupId: (id) => set({ faceExtrudeCavityGroupId: id, refIsolateId: null,
     ...(id ? { faceExtrudeTargetPanelId: null, faceExtrudePlinthId: null } : {}) }),
   faceExtrudePlinthId: null,
-  setFaceExtrudePlinthId: (id) => set({ faceExtrudePlinthId: id, faceExtrudeSelectedFace: null, faceExtrudeCavityFaceNormal: null, faceExtrudeArrowAxis: null,
+  setFaceExtrudePlinthId: (id) => set({ faceExtrudePlinthId: id, faceExtrudeSelectedFace: null, faceExtrudeCavityFaceNormal: null,
     ...(id ? { faceExtrudeTargetPanelId: null, faceExtrudeCavityGroupId: null } : {}) }),
   faceExtrudeCavityFaceNormal: null, setFaceExtrudeCavityFaceNormal: (n) => set({ faceExtrudeCavityFaceNormal: n }),
-  faceExtrudeSelectedFace: null, setFaceExtrudeSelectedFace: (i) => set({ faceExtrudeSelectedFace: i }),
+  faceExtrudeSelectedFace: null, setFaceExtrudeSelectedFace: (i) => set({ faceExtrudeSelectedFace: i, refIsolateId: null, refPickNote: null }),
   faceExtrudeClickPoint: null, setFaceExtrudeClickPoint: (p) => set({ faceExtrudeClickPoint: p }),
-  faceExtrudeThickness: 18, setFaceExtrudeThickness: (v) => set({ faceExtrudeThickness: v }),
-  faceExtrudeValueMode: 'fixed', setFaceExtrudeValueMode: (m) => set({ faceExtrudeValueMode: m, faceExtrudeArrowAxis: null }),
-  faceExtrudeArrowAxis: null, setFaceExtrudeArrowAxis: (a) => set({ faceExtrudeArrowAxis: a }),
-  faceExtrudeRefCandidate: null, setFaceExtrudeRefCandidate: (v) => set({ faceExtrudeRefCandidate: v }),
+  faceExtrudeValueMode: 'fixed', setFaceExtrudeValueMode: (m) => set({ faceExtrudeValueMode: m, refIsolateId: null, refPickNote: null }),
+  // Referans yüzü seçildi (ya da seçim bırakıldı): yalnız bırakma biter.
+  faceExtrudeRefCandidate: null, setFaceExtrudeRefCandidate: (v) => set({ faceExtrudeRefCandidate: v, refIsolateId: null, refPickNote: null }),
+  refIsolateId: null, setRefIsolateId: (id) => set({ refIsolateId: id, refPickNote: null }),
+  refPickNote: null, setRefPickNote: (t) => set(s => (s.refPickNote === t ? s : { refPickNote: t })),
 
   panelMoveMode: false,
   setPanelMoveMode: (b) => set({
@@ -1156,23 +1157,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Giriş/çıkışta alt durum sıfırlanır; hedef panel id girişte korunur (satır düğmesi onu hemen önce yazar).
   panelRotateMode: false,
   setPanelRotateMode: (b) => set({
-    panelRotateMode: b,
+    panelRotateMode: b, refIsolateId: null, refPickNote: null,
     panelRotatePivot: null, panelRotateAxis: null,
     panelRotateValueMode: b ? 'dyn' : null, panelRotateRefArmVertex: null, panelRotateRefFace: null,
     ...(!b ? { panelRotateTargetPanelId: null } : {}),
   }),
   panelRotateTargetPanelId: null, setPanelRotateTargetPanelId: (id) => set({ panelRotateTargetPanelId: id }),
-  panelRotatePivot: null, setPanelRotatePivot: (p) => set({ panelRotatePivot: p }),
-  panelRotateAxis: null, setPanelRotateAxis: (a) => set({ panelRotateAxis: a }),
+  panelRotatePivot: null, setPanelRotatePivot: (p) => set({ panelRotatePivot: p, refIsolateId: null }),
+  panelRotateAxis: null, setPanelRotateAxis: (a) => set({ panelRotateAxis: a, refIsolateId: null }),
   // Mod seçimi/değişimi akışı BAŞA alır (yarım kalmış seçim taşınmaz).
   panelRotateValueMode: null,
   setPanelRotateValueMode: (m) => set({
-    panelRotateValueMode: m, panelRotatePivot: null, panelRotateAxis: null,
+    panelRotateValueMode: m, panelRotatePivot: null, panelRotateAxis: null, refIsolateId: null, refPickNote: null,
     panelRotateRefArmVertex: null, panelRotateRefFace: null,
   }),
-  panelRotateRefArmVertex: null, setPanelRotateRefArmVertex: (v) => set({ panelRotateRefArmVertex: v }),
+  panelRotateRefArmVertex: null, setPanelRotateRefArmVertex: (v) => set({ panelRotateRefArmVertex: v, refIsolateId: null }),
   // Yüz seçimi hedef paneli de belirler.
-  panelRotateRefFace: null, setPanelRotateRefFace: (f) => set({ panelRotateRefFace: f }),
+  panelRotateRefFace: null, setPanelRotateRefFace: (f) => set({ panelRotateRefFace: f, refIsolateId: null, refPickNote: null }),
 
   virtualFaces: [],
   // Gövde paneli varsayılan 'Panel' adını alır (description = satır adı); iç üyelerin adı grup adından gelir.

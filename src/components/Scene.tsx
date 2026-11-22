@@ -18,7 +18,7 @@ import {
   pointInTriangle3D, findPanelCoveringPoint, groupIndexOfFace, panelHasRotation, createGroupBoundaryEdges, applyFillets, matchCurvedFaceGroup,
   convertReplicadToThreeGeometry, type AxisLetter, type AxisDir, axisDirToVec, uniqueMeshPoints, resolveBaseVertices, composeVertexTargets,
   confirmPanelMoveRef, confirmPanelRotateRef, resetRefFacePick, axisIndexOf, getReplicadVertices, round1, swingPoints,
-  footprintGeometry, isPostSketchFace, dominantAxisLabel, executeFaceExtrude, mapAxisToVfLocal, angleToTouchPlane, executePanelMove, executePanelMoveFixed,
+  footprintGeometry, outlineGeometry, isPostSketchFace, dominantAxisLabel, executeFaceExtrude, mapAxisToVfLocal, angleToTouchPlane, executePanelMove, executePanelMoveFixed,
   executePanelRotate,
 } from './Geometry';
 import { connectorPartInstances, placementTypeFor } from './ConnectorService';
@@ -2222,33 +2222,45 @@ export function GizmoDot({ position, isSelected, accent = '#44403c', onClick, gr
   );
 }
 
-/** Gerçek köşeler (dünya): özellik kenarlarının YÖN DEĞİŞTİRDİĞİ noktalar; düz kenar ortasındaki tesselasyon noktaları köşe sayılmaz. */
+/** Gerçek köşeler (dünya) — taşıma / döndürme referans noktaları. Panelin BİÇİM ağından okunur (Geometry.outlineGeometry): çizimin verdiği
+ *  şekil dahil, kanal / delik / bağlayıcı kesimleri HARİÇ (her delik çemberi onlarca nokta ekliyordu). Eğri kenarın (yay, daire, radüs)
+ *  ara noktaları da köşe değildir: yalnız yayın düz kenarla buluştuğu uçlar kalır. */
 export function computeRealCorners(panelShape: Shape): Vec3[] {
-  if (!panelShape.geometry) return [];
-  const edges = new THREE.EdgesGeometry(panelShape.geometry, 1);
+  const geo = outlineGeometry(panelShape) ?? panelShape.geometry;
+  if (!geo) return [];
+  const edges = new THREE.EdgesGeometry(geo, 1);
   const ep = edges.getAttribute('position') as THREE.BufferAttribute;
   const k = (x: number, y: number, z: number) => `${Math.round(x * 100)},${Math.round(y * 100)},${Math.round(z * 100)}`;
-  const incident = new Map<string, THREE.Vector3[]>();
+  const incident = new Map<string, Array<{ d: THREE.Vector3; len: number }>>();
   const pts = new Map<string, THREE.Vector3>();
   for (let i = 0; i + 1 < ep.count; i += 2) {
     const a = new THREE.Vector3(ep.getX(i), ep.getY(i), ep.getZ(i));
     const b = new THREE.Vector3(ep.getX(i + 1), ep.getY(i + 1), ep.getZ(i + 1));
-    if (a.distanceToSquared(b) < 1e-8) continue;
+    const len = a.distanceTo(b);
+    if (len < 1e-4) continue;
     const ka = k(a.x, a.y, a.z), kb = k(b.x, b.y, b.z);
-    const d = b.clone().sub(a).normalize();
+    const d = b.clone().sub(a).divideScalar(len);
     if (!incident.has(ka)) incident.set(ka, []);
     if (!incident.has(kb)) incident.set(kb, []);
-    incident.get(ka)!.push(d.clone());
-    incident.get(kb)!.push(d.clone().negate());
+    incident.get(ka)!.push({ d: d.clone(), len });
+    incident.get(kb)!.push({ d: d.clone().negate(), len });
     pts.set(ka, a); pts.set(kb, b);
   }
   edges.dispose();
   const mat = getShapeMatrix(panelShape);
   const result: Vec3[] = [];
   for (const [key, v] of pts) {
-    const dirs = incident.get(key);
-    if (!dirs || dirs.length === 0) continue;
-    if (dirs.length === 2 && dirs[0].dot(dirs[1]) < -0.999) continue; // düz kenarın ara noktası
+    const inc = incident.get(key);
+    if (!inc || inc.length === 0) continue;
+    if (inc.length === 2 && inc[0].d.dot(inc[1].d) < -0.999) continue; // düz kenarın ara noktası
+    // Eğri kenarın ara noktası: neredeyse karşılıklı (< ~25°) ve boyları yakın iki kenar = aynı yayın ardışık kirişleri. Tam doğrusal çift
+    // (T birleşimi) ve boyları çok farklı çift (düz kenar ↔ yay ucu) köşe sayılır.
+    let curve = false;
+    for (let i = 0; i < inc.length && !curve; i++) for (let j = i + 1; j < inc.length; j++) {
+      const dot = inc[i].d.dot(inc[j].d);
+      if (dot < -0.9 && dot > -0.999999 && Math.max(inc[i].len, inc[j].len) < 4 * Math.min(inc[i].len, inc[j].len)) { curve = true; break; }
+    }
+    if (curve) continue;
     result.push(worldOf(v, mat));
   }
   return result;
@@ -4312,8 +4324,9 @@ function SceneAngleSector({ center, normal, toward, fallback, radius, deg, color
 }
 
 function computeFaceCenters(panelShape: Shape): Vec3[] {
-  if (!panelShape.geometry) return [];
-  const corners = uniqueMeshPoints(panelShape.geometry, 100);
+  const geo = outlineGeometry(panelShape) ?? panelShape.geometry;   // delik / kanal köşeleri merkezi kaydırmasın
+  if (!geo) return [];
+  const corners = uniqueMeshPoints(geo, 100);
   if (corners.length < 8) return [];
   let minD = Infinity;
   const thickDir = new THREE.Vector3(0, 1, 0);
