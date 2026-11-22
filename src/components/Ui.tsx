@@ -352,23 +352,162 @@ function BusyStatus({ view, live }: { view: NonNullable<ReturnType<typeof useApp
   );
 }
 
-/** Sahne aracı satırı (Extrude / Move / Rotate): araç adı, tipi (renkli nokta + ad) ve ne yapılacağı. Sahnede yazı yok — açıklama burada. */
-const EX_STATUS_CLR = { fixed: '#1f5578', dyn: '#d9540a', ref: '#a16207' } as const;
-const EX_STATUS_NAME = { fixed: 'Fixed', dyn: 'Dyn', ref: 'Ref' } as const;
-const ExtrudeStatus: React.FC<{ status: SceneToolStatus }> = ({ status }) => (
-  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, overflow: 'hidden' }}>
-    <span style={{ color: TOKENS.labelClr, fontSize: '11px', fontWeight: 420, letterSpacing: '0.04em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{status.label}</span>
-    {status.type && <>
-      <span style={{ width: 7, height: 7, borderRadius: 4, background: EX_STATUS_CLR[status.type], flexShrink: 0 }} />
-      <span style={{ color: EX_STATUS_CLR[status.type], fontSize: '11.5px', fontWeight: 620, whiteSpace: 'nowrap' }}>{EX_STATUS_NAME[status.type]}</span>
-    </>}
-    <span style={{ color: '#57534e', fontSize: '11.5px', fontWeight: 460, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{status.text}</span>
-  </div>
-);
+/* ───────── DURUM ÇUBUĞU = YÖNLENDİRİCİ ─────────
+   Bir araç / kip açıkken durum çubuğunun sol tarafı genel bilgiyi (Objects · Selected · Position) bırakır ve yol gösterir:
+   araç adı + tip · numaralı adımlar (bitti ✓ · şimdi · sıradaki) · şimdi ne yapılacağı · sağda tuş ipuçları.
+   Sahne araçları (Extrude / Move / Rotate) yönergeyi kendileri yayınlar (store.sceneExStatus, Scene `useStatusGuide`); yerleştirme ve
+   düzenleme kipleri depodan burada türetilir (`useModeGuide`). Araç yokken seçime göre kısa bir ipucu çıkar (`useIdleHint`). */
+const GUIDE_CLR = { fixed: '#1f5578', dyn: '#d9540a', ref: '#a16207' } as const;
+const GUIDE_TYPE = { fixed: 'Fixed', dyn: 'Dyn', ref: 'Ref' } as const;
+const GUIDE_INK = '#57534e';
+const GUIDE_CSS = `.yago-gd-step>span{transition:background-color .18s ease,color .18s ease,border-color .18s ease}
+@keyframes yagoGuideIn{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:none}}.yago-gd-text{animation:yagoGuideIn .22s ease-out}`;
+const KEYCAP: React.CSSProperties = {
+  fontFamily: UI_FONT, fontSize: '10px', fontWeight: 600, color: '#44403c', lineHeight: '13px', padding: '0 5px', borderRadius: 4,
+  background: 'linear-gradient(180deg,#ffffff 0%,#f5f2ec 100%)', border: '1px solid rgba(60,50,40,0.16)', borderBottomWidth: 2, whiteSpace: 'nowrap',
+};
+const axisTxt = (a: string | null | undefined) => (a ? `${a[0].toUpperCase()}${a[1] ?? ''}` : '');
+
+function GuideStatus({ g }: { g: SceneToolStatus }) {
+  const accent = g.type ? GUIDE_CLR[g.type] : GUIDE_INK;
+  const steps = g.steps ?? [], cur = g.step ?? 0;
+  const line = g.note ?? g.text;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: 1 }} role="status" aria-live="polite">
+      <style>{GUIDE_CSS}</style>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+        <span style={{ width: 6, height: 6, borderRadius: 3, background: accent, boxShadow: `0 0 0 2.5px ${accent}26` }} />
+        <span style={{ color: '#1c1917', fontSize: '11px', fontWeight: 640, letterSpacing: '0.05em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{g.label}</span>
+        {g.type && <span style={{ color: accent, fontSize: '11.5px', fontWeight: 620, whiteSpace: 'nowrap' }}>{GUIDE_TYPE[g.type]}</span>}
+      </div>
+      {steps.length > 0 && <>
+        <VSep />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }} aria-label={`Step ${Math.min(cur + 1, steps.length)} of ${steps.length}`}>
+          {steps.map((name, i) => {
+            const done = i < cur, now = i === cur;
+            return (
+              <React.Fragment key={i}>
+                {i > 0 && <ChevronRight size={11} strokeWidth={2} color="#cfc8be" style={{ flexShrink: 0 }} />}
+                <span className="yago-gd-step" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }} aria-current={now ? 'step' : undefined}>
+                  <span style={{
+                    width: 15, height: 15, borderRadius: 8, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
+                    fontSize: '9.5px', fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+                    background: now ? accent : done ? `${accent}1f` : 'transparent', color: now ? '#fffdf9' : done ? accent : '#b5aea5',
+                    border: now || done ? '1px solid transparent' : '1px solid #dbd5cb',
+                  }}>{done ? <Check size={9} strokeWidth={3.2} /> : i + 1}</span>
+                  <span style={{ fontSize: '11.5px', fontWeight: now ? 620 : 470, color: now ? '#1c1917' : done ? '#8a8378' : '#b5aea5', whiteSpace: 'nowrap' }}>{name}</span>
+                </span>
+              </React.Fragment>
+            );
+          })}
+        </div>
+      </>}
+      <VSep />
+      <span key={line} className="yago-gd-text" title={line}
+        style={{ color: g.note ? accent : '#292524', fontSize: '11.5px', fontWeight: g.note ? 540 : 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
+        {line}
+      </span>
+      {!!g.keys?.length && (
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0, paddingLeft: 6 }}>
+          {g.keys.map(({ k, t }) => (
+            <span key={k + t} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}>
+              <kbd style={KEYCAP}>{k}</kbd><span style={{ color: '#8a8378', fontSize: '10.5px', fontWeight: 460 }}>{t}</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const gk = (k: string, t: string) => ({ k, t });
+/** Yerleştirme / düzenleme kiplerinin yönergesi (depodan türetilir). Sahne araçları kendi yönergesini yayınlar; o varsa bu çalışmaz. */
+function useModeGuide(): SceneToolStatus | null {
+  const s = useStoreFields('selectedShapeId', 'raycastMode', 'raycastPendingVf', 'volumePickMode', 'volumePickGroupId', 'volumePickCandidates', 'volumePickIndex',
+    'doorPickMode', 'doorPickCandidates', 'doorPickIndex', 'backPickMode', 'backPickCandidates', 'backPickIndex', 'plinthPickMode', 'plinthPickCandidates',
+    'plinthPickIndex', 'quickBodyMode', 'faceExtrudeMode', 'faceExtrudeCavityGroupId', 'faceExtrudePlinthId', 'faceExtrudeValueMode', 'faceExtrudeSelectedFace',
+    'faceExtrudeCavityFaceNormal', 'faceExtrudeArrowAxis', 'faceExtrudeRefCandidate', 'vertexEditMode', 'selectedVertexIndex', 'vertexDirection', 'filletMode',
+    'selectedFilletFaces');
+  const exit = [gk('Esc', 'exit')];
+  // Tıkla-seç-yerleştir kipleri: aynı yere tekrar tık sıradaki adaya geçer, sağ tık yerleştirir.
+  const pick = (label: string, what: string, first: string, n: number, i: number, place = 'place'): SceneToolStatus => !s.selectedShapeId
+    ? { label, type: null, steps: ['Body', what, 'Place'], step: 0, text: 'Select a body first', keys: exit }
+    : n === 0 ? { label, type: null, steps: [what, 'Place'], step: 0, text: first, keys: exit }
+    : { label, type: null, steps: [what, 'Place'], step: 1,
+        text: `${n > 1 ? `Option ${i + 1} of ${n} — ` : ''}right-click to ${place} it${n > 1 ? ' · click again for the next one' : ''}`,
+        keys: [...(n > 1 ? [gk('Click again', 'next')] : []), gk('Right-click', place), ...exit] };
+  if (s.raycastMode) return !s.selectedShapeId ? pick('Panel', 'Face', '', 0, 0)
+    : s.raycastPendingVf ? { label: 'Panel', type: null, steps: ['Face', 'Place'], step: 1,
+        text: 'Right-click to place the panel · click again for the next region of the face · name and role are on the left',
+        keys: [gk('Click again', 'next region'), gk('Right-click', 'place'), ...exit] }
+    : { label: 'Panel', type: null, steps: ['Face', 'Place'], step: 0, text: 'Click a body face — the panel fills it', keys: exit };
+  if (s.volumePickMode) {
+    const reloc = !!s.volumePickGroupId, kind = s.volumePickMode === 'shelf' ? 'Shelf' : 'Divider';
+    return pick(reloc ? 'Relocate' : kind, 'Volume', reloc ? 'Click the new volume for the group' : `Click inside a volume of the body — the ${kind.toLowerCase()} goes there`,
+      s.volumePickCandidates.length, s.volumePickIndex, reloc ? 'relocate' : 'place');
+  }
+  if (s.doorPickMode) return pick('Door', 'Face', 'Click a body face — the door covers that opening (outer / inner on the left)', s.doorPickCandidates.length, s.doorPickIndex);
+  if (s.backPickMode) return pick('Back', 'Rear face', 'Click a rear face of the body — the back panel fills it (type on the left)', s.backPickCandidates.length, s.backPickIndex);
+  if (s.plinthPickMode) return pick('Plinth', 'Volume', 'Click the body — the volume for the leg set is highlighted (height and leg set on the left)',
+    s.plinthPickCandidates.length, s.plinthPickIndex);
+  if (s.quickBodyMode) return { label: 'Quick body', type: null, steps: ['Settings', 'Apply'], step: 0,
+    text: 'Choose the corner joints, base and back on the left, then Apply', keys: exit };
+  // Hacim / baza seti extrude (şeritten): panel extrude sahne aracıdır, kendi yönergesini yayınlar.
+  if (s.faceExtrudeMode && (s.faceExtrudeCavityGroupId || s.faceExtrudePlinthId)) {
+    const label = s.faceExtrudePlinthId ? 'Plinth set' : 'Volume', vm = s.faceExtrudeValueMode;
+    const arrow = vm === 'arrow' || vm === 'arrowFixed', fixed = vm === 'fixed' || vm === 'arrowFixed';
+    const type = vm === 'ref' ? 'ref' : fixed ? 'fixed' : 'dyn';
+    if (arrow) {
+      const a = s.faceExtrudeArrowAxis;
+      return { label, type, steps: ['Arrow', fixed ? 'Size' : 'Distance'], step: a ? 1 : 0,
+        text: !a ? 'Click an arrow on it in the 3D view' : fixed ? `Type the size along ${axisTxt(a)} on the left` : 'Type how far the outer face moves on the left · negative shrinks',
+        keys: a ? [gk('Enter', 'apply'), gk('Esc', 'exit')] : exit };
+    }
+    const hf = s.faceExtrudeSelectedFace !== null && !!s.faceExtrudeCavityFaceNormal;
+    if (vm === 'ref') {
+      const panel = !!s.faceExtrudeRefCandidate?.panelId, face = panel && (s.faceExtrudeRefCandidate?.faceGroupIndex ?? -1) >= 0;
+      const step = !hf ? 0 : !panel ? 1 : !face ? 2 : 3;
+      return { label, type, steps: ['Face', 'Reference panel', 'Reference face', 'Apply'], step,
+        text: ['Click the face to move', 'Click the panel to reach', 'Click the face to reach', 'Apply with ✓ on the left'][step], keys: exit };
+    }
+    return { label, type, steps: ['Face', fixed ? 'Size' : 'Distance'], step: hf ? 1 : 0,
+      text: !hf ? 'Click the face to move' : fixed ? 'Type the size on the left, then Enter or ✓' : 'Type how far the face moves on the left (negative goes in), then Enter or ✓',
+      keys: hf ? [gk('Enter', 'apply'), gk('Esc', 'exit')] : exit };
+  }
+  if (s.vertexEditMode) {
+    const step = s.selectedVertexIndex === null ? 0 : !s.vertexDirection ? 1 : 2;
+    return { label: 'Vertex', type: null, steps: ['Corner', 'Direction', 'Value'], step,
+      text: ['Click a corner of the body', 'Click an arrow on the corner — the direction to move it',
+        `Type the new ${axisTxt(s.vertexDirection)[0] ?? ''} coordinate and press Enter`][step],
+      keys: step === 2 ? [gk('Enter', 'apply'), gk('Esc', 'back')] : step === 1 ? [gk('Esc', 'back')] : exit };
+  }
+  if (s.filletMode) {
+    const step = Math.min(2, s.selectedFilletFaces.length);
+    return { label: 'Fillet', type: null, steps: ['Face 1', 'Face 2', 'Radius'], step,
+      text: ['Click the first face', 'Click the second face — the edge between the two is rounded', 'Type the radius and press Enter'][step],
+      keys: step === 2 ? [gk('Enter', 'apply'), ...exit] : exit };
+  }
+  return null;
+}
+
+/** Araç yokken: seçime göre bir sonraki doğal adım (soluk, tek satır). Çizim yüzündeyken yok (çizimin kendi satırı var). */
+function useIdleHint(): string | null {
+  const s = useStoreFields('shapes', 'selectedShapeId', 'panelSelectMode', 'selectedPanelRow');
+  const sketching = useDraft(d => d.activePlane !== 'ground' || !!d.session);
+  if (sketching) return null;
+  if (!s.shapes.length) return 'Add a body from the toolbar to start';
+  if (!s.selectedShapeId) return 'Click a body to select it · double-click to edit its panels';
+  if (!s.panelSelectMode) return 'Double-click the body to edit its panels';
+  if (!s.selectedPanelRow) return 'Click a panel to work on it';
+  if (typeof s.selectedPanelRow === 'string' && s.selectedPanelRow.startsWith('vf-')) return 'Extrude · Move · Rotate are on the left — the work is done in the 3D view';
+  return null;
+}
 
 export const StatusBar: React.FC = () => {
   const { shapes, selectedShapeId, vertexEditMode, selectedVertexIndex, sceneExStatus } =
     useStoreFields('shapes', 'selectedShapeId', 'vertexEditMode', 'selectedVertexIndex', 'sceneExStatus');
+  const modeGuide = useModeGuide(), idle = useIdleHint();
+  const guide = sceneExStatus ?? modeGuide;
   const selectedShape = shapeById(selectedShapeId, shapes);
   const vertexModCount = selectedShape?.vertexModifications?.length || 0;
   const { busy, view } = useBusyView();
@@ -378,7 +517,7 @@ export const StatusBar: React.FC = () => {
       {/* Dolgu: durum çubuğunun kendisi ilerleme çubuğu */}
       <div className="yago-sb-fill" aria-hidden
         style={{ transform: `scaleX(${view ? Math.max(0.006, view.fracTo) : 0})`, opacity: busy ? 1 : 0, transitionDuration: `${view ? Math.round(view.stepMs) : 200}ms, 240ms` }} />
-      {view ? <BusyStatus view={view} live={!!busy} /> : <>
+      {view ? <BusyStatus view={view} live={!!busy} /> : guide ? <GuideStatus g={guide} /> : <>
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
         <span style={READY_DOT} />
         <span style={{ color: '#047857', fontSize: '11px', fontWeight: 540, letterSpacing: '0.04em', textTransform: 'uppercase' }}>Ready</span>
@@ -396,8 +535,8 @@ export const StatusBar: React.FC = () => {
           valueColor={TOKENS.infoClr} mono /></>
       )}
       {vertexModCount > 0 && <><VSep /><LabelValue label="Edits" value={vertexModCount} valueColor={TOKENS.modClr} mono /></>}
-      {sceneExStatus && <><VSep /><ExtrudeStatus status={sceneExStatus} /></>}
       <DraftStatus />
+      {idle && <><VSep /><span style={{ color: '#8a8378', fontSize: '11px', fontWeight: 460, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{idle}</span></>}
       </>}
       <div style={{ position: 'relative', marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
         <span style={{ color: TOKENS.labelClr, fontSize: '10.5px', fontWeight: 420, letterSpacing: '0.05em', textTransform: 'uppercase' }}>mm</span>
@@ -1310,6 +1449,8 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyCon
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       const st = useAppStore.getState();
       if (st.faceExtrudeMode || st.panelMoveMode || st.panelRotateMode || st.sceneExtrudePanelId || escapeOwners.size) return;
+      // Yerleştirme / düzenleme kipinde Esc o kipi kapatır (Scene), şerit açık kalır.
+      if (st.raycastMode || st.volumePickMode || st.doorPickMode || st.backPickMode || st.plinthPickMode || st.quickBodyMode || st.vertexEditMode || st.filletMode) return;
       setIsOpen(false); setIsPinned(false);
     };
     window.addEventListener('keydown', onKey);

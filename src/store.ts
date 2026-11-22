@@ -606,8 +606,14 @@ export enum SnapType {
 }
 export enum OrthoMode { ON = 'on', OFF = 'off' }
 
-/** Sahne aracının (Extrude / Move / Rotate) durum çubuğu satırı: araç adı, tip ve ne yapılacağı. */
-export type SceneToolStatus = { label: string; type: 'fixed' | 'dyn' | 'ref' | null; text: string };
+/** Durum çubuğu tuş ipucu: tuş / fare hareketi + ne yaptığı ("Enter" → "apply"). */
+export type GuideKey = { k: string; t: string };
+/** Durum çubuğu YÖNLENDİRİCİSİ (sahne araçları + yerleştirme / düzenleme kipleri): araç adı, tip, adımlar (bitti · şimdi · sıradaki),
+ *  şimdi ne yapılacağı ve tuş ipuçları. `note`: imlecin üzerinde durduğu şeyin açıklaması — yönergenin yerine geçici yazılır. */
+export type SceneToolStatus = {
+  label: string; type: 'fixed' | 'dyn' | 'ref' | null; text: string;
+  steps?: string[]; /** şimdiki adım; `steps.length` = hepsi bitti */ step?: number; note?: string | null; keys?: GuideKey[];
+};
 export type RefFacePick = { panelId: string; faceGroupIndex: number; normalWorld: Vec3; pointWorld: Vec3 };
 type FilletFaceData = { normal: Vec3; center: Vec3; planeD?: number };
 
@@ -632,7 +638,7 @@ export interface AppState {
 
   vertexEditMode: boolean; setVertexEditMode: (b: boolean) => void;
   selectedVertexIndex: number | null; setSelectedVertexIndex: (i: number | null) => void;
-  vertexDirection: AxisDir | null; setVertexDirection: (d: AxisDir) => void;
+  vertexDirection: AxisDir | null; setVertexDirection: (d: AxisDir | null) => void;
   addVertexModification: (shapeId: string, mod: VertexModification) => void;
 
   subtractionViewMode: boolean; setSubtractionViewMode: (b: boolean) => void;
@@ -981,7 +987,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   sceneExStatus: null,
   setSceneExStatus: (v) => {
     const c = get().sceneExStatus;
-    if (c === v || (c && v && c.label === v.label && c.type === v.type && c.text === v.text)) return;
+    if (c === v || (c && v && JSON.stringify(c) === JSON.stringify(v))) return;
     set({ sceneExStatus: v });
   },
   faceEditMode: false, setFaceEditMode: (b) => set({ faceEditMode: b }),

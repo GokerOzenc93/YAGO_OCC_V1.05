@@ -5,7 +5,7 @@ import { useThree, useFrame, Canvas } from '@react-three/fiber';
 import { RefreshCw } from 'lucide-react';
 import {
   type DoorGroup, engineLoad, entryGate, useAppStore, shapeById, useStoreFields, ViewMode, type VirtualFace, childPanelsOf, vfOfPanel, type FilletInfo, type CavityPick,
-  type XformDelta, applyXformDelta, Tool, type Shape, CameraType, requestRebuild,
+  type XformDelta, applyXformDelta, Tool, type Shape, CameraType, requestRebuild, type SceneToolStatus, type GuideKey,
 } from '../store';
 import {
   type DoorMemberRect, doorMembersOf, doorPlaneAxes, isDoorPanel, splitDoorAtPanel, collectDoorCuts, DOOR_THICKNESS, confirmDoorPick, doorSlabPolygon,
@@ -3543,6 +3543,13 @@ function useSceneExtrudePanel(): Shape | null {
 }
 
 /** Seçili kenarı bırakır (panel seçili kalır, oklar geri gelir). */
+/** Durum çubuğu yönlendiricisini yayınlar (içerik değişince); araç kalkınca siler. Sahnede yazı yok — adımlar ve tuşlar orada. */
+function useStatusGuide(guide: SceneToolStatus) {
+  const key = JSON.stringify(guide);
+  useEffect(() => { useAppStore.getState().setSceneExStatus(guide); }, [key]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => useAppStore.getState().setSceneExStatus(null), []);
+}
+const gk = (k: string, t: string): GuideKey => ({ k, t });
 function stopSceneExtrude() {
   const st = useAppStore.getState();
   st.setFaceExtrudeSelectedFace(null); st.setFaceExtrudeRefCandidate(null); st.setFaceExtrudeMode(false);
@@ -3983,19 +3990,24 @@ export function PanelSceneExtrude({ panel }: { panel: Shape }) {
   // Durum çubuğu: okun yanında yazı yok — tip ve ne yaptığı burada.
   const swFace = swHover !== null ? faces.find(f => f.gi === swHover) ?? null : null;
   const refCand = !!S.faceExtrudeRefCandidate && S.faceExtrudeRefCandidate.faceGroupIndex >= 0;
-  const status: { type: SceneExMode | null; text: string } = swFace
-    ? { type: typeOf(swFace), text: `switch this arrow → ${SCENE_EX_LABEL[SCENE_EX_ORDER[(SCENE_EX_ORDER.indexOf(typeOf(swFace)) + 1) % 3]]}` }
-    : active && mode
-      ? { type: mode, text: mode === 'ref'
-          ? (refCand ? 'right-click to confirm · click again for the face behind · Esc cancels' : 'click the face the edge should reach · Esc cancels')
-          : mode === 'fixed' ? `type the size from the opposite edge (now ${fmtEx(active.span)} mm) · Enter applies · Esc cancels`
-          : 'type how far it moves: + out, − in · Enter applies · Esc cancels' }
-      : hovered
-        ? { type: typeOf(hovered), text: typeOf(hovered) === 'fixed' ? `the edge goes to a size measured from the opposite edge (now ${fmtEx(hovered.span)} mm)`
-            : typeOf(hovered) === 'dyn' ? 'the edge moves from where it is now: + out, − in' : 'the edge goes up to a face you pick, and follows it' }
-        : { type: null, text: 'click an arrow to move that edge · the round button next to an arrow switches its type (Fixed · Dyn · Ref)' };
-  useEffect(() => { useAppStore.getState().setSceneExStatus({ label: 'Extrude', ...status }); }, [status.type, status.text]);   // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => () => useAppStore.getState().setSceneExStatus(null), []);
+  const exType: SceneExMode | null = active && mode ? mode : hovered ? typeOf(hovered) : null;
+  const exStep = !active || !mode ? 0 : mode === 'ref' ? (refCand ? 2 : 1) : 1;
+  useStatusGuide({
+    label: 'Extrude', type: swFace ? typeOf(swFace) : exType,
+    steps: exType === 'ref' ? ['Edge', 'Reference face', 'Confirm'] : ['Edge', exType === 'fixed' ? 'Size' : exType === 'dyn' ? 'Distance' : 'Value'],
+    step: exStep,
+    text: !active || !mode ? 'Click the arrow of the edge to move · the round button next to an arrow switches its type'
+      : mode === 'fixed' ? `Type the size from the opposite edge (now ${fmtEx(active.span)} mm)`
+      : mode === 'dyn' ? 'Type how far the edge moves: + out, − in'
+      : refCand ? 'Right-click — the edge goes up to that face and follows it' : 'Click the face the edge should reach',
+    note: swFace ? `Switch this arrow → ${SCENE_EX_LABEL[SCENE_EX_ORDER[(SCENE_EX_ORDER.indexOf(typeOf(swFace)) + 1) % 3]]}`
+      : !active && hovered ? (typeOf(hovered) === 'fixed' ? `Fixed — the edge goes to a size measured from the opposite edge (now ${fmtEx(hovered.span)} mm)`
+        : typeOf(hovered) === 'dyn' ? 'Dyn — the edge moves from where it is now: + out, − in' : 'Ref — the edge goes up to a face you pick, and follows it')
+      : null,
+    keys: !active || !mode ? [gk('Esc', 'close')]
+      : mode !== 'ref' ? [gk('Enter', 'apply'), gk('Esc', 'back')]
+      : refCand ? [gk('Right-click', 'confirm'), gk('Click again', 'face behind'), gk('Esc', 'back')] : [gk('Esc', 'back')],
+  });
   const pType = previewFace ? typeOf(previewFace) : 'fixed', PC = SCENE_EX[pType];
   const previewAmount = !previewFace ? null
     : pType === 'ref' ? (previewFace === active ? refAmount : null)
@@ -4167,13 +4179,21 @@ export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
   }, [isRef, srcVertex, tgtVertex, matrix, litArrow, layout, axis, moving, value]);
 
   const refStep = !srcVertex ? 0 : !targetId ? 1 : !tgtVertex ? 2 : 3;
-  const status = swHover ? `switch the move type → ${SCENE_EX_LABEL[nextOf(MOVE_TYPES, type)]}`
-    : isRef ? ['click a corner of this panel to move from', 'click the panel to move to (click again for the one behind)', 'click the corner it should land on',
-      'right-click to confirm · Esc cancels'][refStep]
-    : axis ? `type the distance along ${AXIS_DISPLAY[axis]} (− moves the other way) · Enter applies · Esc cancels`
-    : `${hover ? `move along ${AXIS_DISPLAY[hover]}: click` : 'click an arrow'}, type the distance — ${type === 'fixed' ? 'stays the same in mm' : 'scales in proportion'} when the body is resized`;
-  useEffect(() => { useAppStore.getState().setSceneExStatus({ label: 'Move', type, text: status }); }, [type, status]);
-  useEffect(() => () => useAppStore.getState().setSceneExStatus(null), []);
+  useStatusGuide(isRef ? {
+    label: 'Move', type, steps: ['Corner', 'Target panel', 'Target corner', 'Confirm'], step: refStep,
+    text: ['Click the corner of this panel to move from', 'Click the panel to move to', 'Click the corner it should land on',
+      'Right-click — the panel moves so the two corners meet'][refStep],
+    note: swHover ? `Switch the move type → ${SCENE_EX_LABEL[nextOf(MOVE_TYPES, type)]}` : null,
+    keys: refStep === 0 ? [gk('Esc', 'close')]
+      : refStep === 1 ? [gk('Click again', 'panel behind'), gk('Esc', 'start over')]
+      : refStep === 2 ? [gk('Esc', 'start over')] : [gk('Right-click', 'move'), gk('Esc', 'start over')],
+  } : {
+    label: 'Move', type, steps: ['Arrow', 'Distance'], step: axis ? 1 : 0,
+    text: axis ? `Type the distance along ${AXIS_DISPLAY[axis]} · negative moves the other way`
+      : `Click an arrow — the direction to move · ${type === 'fixed' ? 'Fixed keeps the distance in mm' : 'Dyn scales the distance'} when the body is resized`,
+    note: swHover ? `Switch the move type → ${SCENE_EX_LABEL[nextOf(MOVE_TYPES, type)]}` : !axis && hover ? `Move along ${AXIS_DISPLAY[hover]}` : null,
+    keys: axis ? [gk('Enter', 'apply'), gk('Esc', 'back')] : [gk('Esc', 'close')],
+  });
   if (!layout) return null;
   return (
     <group>
@@ -4410,15 +4430,24 @@ export function PanelRotateGizmo({ panelShape }: { panelShape: Shape }) {
     else if (gone(st.panelRotateRefArmVertex)) { st.setPanelRotateRefArmVertex(null); st.setPanelRotateAxis(null); st.setPanelRotateRefFace(null); }
   }, [pivots]);
   const refStep = !hasPivot ? 0 : !arm ? 1 : !axis ? 2 : !refFace ? 3 : 4;
-  const status = swHover ? `switch the rotate type → ${SCENE_EX_LABEL[nextOf(ROTATE_TYPES, type)]}`
-    : isRef ? ['click the point the panel rotates around', 'click the aim point — the point that will touch the reference face',
-      `click a ring to choose the axis${anyBlocked ? ' · the faded ring runs through the aim point, the panel cannot turn around it' : ''}`,
-      'click the face to aim at on another panel (click again for the face behind)', 'right-click to confirm · Esc cancels'][refStep]
-    : !hasPivot ? 'click the point the panel rotates around (corners or face centres)'
-    : !axis ? 'click a ring to choose the axis'
-    : `type the angle around ${axis.toUpperCase()} in degrees (− turns the other way) · Enter applies · Esc cancels`;
-  useEffect(() => { useAppStore.getState().setSceneExStatus({ label: 'Rotate', type, text: status }); }, [type, status]);
-  useEffect(() => () => useAppStore.getState().setSceneExStatus(null), []);
+  const dynStep = !hasPivot ? 0 : !axis ? 1 : 2;
+  const swNote = swHover ? `Switch the rotate type → ${SCENE_EX_LABEL[nextOf(ROTATE_TYPES, type)]}` : null;
+  useStatusGuide(isRef ? {
+    label: 'Rotate', type, steps: ['Pivot', 'Aim point', 'Axis', 'Reference face', 'Confirm'], step: refStep,
+    text: ['Click the point the panel turns around — a corner or a face centre', 'Click the aim point — the point that will touch the face',
+      `Click a ring — the axis to turn around${anyBlocked ? ' · the faded ring passes through the aim point' : ''}`,
+      'Click the face on another panel to aim at', 'Right-click — the panel turns until the aim point touches the face'][refStep],
+    note: swNote ?? (refStep === 2 && hover && !blocked[hover] ? `Turn around ${hover.toUpperCase()}` : null),
+    keys: refStep === 0 ? [gk('Esc', 'close')]
+      : refStep === 3 ? [gk('Click again', 'face behind'), gk('Esc', 'back')]
+      : refStep === 4 ? [gk('Right-click', 'turn'), gk('Click again', 'face behind'), gk('Esc', 'back')] : [gk('Esc', 'back')],
+  } : {
+    label: 'Rotate', type, steps: ['Pivot', 'Axis', 'Angle'], step: dynStep,
+    text: ['Click the point the panel turns around — a corner or a face centre', 'Click a ring — the axis to turn around',
+      `Type the angle around ${(axis ?? 'x').toUpperCase()} in degrees · negative turns the other way`][dynStep],
+    note: swNote ?? (dynStep === 1 && hover ? `Turn around ${hover.toUpperCase()}` : null),
+    keys: dynStep === 2 ? [gk('Enter', 'apply'), gk('Esc', 'back')] : dynStep === 1 ? [gk('Esc', 'back')] : [gk('Esc', 'close')],
+  });
   return (
     <group>
       {pivots.map((pv, i) => {
@@ -4495,10 +4524,20 @@ const Scene: React.FC = () => {
       else if (e.key === 'Escape') {
         // Aktif araç/mod varsa Escape yalnız onu kapatır (şeridin ✕'i gibi); seçim korunur.
         const st = useAppStore.getState();
-        if (st.volumePickMode) { st.setVolumePickMode(null); return; }
-        if (st.doorPickMode) { st.setDoorPickMode(false); return; }
-        if (st.backPickMode) { st.setBackPickMode(false); return; }
-        if (st.plinthPickMode) { st.setPlinthPickMode(false); return; }
+        // preventDefault: kenar çubuğunun Esc'i aynı basışta şeridi kapatmasın (durum çubuğu "Esc exit" der, yalnız araç kapanır).
+        if (st.volumePickMode) { e.preventDefault(); st.setVolumePickMode(null); return; }
+        if (st.doorPickMode) { e.preventDefault(); st.setDoorPickMode(false); return; }
+        if (st.backPickMode) { e.preventDefault(); st.setBackPickMode(false); return; }
+        if (st.plinthPickMode) { e.preventDefault(); st.setPlinthPickMode(false); return; }
+        if (st.raycastMode) { e.preventDefault(); st.setRaycastMode(false); return; }
+        if (st.quickBodyMode) { e.preventDefault(); st.setQuickBodyMode(false); return; }
+        // Vertex: önce seçili köşe bırakılır, sonra kip kapanır. Fillet: seçimler ve kip kapanır (gövde seçili kalır).
+        if (st.vertexEditMode) {
+          e.preventDefault();
+          if (st.selectedVertexIndex !== null) { st.setSelectedVertexIndex(null); st.setVertexDirection(null); } else st.setVertexEditMode(false);
+          return;
+        }
+        if (st.filletMode) { e.preventDefault(); st.setFilletMode(false); st.setFaceEditMode(false); st.clearFilletFaces(); st.clearFilletFaceData(); return; }
         if (isPlinthRow(st.selectedPanelRow)) { finishPlinthEdit(); return; }   // seçili baza seti: önce seti bırak
         // Sahne extrude: seçili kenar yoksa araç kapanır. preventDefault → kenar çubuğunun Esc'i (aynı tuşta) şeridi kapatmasın.
         if (st.sceneExtrudePanelId && !st.faceExtrudeMode) { e.preventDefault(); st.setSceneExtrudePanelId(null); return; }
