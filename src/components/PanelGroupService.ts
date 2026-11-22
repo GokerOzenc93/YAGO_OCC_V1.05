@@ -2518,7 +2518,7 @@ export const customGroupName = (g: Pick<PanelGroup, 'name' | 'kind'>): string =>
   const n = (g.name ?? '').trim();
   return n && n !== groupKindLabel(g.kind) ? n : '';
 };
-/** Grubun rolü (panel tipi): elle seçim, yoksa aracın varsayılanı (Accessories › Types). */
+/** Grubun rolü (panel tipi): elle seçim, yoksa aracın varsayılanı (Accessories › Connector rules). */
 export const groupPanelType = (g: Pick<PanelGroup, 'kind' | 'panelType'>): PanelTypeId => g.panelType ?? surfaceRuleOf(g.kind === 'divider' ? 'divider' : 'shelf').def;
 /** Grubun adı: elle ad yoksa ROLÜN adı ("Fixed shelf" · "Adjustable shelf" · "Divider") — rol değişince ad da değişir. */
 export const groupName = (g: Pick<PanelGroup, 'name' | 'kind' | 'panelType'>): string => customGroupName(g) || panelTypeLabel(groupPanelType(g));

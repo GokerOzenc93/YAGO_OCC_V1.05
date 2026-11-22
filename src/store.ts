@@ -471,7 +471,7 @@ export type PanelTypeId =
 /** Panelin yerleştiği yüzey: gövde yüzü rolü, yüzün özel görevi (kolon / kiriş — LegLayout.FaceKind) ya da iç panel aracı (raf / dikme / arkalık). */
 export type PanelSurface = PanelEdgeDir | 'shelf' | 'divider' | 'back' | 'columnSide' | 'columnFront' | 'beamFront' | 'beamHoriz';
 /* BAĞLAYICI SETİ (Accessories › Layout) — bağlayıcıdan ve panel tipinden BAĞIMSIZ kütüphane kaydı: birleşim boyunca hangi bağlayıcının nereye
-   geleceği. Set bir GRUBA aittir (sabit · hareketli): panel tipinin kenarı yalnız GRUBU söyler (Accessories › Types), hangi setin kullanılacağı
+   geleceği. Set bir GRUBA aittir (sabit · hareketli): panel tipinin kenarı yalnız GRUBU söyler (Accessories › Connector rules), hangi setin kullanılacağı
    PANELDE seçilir (o grubun setleri arasından; seçilmezse grubun varsayılan seti).
    Set = SATIRLAR; her satır = TEK bağlayıcı + kendi ölçüleri (dört kuraldan biri) + geçerli olduğu birleşim boyu aralığı. Aynı `rule`
    kimliğini taşıyan satırlar arayüzde TEK KURALDIR: boy aralığını paylaşır, her bağlayıcı kendi ölçü bloğuyla durur. Bir boya denk gelen

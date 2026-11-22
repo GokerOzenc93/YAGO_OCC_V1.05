@@ -2049,7 +2049,7 @@ function PlacementDock({ tag, defaultName, showName = true, ready, status, onCon
   tag: string; defaultName: string; showName?: boolean; ready: boolean; status: string;
   onConfirm: () => void; onExit: () => void; confirmTitle: string; lead?: React.ReactNode;
   /** Durum satırının altında ek satır (ör. baza seti: ayak seti + ön yön). */ extra?: React.ReactNode;
-  /** O yüzeyde sunulan roller + otomatik olanı (Accessories › Types). */ roles?: { options: PanelTypeId[]; auto: PanelTypeId } | null;
+  /** O yüzeyde sunulan roller + otomatik olanı (Accessories › Connector rules). */ roles?: { options: PanelTypeId[]; auto: PanelTypeId } | null;
 }) {
   const { placementName: name, placementPanelType: picked } = useStoreFields('placementName', 'placementPanelType');
   const { setPlacementName, setPlacementPanelType } = useAppStore.getState();
@@ -2100,10 +2100,10 @@ export function ConnectorSetSelect({ group, pick, onChange, scope = 'this panel'
     <SelectBox label={`${name} set`} className={value !== SET_DEFAULT ? 'is-accent' : ''} value={value}
       options={[[SET_DEFAULT, def ? `Default · ${def.name}` : `No ${name.toLowerCase()} set yet`], ...list.map(x => [x.id, x.name] as [string, string]), [SET_NONE, 'None']]}
       onChange={v => onChange(v === SET_NONE ? null : v === SET_DEFAULT ? undefined : v)}
-      title={`Connector set used on the ${name.toLowerCase()} edges of ${scope} — only ${name.toLowerCase()} sets are listed (made under Accessories › Layout). Which edges are ${name.toLowerCase()} comes from the panel type (Accessories › Types).`} />
+      title={`Connector set used on the ${name.toLowerCase()} edges of ${scope} — only ${name.toLowerCase()} sets are listed (made under Accessories › Connector layout). Which edges are ${name.toLowerCase()} comes from the panel type (Accessories › Connector rules).`} />
   );
 }
-/** PANELİN DELİK YÜZÜ: bağlayıcıların yüz delikleri (ör. kam yuvası) panelin hangi geniş yüzüne delinecek. Tipin ayarını (Accessories › Types)
+/** PANELİN DELİK YÜZÜ: bağlayıcıların yüz delikleri (ör. kam yuvası) panelin hangi geniş yüzüne delinecek. Tipin ayarını (Accessories › Connector rules)
  *  gösterir; öteki yüze tık = bu panel için TERSİNE çevir (turuncu çerçeve + geri al düğmesi). Tipin kenarları karışıksa hiçbiri seçili görünmez. */
 export function HoleFaceSelect({ type, plane, pick, onChange, scope = 'this panel' }: {
   type: PanelTypeId; plane: Exclude<PanelPlane, 'any'>; pick: boolean | undefined; onChange: (flip: boolean | undefined) => void; scope?: string;
@@ -2112,7 +2112,7 @@ export function HoleFaceSelect({ type, plane, pick, onChange, scope = 'this pane
   const faces = holeFaceOptions(type, plane), fromType = typeFlipOf(type, panelTypeConfig), eff = pick ?? fromType;
   return (
     <div data-hole-face="panel" className={`yago-cell flex-1 min-w-0 h-[28px] pl-2 pr-1 flex items-center gap-1.5 ${pick !== undefined ? 'is-accent' : ''}`} onClick={stop}
-      title={`Which wide face of ${scope} gets the connectors' face holes (e.g. the cam housing). ${pick !== undefined ? 'Reversed by hand for ' + scope + '.' : 'Follows the panel type (Accessories › Types) — click the other face to reverse it for ' + scope + '.'} ${holeFaceHint(type, plane)}`}>
+      title={`Which wide face of ${scope} gets the connectors' face holes (e.g. the cam housing). ${pick !== undefined ? 'Reversed by hand for ' + scope + '.' : 'Follows the panel type (Accessories › Connector rules) — click the other face to reverse it for ' + scope + '.'} ${holeFaceHint(type, plane)}`}>
       <span className={`shrink-0 ${CELL_LABEL}`}>Holes on</span>
       <div className="flex-1 min-w-0">
         <Segmented items={faces.map(f => ({ key: f.flip ? 'flip' : 'def', label: f.label }))} active={eff == null ? null : eff ? 'flip' : 'def'} height={20}
@@ -2247,7 +2247,7 @@ function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefin
     <>
     <div className="flex items-center gap-1 mt-1.5" onClick={stop}>
       <SelectBox label="Type" className={c.manual ? 'is-accent' : ''} value={c.current} options={opts} onChange={t => setVfPanelType(vf.id, t)}
-        title={`Panel type — only the types offered on this face (Accessories › Types). ${c.manual ? `Set by hand; automatic would be ${panelTypeLabel(c.auto)}.` : 'Automatic: follows the panel\'s position.'}`} />
+        title={`Panel type — only the types offered on this face (Accessories › Connector rules). ${c.manual ? `Set by hand; automatic would be ${panelTypeLabel(c.auto)}.` : 'Automatic: follows the panel\'s position.'}`} />
       {o && (
         <div className="yago-cell is-passive shrink-0 h-[28px] pl-2 pr-1 flex items-center gap-1.5"
           title="Edges of this panel named by the body's face roles — connectors (and later edge banding) are applied by these names">
@@ -3210,7 +3210,7 @@ export function AssemblyPanel() {
               {(groupTypes.allowed.length > 1 || g.panelType) && (
                 <SelectBox label="Type" className={g.panelType ? 'is-accent' : ''} value={g.panelType ?? groupTypes.def}
                   options={[...new Set([...(g.panelType ? [g.panelType] : []), ...groupTypes.allowed])].map(t => [t, panelTypeShort(t)] as [PanelTypeId, string])}
-                  title="Panel type of every member of this group — the types offered by this tool (Accessories › Types)"
+                  title="Panel type of every member of this group — the types offered by this tool (Accessories › Connector rules)"
                   onChange={t => setGroupPanelType(g.id, t === groupTypes.def ? null : t)} />
               )}
               <FieldBox label="Quantity" title="Number of panels in this group">

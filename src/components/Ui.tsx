@@ -113,7 +113,8 @@ type RailSpec = {
 export const railActions: { addCustomParameter: (() => void) | null } = { addCustomParameter: null };
 
 const RAIL_BTN: React.CSSProperties = {
-  position: 'relative', width: '50px', height: '46px', borderRadius: '8px', border: 'none', outline: 'none', padding: 0, flexShrink: 0,
+  // Yükseklik etikete göre: tek satır 46 px, iki satırlık etiket ("Connector\nlayout") kendiliğinden uzar.
+  position: 'relative', width: '54px', minHeight: '46px', borderRadius: '8px', border: 'none', outline: 'none', padding: '6px 0', flexShrink: 0,
   display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px',
   transition: 'background 0.12s,box-shadow 0.12s,opacity 0.15s', fontFamily: UI_FONT,
 };
@@ -137,7 +138,7 @@ const RailTool: React.FC<Omit<RailSpec, 'key'> & { passive: boolean }> = ({ labe
   const on = active && !passive, hv = hov && !passive;
   const idle = hv ? '#1c1917' : '#57534e';
   return (
-    <button type="button" onClick={onClick} aria-pressed={on} disabled={passive} title={`${label} — ${title}`} {...hoverProps} className="yago-rail-btn"
+    <button type="button" onClick={onClick} aria-pressed={on} disabled={passive} title={`${label.replace(/\n/g, ' ')} — ${title}`} {...hoverProps} className="yago-rail-btn"
       style={{
         ...RAIL_BTN, cursor: passive ? 'default' : 'pointer', opacity: passive ? 0.32 : 1,
         background: on ? '#ffffff' : hv ? 'rgba(255,255,255,0.75)' : 'transparent',
@@ -149,8 +150,8 @@ const RailTool: React.FC<Omit<RailSpec, 'key'> & { passive: boolean }> = ({ labe
         {badge !== undefined && badge !== '' && <span style={{ ...RAIL_BADGE, background: on ? '#ea580c' : '#78716c' }}>{badge}</span>}
       </span>
       <span style={{
-        fontSize: '10px', lineHeight: 1, fontWeight: on ? 600 : 500, letterSpacing: '0.01em', color: on ? '#c2410c' : idle,
-        whiteSpace: 'nowrap', transition: 'color 0.12s',
+        fontSize: '10px', lineHeight: 1.15, fontWeight: on ? 600 : 500, letterSpacing: '0.01em', color: on ? '#c2410c' : idle,
+        whiteSpace: 'pre', textAlign: 'center', transition: 'color 0.12s',
       }}>{label}</span>
       <span style={{ ...RAIL_MARK, opacity: on ? 1 : 0 }} />
     </button>
@@ -215,9 +216,9 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
   // Aksesuar: kategori raydan seçilir (panelde ayrıca tip seçimi yok); kütüphane gövdeden bağımsız → şekil seçili olmasa da etkin.
   const accessories: RailSpec[] = [
     { key: 'acc-legs', label: 'Legs', icon: Footprints, title: 'Leg models and leg sets', active: s.accessoryCategory === 'legs', onClick: () => s.setAccessoryCategory('legs') },
-    { key: 'acc-connectors', label: 'Connect', icon: Link2, title: 'Connectors — holes, drawn operations and a 3D model on a two-panel joint', active: s.accessoryCategory === 'connectors', onClick: () => s.setAccessoryCategory('connectors') },
-    { key: 'acc-layouts', label: 'Layout', icon: Ruler, title: 'Connector layouts — where connectors sit along a joint: four rules, per joint-length range, several connectors in one layout', active: s.accessoryCategory === 'layouts', onClick: () => s.setAccessoryCategory('layouts') },
-    { key: 'acc-types', label: 'Types', icon: Tags, title: 'Panel types — what each panel is, which edges get a connector, and the default type per face', active: s.accessoryCategory === 'panelTypes', onClick: () => s.setAccessoryCategory('panelTypes') },
+    { key: 'acc-connectors', label: 'Connector', icon: Link2, title: 'the connector itself: holes, drawn operations and a 3D model on a two-panel joint', active: s.accessoryCategory === 'connectors', onClick: () => s.setAccessoryCategory('connectors') },
+    { key: 'acc-layouts', label: 'Connector\nlayout', icon: Ruler, title: 'where connectors sit along a joint — four rules, per joint-length range, several connectors in one layout', active: s.accessoryCategory === 'layouts', onClick: () => s.setAccessoryCategory('layouts') },
+    { key: 'acc-types', label: 'Connector\nrules', icon: Tags, title: 'per panel type, which edges get a connector (fixed / movable / none), and the default type per face', active: s.accessoryCategory === 'panelTypes', onClick: () => s.setAccessoryCategory('panelTypes') },
     { key: 'acc-layers', label: 'Layers', icon: SwatchBook, title: 'Accessory layers — shared by every accessory part (name + colour)', active: s.accessoryCategory === 'layers', onClick: () => s.setAccessoryCategory('layers') },
   ];
   // Yalnız ETKİN sekmenin araçları çizilir (pasif / soluk grup yok).

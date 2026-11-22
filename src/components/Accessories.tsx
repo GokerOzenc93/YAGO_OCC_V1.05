@@ -1,4 +1,4 @@
-/* AKSESUAR SEKMESİ — kategori soldaki raydan (Legs · Connectors · Types · Layers); Assembly / Parameters ile aynı parçalar.
+/* AKSESUAR SEKMESİ — kategori soldaki raydan (Legs · Connector · Layout · Rules · Layers); Assembly / Parameters ile aynı parçalar.
    Panel tipleri (temsili dolap · üstten görünüş · kenar dizilimi) ve bağlayıcılar dosyanın ikinci yarısında (çekirdek: ConnectorService).
    Ayak modeli: 3 yuva (Top · Middle · Bottom), her parça nihai ölçü + taşıma + Stretch + katman; delikler önizlemede parça yüzüne
    tıklanarak eklenir (yön = yüz normali, parçaya bağlı). Ayak seti ("kaset") = model + köşe düzeni + mesafeler + yükseklik; yerleşim
@@ -976,7 +976,7 @@ function PanelFaceView({ type, plane, size, cur, rowsOf, onEdge }: {
   );
 }
 
-// ───────── 3. Dizilim: önizleme şeridi (Types) · boy aralıkları listesi · bağlayıcı şeritleri (Layout) ─────────
+// ───────── 3. Dizilim: önizleme şeridi (Rules) · boy aralıkları listesi · bağlayıcı şeritleri (Layout) ─────────
 const Unit = () => <span className="yago-unit shrink-0 pr-1">mm</span>;
 const LEN_MIN = 40, LEN_MAX = 2400;
 /** Sayı kutusu: boş = `placeholder` (ör. "fit" = sığdığı kadar, "any" = sınırsız) → 0 olarak kaydedilir. */
@@ -997,7 +997,7 @@ type BandRow = LineView;
 const BAND = { VW: 480, VH: 140, X0: 24, X1: 456, yA: 22, hA: 13, hB: 54, ky: 0.82 } as const;
 /** KENAR ŞERİDİ — birleşime üstten bakış: üstte dayandığı panel (taralı), altında bu panelin kenar bandı; o boyda geçerli her satır kendi
  *  bağlayıcısının renginde, gerçek delik iziyle. Etkin satırın ölçü zinciri altta (baştaki ve sondaki ölçünün altında "fixed" / "min …").
- *  '32 grid'de ızgara çentikleri; 'grid' / 'steps'te sondaki EN AZ mesafe bölgesi taralı (delik oraya giremez). Salt okunur (Types önizlemesi);
+ *  '32 grid'de ızgara çentikleri; 'grid' / 'steps'te sondaki EN AZ mesafe bölgesi taralı (delik oraya giremez). Salt okunur (Rules önizlemesi);
  *  düzenleme Layout'taki bağlayıcı şeritlerinde (LaneTrack). */
 function LayoutBand({ length, ends, rows, active, onPick }: { length: number; ends: [string, string]; rows: BandRow[]; active: number; onPick?: (i: number) => void }) {
   const { VW, VH, X0, X1, yA, hA, hB, ky } = BAND, yJ = yA + hA, kx = (X1 - X0) / Math.max(1, length), xOf = (d: number) => X0 + d * kx;
@@ -1750,7 +1750,7 @@ function ConnectorLayoutsPanel({ draft, setDraft }: { draft: ConnectorLayoutSet 
         return (
           <QbSection key={g.key} title={`${g.label} sets`} sub={g.sub}
             trailing={<CardAction compact icon={Plus} label="New" title={`New ${g.label.toLowerCase()} connector set`} onClick={() => setDraft(newLayoutSet(nextName(), connectors[0]?.id ?? null, g.key))} />}>
-            {!list.length ? <div className="yago-hint px-1 py-0.5">None yet — edges marked “{g.label}” under Types stay without connectors until a {g.label.toLowerCase()} set exists.</div> : (
+            {!list.length ? <div className="yago-hint px-1 py-0.5">None yet — edges marked “{g.label}” under Connector rules stay without connectors until a {g.label.toLowerCase()} set exists.</div> : (
               <div className="flex flex-col gap-1">
                 {list.map(l => {
                   const uses = layoutUseCount(l.id), isDef = l.id === def?.id;
@@ -1774,7 +1774,7 @@ function ConnectorLayoutsPanel({ draft, setDraft }: { draft: ConnectorLayoutSet 
           </QbSection>
         );
       })}
-      <div className="yago-hint px-1">A set says which connectors go where along a joint. A panel type (Types) only marks an edge as Fixed or Movable; every panel then uses the default set of that group — or the set chosen for that panel under Assembly.</div>
+      <div className="yago-hint px-1">A set says which connectors go where along a joint. A connector rule (Connector rules) only marks an edge of a panel type as Fixed or Movable; every panel then uses the default set of that group — or the set chosen for that panel under Assembly.</div>
     </div>
   );
 }
@@ -1884,7 +1884,7 @@ function PanelTypesPanel({ onEditLayout }: { /** dizilimi Layout bölümünde d�
   const faces = holeFaceOptions(sel, plane);
   return (
     <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" style={{ fontFamily: UI_FONT }}>
-      <QbSection title="Panel types" sub="click a panel on the cabinet, or pick from the list">
+      <QbSection title="Connector rules" sub="per panel type — click a panel on the cabinet, or pick from the list">
         <div className="flex flex-col gap-1.5" onClick={stop}>
           <CabinetView sel={sel} onSel={pick} build={build} onBuild={setBuild} />
           <TypeSelect value={sel} onChange={pick} cfg={cfg} />
@@ -2787,7 +2787,7 @@ function ConnectorsPanel({ draft, setDraft, keepModels }: { draft: Connector | n
                   <div key={c.id} className={ROW}>
                     <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-stone-700">{c.name}</span>
                     <span className={`shrink-0 ${MUTED}`}>{connSummary(c)}</span>
-                    <span className={`shrink-0 ${MUTED}`} title="Connector layouts that place this connector (Accessories › Layout)">· {uses ? `${uses} layout${uses === 1 ? '' : 's'}` : 'unused'}</span>
+                    <span className={`shrink-0 ${MUTED}`} title="Connector layouts that place this connector (Accessories › Connector layout)">· {uses ? `${uses} layout${uses === 1 ? '' : 's'}` : 'unused'}</span>
                     <button type="button" title="Edit" onClick={() => setDraft(cloneConnector(c))} className={ICON_BTN}><Pencil size={12} strokeWidth={1.9} /></button>
                     <button type="button" title={uses ? 'Delete — the layout rules that use it are left without a connector' : 'Delete'} onClick={() => void deleteConnector(c.id).then(() => pruneUnusedAccessoryModels(keepModels))} className={DEL_BTN}><Trash2 size={12} strokeWidth={1.9} /></button>
                   </div>
