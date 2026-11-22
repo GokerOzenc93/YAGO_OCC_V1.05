@@ -5,7 +5,7 @@ import { useThree, useFrame, Canvas } from '@react-three/fiber';
 import { RefreshCw } from 'lucide-react';
 import {
   type DoorGroup, engineLoad, entryGate, useAppStore, shapeById, useStoreFields, ViewMode, type VirtualFace, childPanelsOf, vfOfPanel, type FilletInfo, type CavityPick,
-  type XformDelta, applyXformDelta, Tool, type Shape, CameraType, requestRebuild, type SceneToolStatus, type GuideKey,
+  type XformDelta, applyXformDelta, Tool, type Shape, CameraType, requestRebuild, type SceneToolStatus, type GuideKey, type PanelGroup,
 } from '../store';
 import {
   type DoorMemberRect, doorMembersOf, doorPlaneAxes, isDoorPanel, splitDoorAtPanel, collectDoorCuts, DOOR_THICKNESS, confirmDoorPick, doorSlabPolygon,
@@ -13,24 +13,24 @@ import {
 } from './DoorService';
 import {
   localBboxOf, type Vec3, edgePointsOf, type FaceData, type CoplanarFaceGroup, createFaceHighlightGeometry, flatGroupOfFace, getShapeMatrix,
-  REF_COLORS, confirmRefFaceExtrude, getFacesAndGroups, cycleRefFacePickFromEvent, computeFaceComponentContour, panelInnerBigFace,
+  REF_COLORS, confirmRefFaceExtrude, getFacesAndGroups, computeFaceComponentContour, panelInnerBigFace,
   panelBehindStackPlane, computeFreeRegionLocal, genId, createFaceDescriptor, getFacePlaneAxes, earClipTriangulate, effectiveBodyGeometry,
   pointInTriangle3D, findPanelCoveringPoint, groupIndexOfFace, panelHasRotation, createGroupBoundaryEdges, applyFillets, matchCurvedFaceGroup,
   convertReplicadToThreeGeometry, type AxisLetter, type AxisDir, axisDirToVec, uniqueMeshPoints, resolveBaseVertices, composeVertexTargets,
-  confirmPanelMoveRef, confirmPanelRotateRef, resetRefFacePick, axisIndexOf, getReplicadVertices, round1, swingPoints,
+  confirmPanelMoveRef, confirmPanelRotateRef, axisIndexOf, getReplicadVertices, round1, swingPoints,
   footprintGeometry, outlineGeometry, isPostSketchFace, dominantAxisLabel, executeFaceExtrude, mapAxisToVfLocal, angleToTouchPlane, executePanelMove, executePanelMoveFixed,
   executePanelRotate,
 } from './Geometry';
 import { connectorPartInstances, placementTypeFor } from './ConnectorService';
 import {
-  type PlinthPick, type PlinthRegion, confirmPlinthPick, plinthBoxOf, plinthBoxesOf, plinthCandidates, plinthLegSpots, plinthPickBox,
+  type PlinthPick, type PlinthRegion, type PlinthSet, confirmPlinthPick, plinthBoxOf, plinthBoxesOf, plinthCandidates, plinthLegSpots, plinthPickBox,
   plinthRowKey, plinthSetsOf, isPlinthRow, finishPlinthEdit, plinthRegionOf, prismGeometry, bodyFrontAxis, bodyFaces, setBodyFaceRole, bodyFacesByRole,
-  plinthLegsOf,
+  plinthLegsOf, applyPlinthFace,
 } from './PlinthService';
 import { FACE_KINDS, FACE_KIND_LABEL, FACE_ROLES, FACE_ROLE_LABEL, type FaceKind, type FaceRole, faceRoleText } from './LegLayout';
 import { LAYER_DEFAULT_COLOR, type LegAssemblyPart, accessoryGeometryNow, legAssembly, onAccessoryGeometry } from './AccessoryService';
 import {
-  confirmRefCavityExtrude, groupBoundsPanelPredicate, isInteriorPanel, repickObstacles, collectObstacles,
+  executeCavityExtrudeAt, executeCavityExtrudeToReference, groupBoundsPanelPredicate, isInteriorPanel, repickObstacles, collectObstacles,
   gridForObstacles, boxesSurface, rayCavityCandidates, GROUP_PANEL_THICKNESS, confirmVolumePick,
 } from './PanelGroupService';
 import {
@@ -208,30 +208,6 @@ const localPointOf = (e: any, shape: any): Vec3 | null => {
 /** Kenar noktaları (açı eşiğiyle); geometri yok / hata → null. */
 const safeEdgePoints = (geo: THREE.BufferGeometry | undefined, angle: number): Vec3[] | null => {
   try { const p = geo ? edgePointsOf(geo, angle) : []; return p.length ? p : null; } catch { return null; }
-};
-
-type RefFaceOverlayProps = {
-  geometry: THREE.BufferGeometry; faces: any[]; groups: any[]; hoveredGroup: number | null; candidateGroup: number | null;
-  onHover: (gi: number | null) => void; onPointerDown?: (e: any) => void; onClick?: (e: any) => void;
-};
-export function RefFaceOverlay({ geometry, faces, groups, hoveredGroup, candidateGroup, onHover, onPointerDown, onClick }: RefFaceOverlayProps) {
-  const hoverGeo = useMemo(() => groupHighlight(faces, groups, hoveredGroup), [hoveredGroup, groups, faces]);
-  const candGeo = useMemo(() => groupHighlight(faces, groups, candidateGroup), [candidateGroup, groups, faces]);
-  return (
-    <>
-      <mesh geometry={geometry} renderOrder={10} {...faceHoverEvents(groups, onHover)} onPointerDown={onPointerDown} onClick={onClick} onContextMenu={stopEvent}>
-        <HitMaterial />
-      </mesh>
-      {hoverGeo && <OverlayMesh geometry={hoverGeo} order={11} color={REF_COLORS.hover} opacity={REF_COLORS.hoverOpacity} />}
-      {candGeo && <OverlayMesh geometry={candGeo} order={12} color={REF_COLORS.selected} opacity={REF_COLORS.selectedOpacity} />}
-    </>
-  );
-}
-
-export const confirmRefOnRightClick = async (e: any) => {
-  if (e.button !== 2) return;
-  e.stopPropagation();
-  if (useAppStore.getState().faceExtrudeCavityGroupId) await confirmRefCavityExtrude(); else await confirmRefFaceExtrude();
 };
 
 /* Panel giriş efekti: panel ilk belirdiğinde yerine gelir ya da geçici shader ile oluşur; efekt bileşimden üretilir (son 64 imza
@@ -656,6 +632,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const [hoveredExtrudeGroup, setHoveredExtrudeGroup] = useState<number | null>(null);
   const [moveRefHover, setMoveRefHover] = useState(false);
   const draftIso = useDraft(st => st.isolate);
+  const rp = useRefPick();
   const draftBodyEdit = useDraft(st => st.bodyPreview?.shapeId ?? null);
 
   const params = shape.parameters;
@@ -682,11 +659,14 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const edgePoints = useMemo(() => safeEdgePoints(shape.geometry, EDGE_ANGLE_THRESHOLD), [shape.geometry]);
 
   // Ok modunda yüz seçilmez (oklar en dış yüzü büyütür) → yüz yakalama / vurgu kapalı, panel normal çizilir.
-  const isFaceExtrudeTarget = S.faceExtrudeMode && shape.id === S.faceExtrudeTargetPanelId && S.faceExtrudeValueMode !== 'arrow' && S.faceExtrudeValueMode !== 'arrowFixed';
+  const isFaceExtrudeTarget = S.faceExtrudeMode && shape.id === S.faceExtrudeTargetPanelId;
   // Yüz grupları YALNIZ yüz extrude hedefinde gerekir (vurgu + yüz seçimi). Her geometri değişiminde her panel için hesaplanıyordu (üretim
   // sırasında ana iş parçacığının en büyük kalemlerinden biri).
   const { faces, groups: faceGroups } = useMemo(() => (isFaceExtrudeTarget && shape.geometry ? getFacesAndGroups(shape.geometry) : NO_FACES), [isFaceExtrudeTarget, shape.geometry]);
   const isFaceExtrudeXray = S.faceExtrudeMode && shape.id !== S.faceExtrudeTargetPanelId;
+  // Referans seçiminde yalnız bırakılan panel (yüzü / köşesi seçilirken): olduğu gibi çizilir, öteki her şey gizlenir.
+  const isRefIso = rp?.stage === 'isolated' && rp.isoId === shape.id;
+  const isRefHidden = rp?.stage === 'isolated' && rp.isoId !== shape.id;
   // Yeniden hacim seçimi: sahne grubun adımından önceki duruma döner (sonraki paneller çizilmez, grubun üyeleri saydam).
   const repickRole: 'none' | 'bounds' | 'member' | 'later' = (() => {
     if (!S.volumePickMode || !S.volumePickGroupId || !isParentSelected) return 'none';
@@ -698,26 +678,20 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   })();
   const isRepickXray = repickRole === 'member';
   const isRepickHidden = repickRole === 'later';
-  const isGhost = isFaceExtrudeXray || isRepickXray || isDoorPickGhost;
+  const isGhost = (isFaceExtrudeXray && !isRefIso) || isRepickXray || isDoorPickGhost;
   const isPanelRowSelected = isRowSelectedRaw && !isRepickXray;
   const anyPick = S.raycastMode || S.volumePickMode !== null || S.doorPickMode || S.backPickMode;
   const isRaycastOnParent = anyPick && parentShapeId && parentShapeId === S.selectedShapeId;
-  // Ref seçimi ancak hedef yüz seçildikten sonra aktif; hedef dışındaki her panel raycast alır.
-  const isExtRefMode = S.faceExtrudeMode && S.faceExtrudeValueMode === 'ref' && S.faceExtrudeSelectedFace !== null;
-  const isRotRefMode = S.panelRotateMode && S.panelRotateValueMode === 'ref' && !!S.panelRotatePivot && !!S.panelRotateRefArmVertex
-    && S.panelRotateAxis !== null;
-  const isRefMode = isExtRefMode || isRotRefMode;
-  const refOwnerId = isExtRefMode ? S.faceExtrudeTargetPanelId : S.panelRotateTargetPanelId;
-  const refCandidate = isExtRefMode ? S.faceExtrudeRefCandidate : S.panelRotateRefFace;
-  const isRefPickablePanel = isRefMode && shape.id !== refOwnerId;
-  const isRefCandidatePanel = isRefMode && refCandidate?.panelId === shape.id;
-  const moveRefSrc = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex;
-  const isMoveRefTargetPanel = moveRefSrc && S.panelMoveRefTargetPanelId === shape.id;
-  const isMoveRefPickMode = moveRefSrc && !S.panelMoveRefTargetVertex && shape.id !== S.panelMoveTargetPanelId && S.panelMoveRefTargetPanelId !== shape.id;
+  // REFERANS SEÇİMİ (bkz. refPickOf): önce PANEL tıklanır → o panel yalnız bırakılır → yüzü (taşımada köşesi) seçilir.
+  // Panel aşamasında hedef dışındaki her panel tıklanabilir ve üzerine gelince vurgulanır; hacimde grubun kendi üyeleri referans olamaz.
+  const moveRefSrc = rp?.tool === 'move';
+  const isMoveRefTargetPanel = moveRefSrc && rp!.stage === 'picked' && S.panelMoveRefTargetPanelId === shape.id;
+  const isMoveRefPickMode = !!rp && shape.id !== rp.ownerId && !(rp.cavityId && params?.panelGroupId === rp.cavityId)
+    && (rp.stage === 'panel' || (rp.stage === 'picked' && rp.tool !== 'move'));
   const isMoveRefHovered = isMoveRefPickMode && moveRefHover;
   const moveRefHighlight = isMoveRefTargetPanel || isMoveRefHovered;
-  const disableRaycast = (isFaceExtrudeTarget || (isFaceExtrudeXray && !isRefPickablePanel) || isRaycastOnParent
-    || (!!S.doorRefPickGroupId && isDoorPanel(shape)) || (!!S.backRefPickGroupId && isBackPanel(shape))) && !isMoveRefPickMode;
+  const disableRaycast = isRefIso || ((isFaceExtrudeTarget || (isFaceExtrudeXray && !isMoveRefPickMode) || isRaycastOnParent
+    || (!!S.doorRefPickGroupId && isDoorPanel(shape)) || (!!S.backRefPickGroupId && isBackPanel(shape))) && !isMoveRefPickMode);
 
   useEffect(() => { const mesh = meshRef.current; if (mesh) mesh.raycast = disableRaycast ? () => {} : THREE.Mesh.prototype.raycast; }, [disableRaycast]);
   useEffect(() => { if (!isMoveRefPickMode && moveRefHover) setMoveRefHover(false); }, [isMoveRefPickMode, moveRefHover]);
@@ -728,7 +702,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     [isFaceExtrudeTarget, S.faceExtrudeSelectedFace, faceGroups, faces]);
 
   if (!shape.geometry) return null;
-  if (isRepickHidden) return null;
+  if (isRepickHidden || isRefHidden) return null;
   // Yüz çiziminde izolasyon (DraftView): yalnız hedef panel çizilir; gövde yüzüne çizimde tüm paneller gizlenir.
   if (draftIso && draftIso.targetId !== shape.id) return null;
   // Gövde adımı düzenlenirken (izolasyon kapatılsa da) gövdenin panelleri çizilmez: yalnız çizgiler görünür; paneller depoda aynen durur.
@@ -761,15 +735,10 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
       if (virtualFaceId) { const ids = splitBackAtPanel(S.backRefPickGroupId, virtualFaceId); if (ids.length) S.setBackRefPickGroupId(null); }
       return;
     }
-    // Taşıma modu: referans döngüsü canvas seviyesinde (MoveRefPanelPicker).
+    // Taşıma modu: hedef panel canvas seviyesinde seçilir (MoveRefPanelPicker).
     if (S.panelMoveMode) return;
-    if (S.panelRotateMode && S.panelRotateValueMode === 'ref') {
-      if (isRotRefMode && shape.id !== S.panelRotateTargetPanelId) {
-        const panels = useAppStore.getState().shapes.filter((x: any) => x.type === 'panel');
-        cycleRefFacePickFromEvent(e, panels, S.panelRotateTargetPanelId, S.setPanelRotateRefFace);
-      }
-      return;
-    }
+    // Extrude / hacim / döndürme referansı: tıklanan panel yalnız bırakılır (yüzü RefIsolatePicker'da seçilir).
+    if (rp && rp.tool !== 'move') { if (isMoveRefPickMode) pickRefPanelFromEvent(e, rp); return; }
     if (S.panelRotateMode) return;
     if (S.faceExtrudeMode) return;
     // Body modunda panel tıklansa da tüm blok seçilir; panel satırı yalnız Panel modunda yazılır.
@@ -785,14 +754,13 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     onDoubleClick: (e: any) => { e.stopPropagation(); if (parentShapeId) enterBodyEdit(parentShapeId); },
     onPointerOver: (e: any) => { if (isMoveRefPickMode) { e.stopPropagation(); setMoveRefHover(true); } },
     onPointerOut: () => { if (moveRefHover) setMoveRefHover(false); },
-    onPointerDown: (e: any) => { if (isExtRefMode && isRefPickablePanel) confirmRefOnRightClick(e); },
-    onContextMenu: (e: any) => { if (isRefPickablePanel || isMoveRefPickMode || isMoveRefTargetPanel) e.stopPropagation(); },
+    onContextMenu: (e: any) => { if (isMoveRefPickMode || isMoveRefTargetPanel) e.stopPropagation(); },
   };
   const moveRefEmissive = isMoveRefTargetPanel ? '#22c55e' : REF_COLORS.hoverCss;
   const emissive = isPanelRowSelected ? PANEL_SELECT.emissive : moveRefHighlight ? moveRefEmissive : isDoorBoundPanel ? DOOR_COLORS.boundEmissive : '#2a2a2a';
   const emissiveIntensity = isPanelRowSelected ? 1 : moveRefHighlight ? (isMoveRefTargetPanel ? 1.0 : 0.8) : isDoorBoundPanel ? 0.55 : 1;
   const xrayOpacity = moveRefHighlight ? (isMoveRefTargetPanel ? 0.5 : 0.6) : XRAY_MODE_PANEL_OPACITY;
-  const opacity = isXray ? xrayOpacity : isGhost ? XRAY_PANEL_OPACITY : isMoveRefTargetPanel ? 0.55 : isMoveRefHovered ? 0.9 : 1;
+  const opacity = isXray ? xrayOpacity : isMoveRefHovered ? 0.9 : isGhost ? XRAY_PANEL_OPACITY : isMoveRefTargetPanel ? 0.55 : 1;
   const edgeLine = (xray: boolean) => edgePoints && (
     <Line ref={edgeRef} points={edgePoints} segments color={edgeColor} lineWidth={xray ? edgeWidth + XRAY_EDGE.extra : edgeWidth}
       transparent={xray} opacity={1} depthTest={!xray} depthWrite={!xray}
@@ -844,11 +812,6 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
           </>
         )}
 
-        {isRefPickablePanel && (
-          <RefFaceOverlay geometry={shape.geometry} faces={faces} groups={faceGroups} hoveredGroup={hoveredExtrudeGroup}
-            candidateGroup={isRefCandidatePanel ? (refCandidate?.faceGroupIndex ?? null) : null} onHover={setHoveredExtrudeGroup}
-            onPointerDown={(e: any) => { if (isExtRefMode) confirmRefOnRightClick(e); }} />
-        )}
       </group>
     </group>
   );
@@ -1824,54 +1787,30 @@ export const PlinthEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   const boxes = useMemo(() => (set ? plinthBoxesOf(set, S.shapes) : []), [set, S.shapes]);
   return <BoxFacePickOverlay shape={shape} active={active} boxes={boxes} />;
 };
-/** Kutu yüzeyinde yüz seçimi (hacim / baza seti): seçilen yüzün normali + tıklama noktası store'a yazılır. */
-const BoxFacePickOverlay: React.FC<{ shape: any; active: boolean; boxes: Array<{ min: Vec3; max: Vec3 }> }> = ({ shape, active, boxes }) => {
-  const S = useStoreFields('faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeCavityFaceNormal', 'setFaceExtrudeClickPoint', 'faceExtrudeValueMode');
-  const selFace = S.faceExtrudeSelectedFace;
-  const cavKey = boxes.map(b => [...b.min, ...b.max].map(n => n.toFixed(1)).join('|')).join(';');
-  const [hovered, setHovered] = useState<number | null>(null);
-  const boxGeo = useMemo(() => {
-    if (!boxes.length) return null;
-    const surface = boxesSurface(boxes);
-    if (surface.length < 9) return null;
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(surface), 3));
-    g.computeVertexNormals();
-    return g;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cavKey]);
+/** Kutu yüzeyinin (bölge kutularının dış kabuğu) ağı — hacim / baza seti çizimi ve sahne oklarının yüzleri AYNI ağdan okunur (yüz indeksleri tutar). */
+function boxSurfaceGeometry(boxes: Array<{ min: Vec3; max: Vec3 }>): THREE.BufferGeometry | null {
+  const surface = boxes.length ? boxesSurface(boxes) : [];
+  if (surface.length < 9) return null;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(surface), 3));
+  g.computeVertexNormals();
+  return g;
+}
+const boxesKey = (boxes: Array<{ min: Vec3; max: Vec3 }>) => boxes.map(b => [...b.min, ...b.max].map(n => n.toFixed(1)).join('|')).join(';');
+/** Düzenlenen hacmin / baza setinin çizimi + seçili yüzün vurgusu. Yüz, sahnedeki oklarla seçilir (VolumeSceneExtrude / PlinthSceneExtrude). */
+const BoxFacePickOverlay: React.FC<{ shape: any; active: boolean; boxes: Array<{ min: Vec3; max: Vec3 }> }> = ({ active, boxes }) => {
+  const selFace = useAppStore(st => st.faceExtrudeSelectedFace);
+  const cavKey = boxesKey(boxes);
+  const boxGeo = useMemo(() => boxSurfaceGeometry(boxes), [cavKey]);   // eslint-disable-line react-hooks/exhaustive-deps
   useDisposable(boxGeo);
-  const { faces, groups } = useMemo(() => (boxGeo ? getFacesAndGroups(boxGeo) : { faces: [], groups: [] }), [boxGeo]);
+  const { faces, groups } = useMemo(() => (boxGeo ? getFacesAndGroups(boxGeo) : NO_FACES), [boxGeo]);
   const edgePts = useMemo(() => (boxGeo ? edgePointsOf(boxGeo, 1) : []), [boxGeo]);
-  const hoverGeo = useMemo(() => (hovered !== selFace ? groupHighlight(faces, groups, hovered) : null), [hovered, selFace, groups, faces]);
   const selGeo = useMemo(() => groupHighlight(faces, groups, selFace), [selFace, groups, faces]);
-  useEffect(() => { if (!active) setHovered(null); }, [active]);
   if (!active || !boxGeo) return null;
-  const isRefPhase = S.faceExtrudeValueMode === 'ref' && selFace !== null;
-  // Ok modları yüz seçmez: hacim yalnız gösterilir, tık yutulur (gövdeye / panellere düşmesin), oklar ExtrudeArrowGizmo'da.
-  const arrowMode = S.faceExtrudeValueMode === 'arrow' || S.faceExtrudeValueMode === 'arrowFixed';
-  const onPointerDown = (e: any) => {
-    if (e.button === 2) { if (isRefPhase) void confirmRefOnRightClick(e); return; }
-    if (e.button !== 0 || isRefPhase) return;   // ref aşamasında tıklama referans seçimine gider (gövde/panel)
-    e.stopPropagation();
-    if (arrowMode) return;
-    const gi = flatGroupOfFace(groups, e.faceIndex);
-    if (gi === -1) return;
-    const n = groups[gi].normal.clone().normalize();
-    S.setFaceExtrudeSelectedFace(gi);
-    S.setFaceExtrudeCavityFaceNormal([n.x, n.y, n.z]);
-    const lp = localPointOf(e, shape);
-    if (lp) S.setFaceExtrudeClickPoint(lp);
-    setHovered(gi);
-  };
   return (
     <>
       <mesh geometry={boxGeo} raycast={noRaycast} renderOrder={5}><FillMat color={PICK_COLORS.selected} opacity={SEL_COLORS.volumeActiveOpacity} /></mesh>
       {edgePts.length >= 2 && <EdgeLines points={edgePts} color={PICK_COLORS.selectedEdge} width={SEL_COLORS.edgeWidth} order={7} />}
-      <mesh geometry={boxGeo} renderOrder={10} onPointerDown={onPointerDown} {...(arrowMode ? {} : faceHoverEvents(groups, setHovered))} onContextMenu={stopEvent}>
-        <HitMaterial />
-      </mesh>
-      {hoverGeo && !arrowMode && <OverlayMesh geometry={hoverGeo} order={11} color={SEL_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity} />}
       {selGeo && (
         <>
           <OverlayMesh geometry={selGeo} order={12} color={SEL_COLORS.active} opacity={SEL_COLORS.faceActiveOpacity} />
@@ -1936,9 +1875,9 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   const initialRef = useRef<{ self: Xform; childPanels: Map<string, Xform> } | null>(null);
   const [localGeometry, setLocalGeometry] = useState(shape.geometry);
   const [geometryKey, setGeometryKey] = useState(0);
-  const [hoveredRefGroup, setHoveredRefGroup] = useState<number | null>(null);
   const [moveRefHover, setMoveRefHover] = useState(false);
   const draftIso = useDraft(st => st.isolate);
+  const rp = useRefPick();
   // Gövde adımı düzenlenirken çizilen katı ADIMSIZ önizlemedir; depodaki gövde (ve panelleri) oturum boyunca değişmez.
   const draftPreview = useDraft(st => (st.bodyPreview && st.bodyPreview.shapeId === shape.id ? st.bodyPreview.geometry as THREE.BufferGeometry : null));
   const vertexModsString = useMemo(() => JSON.stringify(shape.vertexModifications || []), [shape.vertexModifications]);
@@ -2018,31 +1957,25 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   const isXray = S.viewMode === ViewMode.XRAY;
   const shouldShowAsReference = shape.isReferenceBox || shape.id === S.secondarySelectedShapeId;
   const hasPanels = S.shapes.some(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id);
-  const isMoveRefPickActive = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex && !S.panelMoveRefTargetPanelId;
-  const isRefMode = S.faceExtrudeMode && S.faceExtrudeValueMode === 'ref' && S.faceExtrudeSelectedFace !== null;
+  // REFERANS SEÇİMİ: extrude / hacim / döndürmede gövde de referans olabilir (ışın sırasının SONUNDA — önce paneller). Taşımada yalnız panel.
+  const isRefMode = !!rp && rp.tool !== 'move' && rp.stage !== 'isolated';
+  const isRefIsoBody = rp?.stage === 'isolated' && rp.isoId === shape.id;
+  const isMoveRefPickActive = isRefMode;
   // Görünmez gövde mesh'i yalnız panel / yüz seçim modlarında bastırılır (ref modları muaf); hacim / kapak / arkalıkta her zaman.
   const isVolumePickOnThis = (S.volumePickMode !== null || S.doorPickMode || S.backPickMode || S.plinthPickMode) && isSelected;
-  const suppressBodyRaycast = (hasPanels && (S.panelSelectMode || S.raycastMode) && !isRefMode && !isMoveRefPickActive) || isVolumePickOnThis;
-  const isMoveRefTargetPanel = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex && S.panelMoveRefTargetPanelId === shape.id;
-  const moveRefBodyHighlight = isMoveRefTargetPanel || (isMoveRefPickActive && moveRefHover);
+  const suppressBodyRaycast = isRefIsoBody || (hasPanels && (S.panelSelectMode || S.raycastMode) && !isRefMode) || isVolumePickOnThis;
+  const moveRefBodyHighlight = isMoveRefPickActive && moveRefHover;
   useEffect(() => { if (!isMoveRefPickActive && moveRefHover) setMoveRefHover(false); }, [isMoveRefPickActive, moveRefHover]);
-  const isRefCandidateShape = isRefMode && S.faceExtrudeRefCandidate?.panelId === shape.id;
-
-  const handleRefClick = useCallback((e: any) => {
-    if (!isRefMode || shape.id === S.faceExtrudeTargetPanelId) return;
-    // Hacim düzenlemede grubun kendi üyeleri referans olamaz (hacimle birlikte taşınırlar).
-    const cav = S.faceExtrudeCavityGroupId;
-    const shapes = useAppStore.getState().shapes.filter((x: any) => !cav || x.parameters?.panelGroupId !== cav);
-    cycleRefFacePickFromEvent(e, shapes, S.faceExtrudeTargetPanelId, S.setFaceExtrudeRefCandidate);
-  }, [isRefMode, shape.id, S.faceExtrudeTargetPanelId, S.faceExtrudeCavityGroupId, S.setFaceExtrudeRefCandidate]);
 
   const partSelected = S.selectedPanelRow !== null || !!S.selectedPanelGroupId || !!S.selectedDoorGroupId || !!S.selectedBackGroupId
     || S.faceExtrudeMode || S.panelMoveMode || S.panelRotateMode;
 
   if (shape.isolated === false || !localGeometry) return null;
+  // Referans seçiminde yalnız bırakılan şey bu gövde değilse gövde (ve üstündeki her şey) çizilmez.
+  if (rp?.stage === 'isolated' && !isRefIsoBody) return null;
   // Yüz çiziminde izolasyon (DraftView): başka gövdeler gizlenir; hedef GÖVDE yüzüyse (panelleri gizli) gövde görünür kılınır.
   if (draftIso && draftIso.bodyId !== shape.id) return null;
-  const isoBody = !!draftPreview || (draftIso?.kind === 'body' && draftIso.targetId === shape.id);
+  const isoBody = !!draftPreview || (draftIso?.kind === 'body' && draftIso.targetId === shape.id) || isRefIsoBody;
 
   const raycastProps = suppressBodyRaycast ? { raycast: noRaycast } : {};
   const hoverProps = isMoveRefPickActive ? {
@@ -2056,14 +1989,14 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   );
   const accented = isSelected || shouldShowAsReference;
   const geoUuid = shape.geometry?.uuid || '';
-  const bodyEmissive = moveRefBodyHighlight ? (isMoveRefTargetPanel ? '#22c55e' : REF_COLORS.hoverCss) : '#000000';
-  const bodyOpacity = isoBody ? 0.14 : hasPanels ? (moveRefBodyHighlight ? 0.35 : 0) : (moveRefBodyHighlight ? 0.5 : 0.06);
+  const bodyEmissive = moveRefBodyHighlight ? REF_COLORS.hoverCss : '#000000';
+  const bodyOpacity = isRefIsoBody ? 0.72 : isoBody ? 0.14 : hasPanels ? (moveRefBodyHighlight ? 0.35 : 0) : (moveRefBodyHighlight ? 0.5 : 0.06);
 
   return (
     <>
       <group ref={groupRef} name={`shape-${shape.id}`}
         onClick={(e) => {
-          if (isRefMode) { e.stopPropagation(); handleRefClick(e); return; }
+          if (rp && rp.tool !== 'move') { e.stopPropagation(); if (isRefMode) pickRefPanelFromEvent(e, rp); return; }
           if (S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex) { e.stopPropagation(); return; }
           // Aktif panel aracı: stopPropagation YOK — arkadaki panelin araç işleyicisi olayı alsın.
           if (S.faceExtrudeMode || S.panelMoveMode || S.panelRotateMode) return;
@@ -2079,7 +2012,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
           }
         }}
         onDoubleClick={(e) => { e.stopPropagation(); enterBodyEdit(shape.id); }}
-        onContextMenu={(e: any) => { if (isMoveRefPickActive || isMoveRefTargetPanel) e.stopPropagation(); }}>
+        onContextMenu={(e: any) => { if (isMoveRefPickActive) e.stopPropagation(); }}>
         {shape.subtractionGeometries && S.subtractionViewMode && shape.subtractionGeometries.map((sub: any, index: number) => sub && (
           <SubtractionMesh key={`${shape.id}-subtraction-${index}`} subtraction={sub} index={index} isSelected={isSelected}
             isHovered={S.hoveredSubtractionIndex === index && isSelected} isSubtractionSelected={S.selectedSubtractionIndex === index && isSelected}
@@ -2115,20 +2048,15 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
         {shape.fillets?.length > 0 && S.filletMode && <FilletEdgeLines shape={shape} />}
         {isSelected && S.faceEditMode && <FaceEditor key={`face-editor-${shape.id}-${geoUuid}-${(shape.fillets || []).length}`} shape={shape} />}
         {isSelected && S.raycastMode && <FaceRaycastOverlay key={`raycast-${shape.id}-${geoUuid}`} shape={shape} allShapes={S.shapes} />}
-        {isRefMode && (
-          <RefFaceOverlay geometry={localGeometry} faces={refFaces} groups={refFaceGroups} hoveredGroup={hoveredRefGroup}
-            candidateGroup={isRefCandidateShape ? (S.faceExtrudeRefCandidate?.faceGroupIndex ?? null) : null}
-            onHover={setHoveredRefGroup} onPointerDown={confirmRefOnRightClick} onClick={(e: any) => { e.stopPropagation(); handleRefClick(e); }} />
-        )}
         {isSelected && S.volumePickMode && <VolumePickOverlay shape={shape} allShapes={S.shapes} />}
         {isSelected && S.doorPickMode && <DoorPickOverlay shape={shape} />}
         {isSelected && S.backPickMode && <BackPickOverlay shape={shape} />}
         {isSelected && S.plinthPickMode && <PlinthPickOverlay shape={shape} />}
-        {!draftIso && !draftPreview && <PlinthSets shape={shape} />}
-        {!draftIso && !draftPreview && <ConnectorParts shape={shape} xray={isXray} />}
-        {S.faceExtrudeMode && S.faceExtrudeCavityGroupId && <CavityEditOverlay shape={shape} />}
+        {!draftIso && !draftPreview && !isRefIsoBody && <PlinthSets shape={shape} />}
+        {!draftIso && !draftPreview && !isRefIsoBody && <ConnectorParts shape={shape} xray={isXray} />}
+        {S.faceExtrudeMode && S.faceExtrudeCavityGroupId && !isRefIsoBody && <CavityEditOverlay shape={shape} />}
         {S.faceExtrudeMode && S.faceExtrudePlinthId && <PlinthEditOverlay shape={shape} />}
-        {!draftIso && !draftPreview && <VirtualFaceOverlay shape={shape} />}
+        {!draftIso && !draftPreview && !isRefIsoBody && <VirtualFaceOverlay shape={shape} />}
         {S.showFaceRoles && isSelected && <BodyFaceRoleLabels shape={shape} hovered={S.faceRoleHover?.shapeId === shape.id ? S.faceRoleHover!.gi : null} />}
         {S.faceRoleHover && S.faceRoleHover.shapeId === shape.id && <FaceRoleHighlight shape={shape} faces={refFaces} groups={refFaceGroups} gi={S.faceRoleHover.gi} />}
       </group>
@@ -2299,24 +2227,8 @@ function useDotOverlap(marks: Array<{ pos: Vec3; group: number }>, preferred: (i
   return (i: number) => (el: THREE.Group | null) => { markRefs.current[i] = el; };
 }
 
-const AXIS_LABEL: React.CSSProperties = {
-  pointerEvents: 'auto', cursor: 'pointer', fontFamily: FONT, padding: '2px 6px', userSelect: 'none', whiteSpace: 'nowrap', textAlign: 'center',
-};
-type AxisLabelProps = { position: Vec3; text: string; style: React.CSSProperties; onClick: () => void; onHover: (h: boolean) => void; title?: string };
-function AxisLabel({ position, text, style, onClick, onHover, title }: AxisLabelProps) {
-  const hover = (h: boolean) => { onHover(h); hoverCursor(h); };
-  return (
-    <Html position={position} center zIndexRange={[999, 1000]} style={{ pointerEvents: 'none' }}>
-      <div onClick={e => { e.stopPropagation(); onClick(); }} onMouseEnter={() => hover(true)} onMouseLeave={() => hover(false)} title={title}
-        style={{ ...AXIS_LABEL, ...style }}>
-        {text}
-      </div>
-    </Html>
-  );
-}
-
 // Ekran-ölçeği kilidi: iki kilit arasında ekranda sabit boy (~TARGET_PX); dışında dünya ölçüsü donar (MIN/MAX_SCALE).
-const TARGET_PX = 56, MIN_SCALE = 0.45, MAX_SCALE = 2.20, GAP_RATIO = 0.08;
+const TARGET_PX = 56, MIN_SCALE = 0.45, MAX_SCALE = 2.20;
 
 function useScreenLockedScale(ref: React.RefObject<THREE.Group | THREE.Mesh>, baseLength: number) {
   const wp = useRef(new THREE.Vector3());
@@ -2329,125 +2241,6 @@ function useScreenLockedScale(ref: React.RefObject<THREE.Group | THREE.Mesh>, ba
 }
 
 const AXIS_DISPLAY: Record<string, string> = { 'x+': '+X', 'x-': '−X', 'y+': '+Y', 'y-': '−Y', 'z+': '+Z', 'z-': '−Z' };
-const MOVE_AXES: Array<{ axis: AxisDir; color: string; hover: string }> = [
-  { axis: 'x+', color: '#c6635d', hover: '#dd8a84' }, { axis: 'x-', color: '#c6635d', hover: '#dd8a84' },
-  { axis: 'y+', color: '#6f9e6c', hover: '#93bd8f' }, { axis: 'y-', color: '#6f9e6c', hover: '#93bd8f' },
-  { axis: 'z+', color: '#6485b8', hover: '#8ba6d2' }, { axis: 'z-', color: '#6485b8', hover: '#8ba6d2' },
-];
-
-type MoveArrowProps = {
-  axisLabel: AxisDir; color: string; hoverColor: string; origin: Vec3; length: number; onSelect: (axis: AxisDir) => void; selectedAxis: string | null;
-};
-function MoveArrow({ axisLabel, color, hoverColor, origin, length, onSelect, selectedAxis }: MoveArrowProps) {
-  const [hovered, setHovered] = useState(false);
-  const isSelected = selectedAxis === axisLabel;
-  const lit = isSelected || hovered;
-  const groupRef = useRef<THREE.Group>(null);
-  // Ölçek kilidi grubun KENDİSİNE uygulanır; grup okun tabanına oturduğu için ok her ölçekte panele yapışık kalır.
-  useScreenLockedScale(groupRef, length);
-  const shaftRadius = length * 0.026, coneRadius = length * 0.078, coneHeight = length * 0.24, shaftLength = length - coneHeight;
-  const dir = axisDirToVec(axisLabel);
-  const rotation = useMemo(() => {
-    const e = new THREE.Euler().setFromQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir));
-    return [e.x, e.y, e.z] as Vec3;
-  }, [axisLabel]);
-  const along = (d: number): Vec3 => [dir.x * d, dir.y * d, dir.z * d];
-  const matProps = {
-    color: lit ? hoverColor : color, transparent: true, opacity: lit ? 1 : 0.88, depthTest: false,
-    emissive: new THREE.Color(lit ? color : 0x000000), emissiveIntensity: isSelected ? 0.55 : hovered ? 0.35 : 0.06, roughness: 0.62, metalness: 0.04,
-  };
-  // Ok gövdesi de etiket gibi tıklanır / vurgulanır: ince sap zor hedef → görünmez geniş silindir yakalar.
-  const hitEvents = {
-    onClick: (e: any) => { e.stopPropagation(); onSelect(axisLabel); },
-    onPointerOver: (e: any) => { e.stopPropagation(); setHovered(true); hoverCursor(true); },
-    onPointerOut: () => { setHovered(false); hoverCursor(false); },
-  };
-  return (
-    <group ref={groupRef} position={origin}>
-      <mesh position={along(shaftLength / 2)} rotation={rotation} renderOrder={RENDER_ORDER} raycast={noRaycast}>
-        <cylinderGeometry args={[shaftRadius, shaftRadius, shaftLength, 24]} />
-        <meshStandardMaterial {...matProps} />
-      </mesh>
-      <mesh position={along(shaftLength + coneHeight / 2)} rotation={rotation} renderOrder={RENDER_ORDER} raycast={noRaycast}>
-        <coneGeometry args={[coneRadius, coneHeight, 32]} />
-        <meshStandardMaterial {...matProps} />
-      </mesh>
-      <mesh position={along(length / 2)} rotation={rotation} {...hitEvents}>
-        <cylinderGeometry args={[coneRadius * 1.6, coneRadius * 1.6, length, 12]} />
-        <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
-      </mesh>
-      <AxisLabel position={along(length * 1.2)} text={AXIS_DISPLAY[axisLabel]} onClick={() => onSelect(axisLabel)} onHover={setHovered}
-        style={{
-          background: isSelected ? color : 'rgba(252,251,249,0.82)', color: isSelected ? '#fff' : '#57534e', fontSize: '11px', fontWeight: 650,
-          letterSpacing: '0.04em', borderRadius: '5px', border: `1px solid ${isSelected ? 'transparent' : 'rgba(60,50,40,0.10)'}`,
-          boxShadow: isSelected ? '0 1px 3px rgba(40,30,20,0.22)' : '0 1px 2px rgba(40,30,20,0.08)',
-          backdropFilter: 'blur(3px)', WebkitBackdropFilter: 'blur(3px)', lineHeight: '1.35', minWidth: '24px', transition: 'background 0.12s, color 0.12s',
-        }} />
-    </group>
-  );
-}
-
-function OriginSphere({ position, size, baseLength }: { position: Vec3; size: number; baseLength: number }) {
-  const ref = useRef<THREE.Mesh>(null);
-  useScreenLockedScale(ref, baseLength);   // oklarla AYNI tabandan kilitlenir
-  return (
-    <mesh ref={ref} position={position} renderOrder={RENDER_ORDER}>
-      <sphereGeometry args={[size, 28, 20]} />
-      <meshStandardMaterial color="#efece7" emissive={new THREE.Color('#b9b3aa')} emissiveIntensity={0.28} transparent opacity={0.9}
-        depthTest={false} roughness={0.7} metalness={0.02} />
-    </mesh>
-  );
-}
-
-/** Altı ok + merkez: kutunun yüz merkezlerinden dışarı (hacim / baza seti ok-extrude gizmosu). */
-type ArrowLayout = { centerOrigin: Vec3; axisOrigins: Record<string, Vec3>; arrowLength: number };
-/** Yerel kutu (`mat` ile dünyaya) → ok yerleşimi; kutu yoksa tüm oklar `fallback` noktasında. */
-function arrowLayoutOf(bbox: THREE.Box3 | null | undefined, mat: THREE.Matrix4, fallback: Vec3): ArrowLayout {
-  if (!bbox) {
-    const o = fallback;
-    return { centerOrigin: o, axisOrigins: Object.fromEntries(MOVE_AXES.map(a => [a.axis, o])) as Record<string, Vec3>, arrowLength: 40 };
-  }
-  const toWorld = (lx: number, ly: number, lz: number) => worldOf(new THREE.Vector3(lx, ly, lz), mat);
-  const mn = bbox.min, mx = bbox.max, c = bbox.getCenter(new THREE.Vector3());
-  const size = bbox.getSize(new THREE.Vector3());
-  const maxDim = Math.max(size.x, size.y, size.z);
-  const gap = maxDim * GAP_RATIO;
-  const gapped = (lx: number, ly: number, lz: number, d: Vec3): Vec3 => {
-    const w = toWorld(lx, ly, lz); return [w[0] + d[0] * gap, w[1] + d[1] * gap, w[2] + d[2] * gap];
-  };
-  return {
-    centerOrigin: toWorld(c.x, c.y, c.z),
-    axisOrigins: {
-      'x+': gapped(mx.x, c.y, c.z, [1, 0, 0]), 'x-': gapped(mn.x, c.y, c.z, [-1, 0, 0]),
-      'y+': gapped(c.x, mx.y, c.z, [0, 1, 0]), 'y-': gapped(c.x, mn.y, c.z, [0, -1, 0]),
-      'z+': gapped(c.x, c.y, mx.z, [0, 0, 1]), 'z-': gapped(c.x, c.y, mn.z, [0, 0, -1]),
-    } as Record<string, Vec3>,
-    arrowLength: maxDim * 0.2,
-  };
-}
-
-/* Ok-extrude gizmosu (hacim · baza seti): taşıma gizmosuyla aynı oklar; ok tıklaması yalnız seçer, uygulama şeritteki onayda (ExtrudeDock). */
-function ExtrudeArrowGizmo({ layout }: { layout: ArrowLayout }) {
-  const { faceExtrudeArrowAxis, setFaceExtrudeArrowAxis } = useStoreFields('faceExtrudeArrowAxis', 'setFaceExtrudeArrowAxis');
-  const { centerOrigin, axisOrigins, arrowLength } = layout;
-  return (
-    <group>
-      <OriginSphere position={centerOrigin} size={arrowLength * 0.055} baseLength={arrowLength} />
-      {MOVE_AXES.map(({ axis, color, hover }) => (
-        <MoveArrow key={axis} axisLabel={axis} color={color} hoverColor={hover} origin={axisOrigins[axis]} length={arrowLength}
-          onSelect={a => setFaceExtrudeArrowAxis(a === faceExtrudeArrowAxis ? null : a)} selectedAxis={faceExtrudeArrowAxis} />
-      ))}
-    </group>
-  );
-}
-/** Kutu hedefi (raf/dikme hacmi · baza seti): oklar gövde-yerel kutunun yüz merkezlerinden dışarı. */
-function BoxExtrudeGizmo({ parent, box }: { parent: Shape; box: { min: Vec3; max: Vec3 } }) {
-  const key = [...box.min, ...box.max].map(n => n.toFixed(1)).join('|');
-  const layout = useMemo(() => arrowLayoutOf(new THREE.Box3(new THREE.Vector3(...box.min), new THREE.Vector3(...box.max)), getShapeMatrix(parent), parent.position),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [key, parent.position, parent.rotation, parent.scale]);
-  return <ExtrudeArrowGizmo layout={layout} />;
-}
 
 /* BAZA AYAĞI SETİ (PlinthService) — seçme kaplaması, çizim ve ok gizmosu. */
 /** Seçme: gövde + altındaki varsayılan yükseklik tıklanır; adaylar (alt panelin altı · gövdenin altı) raf/dikme gibi döner, sağ tık yerleştirir. */
@@ -3317,17 +3110,15 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
       near={-50000} far={50000} />;
 };
 
-// Taşıma-ref hedef panel seçici: R3F raycast'ini bilerek atlar; canvas tıklamasında tüm panelleri tarar, aynı noktada derinlik döngüsü.
-const SAME_SPOT_PX = 8;
-let _movePickState: { x: number; y: number; idx: number } | null = null;
+// Taşıma-ref hedef panel seçici: R3F raycast'ini bilerek atlar; canvas tıklamasında tüm panelleri tarar (ışın sırası: Tab ile arkadaki).
 
 function MoveRefPanelPicker({ shapes }: { shapes: any[] }) {
   const { camera, gl } = useThree();
-  const { panelMoveMode, panelMoveValueMode, panelMoveRefSourceVertex, panelMoveRefTargetVertex, panelMoveTargetPanelId,
-    setPanelMoveRefTargetPanelId, setPanelMoveRefTargetVertex } = useStoreFields('panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex',
-    'panelMoveRefTargetVertex', 'panelMoveTargetPanelId', 'setPanelMoveRefTargetPanelId', 'setPanelMoveRefTargetVertex');
-  // Kaynak seçildikten sonra hedef NOKTA seçilene kadar aktif: üst üste panellerde her sol tıkta bir arkadakine geçilir.
-  const active = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && !panelMoveRefTargetVertex;
+  const { panelMoveMode, panelMoveValueMode, panelMoveRefSourceVertex, panelMoveRefTargetPanelId, panelMoveTargetPanelId } =
+    useStoreFields('panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelMoveTargetPanelId');
+  // Kaynak seçildikten sonra hedef PANEL seçilene kadar aktif. Tıklanan panel yalnız bırakılır (köşesi orada seçilir); ışının arkadaki
+  // panelleri sıraya yazılır → yalnızken Tab sıradakine geçer.
+  const active = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && !panelMoveRefTargetPanelId;
 
   useEffect(() => {
     if (!active) return;
@@ -3352,15 +3143,12 @@ function MoveRefPanelPicker({ shapes }: { shapes: any[] }) {
       if (hits.length === 0) return;
       const ordered = [...new Set(hits.map(h => idMap.get(h.object as THREE.Mesh)).filter((id): id is string => !!id))];
       if (ordered.length === 0) return;
-      const sameSpot = !!_movePickState && Math.hypot(ev.clientX - _movePickState.x, ev.clientY - _movePickState.y) < SAME_SPOT_PX;
-      const idx = sameSpot ? (_movePickState!.idx + 1) % ordered.length : 0;
-      _movePickState = { x: ev.clientX, y: ev.clientY, idx };
-      setPanelMoveRefTargetPanelId(ordered[idx]);
-      setPanelMoveRefTargetVertex(null);
+      _refPanelRing = { ids: ordered, idx: 0 };
+      isolateRefShape('move', ordered[0]);
     };
     canvas.addEventListener('click', handler, true);
-    return () => { canvas.removeEventListener('click', handler, true); _movePickState = null; };
-  }, [active, shapes, camera, gl, panelMoveTargetPanelId, setPanelMoveRefTargetPanelId, setPanelMoveRefTargetVertex]);
+    return () => canvas.removeEventListener('click', handler, true);
+  }, [active, shapes, camera, gl, panelMoveTargetPanelId]);
 
   return null;
 }
@@ -3396,7 +3184,6 @@ function MoveRefConfirmOnRightClick() {
     confirm={async () => {
       if (!(await confirmPanelMoveRef())) return;   // aynı noktaya taşıma: seçim durur
       useAppStore.getState().setPanelMoveValueMode('ref');   // seçimler sıfırlanır, araç açık kalır (sıradaki taşıma için)
-      _movePickState = null;
     }} />;
 }
 
@@ -3405,14 +3192,199 @@ const rotateRefReady = () => {
   return st.panelRotateMode && st.panelRotateValueMode === 'ref' && !!st.panelRotatePivot && !!st.panelRotateRefArmVertex && st.panelRotateAxis !== null
     && !!st.panelRotateRefFace && !!shapeById(st.panelRotateTargetPanelId, st.shapes);
 };
-/** Ref-dönüş: referans bir YÜZ (seçim PanelDrawing'de, extrude-ref ile aynı döngü); burada yalnız onay. */
+/** Ref-dönüş: referans bir YÜZ (panel → yalnız bırak → yüz; bkz. REFERANS SEÇİMİ); burada yalnız onay. */
 function RotateRefConfirmOnRightClick() {
   const { panelRotateMode, panelRotateValueMode, panelRotatePivot } = useStoreFields('panelRotateMode', 'panelRotateValueMode', 'panelRotatePivot');
   return <RefConfirmOnRightClick active={panelRotateMode && panelRotateValueMode === 'ref' && !!panelRotatePivot} ready={rotateRefReady}
     confirm={async () => {
       if (!(await confirmPanelRotateRef())) return;   // açı çözülemedi: seçim durur
       useAppStore.getState().setPanelRotateValueMode('ref');   // seçimler sıfırlanır, araç açık kalır
-      resetRefFacePick();
+    }} />;
+}
+
+/* ─────────────────────────── REFERANS SEÇİMİ ───────────────────────────
+   Extrude · hacim · döndürme · taşıma ortak akışı (Goker): ÖNCE PANEL tıklanır → o panel YALNIZ bırakılır (öteki her şey gizlenir, çevresinde
+   dönülebilir) → YÜZÜ seçilir (taşımada köşesi) → sahne geri gelir, seçilen yüz vurgulu kalır → sağ tık onaylar.
+   Eski akışta yüz doğrudan ışınla seçiliyordu: gövde yüzüyle aynı düzlemdeki panellerde tıklama yutuluyor, panelde seçilen yüz hiç
+   vurgulanmıyordu ("neresi seçili anlamadım"). Yalnız bırakılan panelde HER yüz tıklanabilir; referans olamayan yüz (extrude yönüne paralel,
+   eğri) koyu gösterilir ve nedeni durum çubuğuna yazılır.
+   Aşama depodan türetilir (`refPickOf`): extrude / döndürmede yalnız bırakılan şey `refIsolateId`, taşımada hedef panel (köşesi seçilene kadar). */
+type RefPick = {
+  tool: 'extrude' | 'rotate' | 'move';
+  /** panel: referans paneli bekleniyor · isolated: panel yalnız, yüzü / köşesi bekleniyor · picked: seçildi, onay bekleniyor */
+  stage: 'panel' | 'isolated' | 'picked';
+  isoId: string | null; /** aracın kendi paneli (referans olamaz) */ ownerId: string | null; /** hacim: grubun üyeleri referans olamaz */ cavityId: string | null;
+};
+type AppState = ReturnType<typeof useAppStore.getState>;
+function refPickOf(st: Pick<AppState, 'faceExtrudeMode' | 'faceExtrudeValueMode' | 'faceExtrudeSelectedFace' | 'faceExtrudePlinthId' | 'faceExtrudeRefCandidate'
+  | 'faceExtrudeTargetPanelId' | 'faceExtrudeCavityGroupId' | 'refIsolateId' | 'panelRotateMode' | 'panelRotateValueMode' | 'panelRotatePivot'
+  | 'panelRotateRefArmVertex' | 'panelRotateAxis' | 'panelRotateRefFace' | 'panelRotateTargetPanelId' | 'panelMoveMode' | 'panelMoveValueMode'
+  | 'panelMoveRefSourceVertex' | 'panelMoveRefTargetPanelId' | 'panelMoveRefTargetVertex' | 'panelMoveTargetPanelId'>): RefPick | null {
+  const faceStage = (picked: boolean): RefPick['stage'] => (st.refIsolateId ? 'isolated' : picked ? 'picked' : 'panel');
+  if (st.faceExtrudeMode && st.faceExtrudeValueMode === 'ref' && st.faceExtrudeSelectedFace !== null && !st.faceExtrudePlinthId) {
+    const c = st.faceExtrudeRefCandidate;
+    return { tool: 'extrude', stage: faceStage(!!c && c.faceGroupIndex >= 0), isoId: st.refIsolateId, ownerId: st.faceExtrudeTargetPanelId, cavityId: st.faceExtrudeCavityGroupId };
+  }
+  if (st.panelRotateMode && st.panelRotateValueMode === 'ref' && !!st.panelRotatePivot && !!st.panelRotateRefArmVertex && st.panelRotateAxis !== null) {
+    const c = st.panelRotateRefFace;
+    return { tool: 'rotate', stage: faceStage(!!c && c.faceGroupIndex >= 0), isoId: st.refIsolateId, ownerId: st.panelRotateTargetPanelId, cavityId: null };
+  }
+  if (st.panelMoveMode && st.panelMoveValueMode === 'ref' && !!st.panelMoveRefSourceVertex) {
+    const tp = st.panelMoveRefTargetPanelId, tv = st.panelMoveRefTargetVertex;
+    return { tool: 'move', stage: tv ? 'picked' : tp ? 'isolated' : 'panel', isoId: tp && !tv ? tp : null, ownerId: st.panelMoveTargetPanelId, cavityId: null };
+  }
+  return null;
+}
+function useRefPick(): RefPick | null {
+  return refPickOf(useStoreFields('faceExtrudeMode', 'faceExtrudeValueMode', 'faceExtrudeSelectedFace', 'faceExtrudePlinthId', 'faceExtrudeRefCandidate',
+    'faceExtrudeTargetPanelId', 'faceExtrudeCavityGroupId', 'refIsolateId', 'panelRotateMode', 'panelRotateValueMode', 'panelRotatePivot',
+    'panelRotateRefArmVertex', 'panelRotateAxis', 'panelRotateRefFace', 'panelRotateTargetPanelId', 'panelMoveMode', 'panelMoveValueMode',
+    'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelMoveRefTargetVertex', 'panelMoveTargetPanelId'));
+}
+/** Son panel tıklamasının ışın sırası: yalnız bırakılmışken Tab sıradaki (arkadaki) panele geçer. */
+let _refPanelRing: { ids: string[]; idx: number } | null = null;
+function isolateRefShape(tool: RefPick['tool'], id: string) {
+  const st = useAppStore.getState();
+  if (tool === 'move') { st.setPanelMoveRefTargetPanelId(id); st.setPanelMoveRefTargetVertex(null); return; }
+  if (tool === 'rotate') st.setPanelRotateRefFace(null); else st.setFaceExtrudeRefCandidate(null);
+  st.setRefIsolateId(id);
+}
+/** Referans PANELİ tıklaması (extrude · hacim · döndürme): ışının geçtiği paneller derinlik sırasıyla, gövde EN SONDA (panelli gövdenin mesh'i
+ *  görünmez — ilk tık her zaman görünen paneli alır). Tıklanan yalnız bırakılır. */
+function pickRefPanelFromEvent(e: any, rp: RefPick) {
+  const st = useAppStore.getState();
+  const panels: string[] = [], bodies: string[] = [];
+  for (const hit of (e.intersections ?? []) as THREE.Intersection[]) {
+    let id: string | null = null;
+    for (let o: THREE.Object3D | null = hit.object; o; o = o.parent) if (o.name?.startsWith('shape-')) { id = o.name.slice(6); break; }
+    if (!id || id === rp.ownerId) continue;
+    const sh = shapeById(id, st.shapes);
+    if (!sh?.geometry) continue;
+    if (sh.type !== 'panel') { if (!bodies.includes(id)) bodies.push(id); continue; }
+    if (rp.cavityId && sh.parameters?.panelGroupId === rp.cavityId) continue;
+    if (!panels.includes(id)) panels.push(id);
+  }
+  const ids = [...panels, ...bodies];
+  if (!ids.length) return;
+  _refPanelRing = { ids, idx: 0 };
+  isolateRefShape(rp.tool, ids[0]);
+}
+/** Tab: yalnız bırakılmış panelden, aynı tıklamanın arkasındaki sıradaki panele. */
+function cycleRefPanel(): boolean {
+  const rp = refPickOf(useAppStore.getState());
+  if (!rp || rp.stage !== 'isolated' || !_refPanelRing || _refPanelRing.ids.length < 2) return false;
+  const at = _refPanelRing.ids.indexOf(rp.isoId ?? '');
+  if (at < 0) return false;
+  _refPanelRing.idx = (at + 1) % _refPanelRing.ids.length;
+  isolateRefShape(rp.tool, _refPanelRing.ids[_refPanelRing.idx]);
+  return true;
+}
+const refRingCount = () => _refPanelRing?.ids.length ?? 0;
+
+/** Referans şeklinin yüz ağı: panelde kendi ağı, gövdede çizilen (vertex düzenlemeli) ağ — motorun `matchReferenceFace`i aynısını okur. */
+const refGeometryOf = (shape: Shape): THREE.BufferGeometry | undefined => (shape.type === 'panel' ? shape.geometry : effectiveBodyGeometry(shape));
+/** Hareket eden yüzün dünya normali (extrude / hacim): referans yüzün geçerliliği buna göre. Döndürmede null. */
+function refMovingNormal(st: AppState, rp: RefPick): { n: THREE.Vector3; min: number } | null {
+  if (rp.tool !== 'extrude' || st.faceExtrudeSelectedFace === null) return null;
+  if (rp.cavityId) {
+    const g = st.panelGroups.find(x => x.id === rp.cavityId), body = g ? shapeById(g.shapeId, st.shapes) : undefined, n = st.faceExtrudeCavityFaceNormal;
+    return body && n ? { n: new THREE.Vector3(...n).transformDirection(getShapeMatrix(body)), min: 0.7 } : null;
+  }
+  const panel = shapeById(rp.ownerId, st.shapes);
+  const g = panel?.geometry ? getFacesAndGroups(panel.geometry).groups[st.faceExtrudeSelectedFace] : undefined;
+  return panel && g ? { n: g.normal.clone().normalize().transformDirection(getShapeMatrix(panel)), min: 0.5 } : null;
+}
+
+/** YALNIZ BIRAKILAN panelin / gövdenin yüz seçimi: üzerine gelinen yüz vurgulanır, referans olamayanlar koyu durur (nedeni durum çubuğunda),
+ *  geçerli yüze tık referansı yazar ve sahneyi geri getirir. */
+function RefIsolatePicker({ rp }: { rp: RefPick }) {
+  const s = useStoreFields('shapes', 'faceExtrudeSelectedFace', 'faceExtrudeCavityFaceNormal', 'panelGroups');
+  const shape = shapeById(rp.isoId, s.shapes);
+  const geometry = useMemo(() => (shape ? refGeometryOf(shape) : undefined), [shape?.geometry, shape?.vertexModifications]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const { faces, groups } = useMemo(() => (geometry ? getFacesAndGroups(geometry) : NO_FACES), [geometry]);
+  const matrix = useMemo(() => (shape ? getShapeMatrix(shape) : new THREE.Matrix4()), [shape?.position, shape?.rotation, shape?.scale]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const moving = useMemo(() => refMovingNormal(useAppStore.getState(), rp), [rp.tool, rp.cavityId, rp.ownerId, s.faceExtrudeSelectedFace, s.faceExtrudeCavityFaceNormal]);   // eslint-disable-line react-hooks/exhaustive-deps
+  // Yüz başına hüküm: null = referans olabilir, metin = neden olamaz.
+  const verdicts = useMemo(() => groups.map((g: CoplanarFaceGroup): string | null => {
+    if (g.isCurved) return 'Curved face — pick a flat face';
+    if (!moving) return null;
+    const dot = Math.abs(g.normal.clone().normalize().transformDirection(matrix).dot(moving.n));
+    return dot >= moving.min ? null : rp.cavityId ? 'This face is not square to the volume face — it cannot be reached'
+      : 'This face runs along the direction the edge moves — the edge can never reach it';
+  }), [groups, moving, matrix, rp.cavityId]);
+  const [hover, setHover] = useState<number | null>(null);
+  const blockedGeo = useMemo(() => {
+    const idx = groups.flatMap((g: CoplanarFaceGroup, i: number) => (verdicts[i] ? g.faceIndices : []));
+    return idx.length ? createFaceHighlightGeometry(faces, idx) : null;
+  }, [faces, groups, verdicts]);
+  const hoverGeo = useMemo(() => groupHighlight(faces, groups, hover), [faces, groups, hover]);
+  useDisposable(blockedGeo); useDisposable(hoverGeo);
+  const edges = useMemo(() => (hoverGeo ? edgePointsOf(hoverGeo, 1) : []), [hoverGeo]);
+  useEffect(() => () => { hoverCursor(false); useAppStore.getState().setRefPickNote(null); }, []);
+  if (!shape || !geometry) return null;
+  const giOf = (e: any) => { const gi = groupIndexOfFace(groups, e.faceIndex); return gi >= 0 ? gi : null; };
+  const note = (gi: number | null) => useAppStore.getState().setRefPickNote(gi === null ? null : verdicts[gi] ?? `Click to use this face (${dominantAxisLabel(groups[gi].normal)})`);
+  const ok = hover !== null && !verdicts[hover];
+  return (
+    <group matrix={matrix} matrixAutoUpdate={false}>
+      <mesh geometry={geometry} renderOrder={10} onContextMenu={stopEvent}
+        onPointerMove={(e: any) => { e.stopPropagation(); const gi = giOf(e); if (gi !== hover) { setHover(gi); note(gi); document.body.style.cursor = gi !== null && verdicts[gi] ? 'not-allowed' : 'pointer'; } }}
+        onPointerOut={() => { setHover(null); note(null); hoverCursor(false); }}
+        onClick={(e: any) => {
+          e.stopPropagation();
+          const gi = giOf(e);
+          if (gi === null || verdicts[gi]) return;
+          const N = groups[gi].normal.clone().normalize().transformDirection(matrix), st = useAppStore.getState();
+          const pick = { panelId: shape.id, faceGroupIndex: gi, normalWorld: [N.x, N.y, N.z] as Vec3, pointWorld: [e.point.x, e.point.y, e.point.z] as Vec3 };
+          if (rp.tool === 'rotate') st.setPanelRotateRefFace(pick); else st.setFaceExtrudeRefCandidate(pick);
+        }}>
+        <HitMaterial />
+      </mesh>
+      {blockedGeo && <mesh geometry={blockedGeo} renderOrder={11} raycast={noRaycast}><OverlayMat color={0x44403c} opacity={0.3} /></mesh>}
+      {hoverGeo && ok && (
+        <>
+          <OverlayMesh geometry={hoverGeo} order={12} color={REF_COLORS.selected} opacity={0.55} />
+          <EdgeLines points={edges} color={SCENE_EX.ref.main} width={2} order={13} />
+        </>
+      )}
+    </group>
+  );
+}
+
+/** SEÇİLEN referans yüz (onay bekleniyor): sahne geri geldiğinde yüz, öteki panellerin arkasında kalsa da vurgulu görünür. */
+function RefFaceMark({ rp }: { rp: RefPick }) {
+  const s = useStoreFields('shapes', 'faceExtrudeRefCandidate', 'panelRotateRefFace');
+  const cand = rp.tool === 'rotate' ? s.panelRotateRefFace : s.faceExtrudeRefCandidate;
+  const shape = cand ? shapeById(cand.panelId, s.shapes) : undefined;
+  const geometry = useMemo(() => (shape ? refGeometryOf(shape) : undefined), [shape?.geometry, shape?.vertexModifications]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const geo = useMemo(() => {
+    if (!geometry || !cand || cand.faceGroupIndex < 0) return null;
+    const { faces, groups } = getFacesAndGroups(geometry);
+    return groupHighlight(faces, groups, cand.faceGroupIndex);
+  }, [geometry, cand?.faceGroupIndex]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useDisposable(geo);
+  const edges = useMemo(() => (geo ? edgePointsOf(geo, 1) : []), [geo]);
+  if (!shape || !geo) return null;
+  return (
+    <group matrix={getShapeMatrix(shape)} matrixAutoUpdate={false}>
+      <OverlayMesh geometry={geo} order={12} color={REF_COLORS.selected} opacity={REF_COLORS.selectedOpacity} />
+      <EdgeLines points={edges} color={SCENE_EX.ref.main} width={2.2} order={13} />
+    </group>
+  );
+}
+
+const extrudeRefReady = () => refPickOf(useAppStore.getState())?.stage === 'picked';
+/** Extrude / hacim referansı: sağ tık onaylar (yüz seçilmeden yalnız menüyü engeller). Araç açık kalır. */
+function ExtrudeRefConfirmOnRightClick() {
+  const rp = useRefPick();
+  return <RefConfirmOnRightClick active={rp?.tool === 'extrude'} ready={extrudeRefReady}
+    confirm={async () => {
+      const st = useAppStore.getState(), gid = st.faceExtrudeCavityGroupId, cand = st.faceExtrudeRefCandidate, n = st.faceExtrudeCavityFaceNormal;
+      if (!gid) { await confirmRefFaceExtrude(); return; }
+      if (!cand || !n) return;
+      await executeCavityExtrudeToReference(gid, n, cand, st.faceExtrudeClickPoint);
+      const now = useAppStore.getState();
+      now.setFaceExtrudeSelectedFace(null); now.setFaceExtrudeCavityFaceNormal(null); now.setFaceExtrudeRefCandidate(null);
     }} />;
 }
 
@@ -3453,6 +3425,70 @@ type SceneFace = {
   fill: THREE.BufferGeometry; edges: Vec3[];
 };
 
+/** Yüzün işaret çıpası: alan ağırlıklı merkez; yüzün dışına düşerse (L / U yüz) ona en yakın üçgenin merkezi. */
+function faceAnchorOf(faces: FaceData[], g: CoplanarFaceGroup): THREE.Vector3 {
+  const c = new THREE.Vector3();
+  let area = 0;
+  for (const fi of g.faceIndices) { const f = faces[fi]; if (f) { c.addScaledVector(f.center, f.area); area += f.area; } }
+  if (area > 0) c.divideScalar(area); else c.copy(g.center);
+  if (g.faceIndices.some(fi => { const v = faces[fi]?.vertices; return !!v && pointInTriangle3D(c, v[0], v[1], v[2]); })) return c;
+  let anchor = c, best = Infinity;
+  for (const fi of g.faceIndices) { const f = faces[fi]; if (!f) continue; const d = f.center.distanceToSquared(c); if (d < best) { best = d; anchor = f.center.clone(); } }
+  return anchor;
+}
+/** Ray: en uzun kenarın yönünde, çıpadan geçen doğru parçası (uçlardan içeri); ara noktaları yüzün içindeyse geçerli. */
+function faceRailOf(faces: FaceData[], g: CoplanarFaceGroup, anchor: THREE.Vector3, edges: Vec3[]): SceneFace['rail'] {
+  let long = 0;
+  const dir = new THREE.Vector3(), e = new THREE.Vector3();
+  for (let i = 0; i + 1 < edges.length; i += 2) {
+    const l = e.set(edges[i + 1][0] - edges[i][0], edges[i + 1][1] - edges[i][1], edges[i + 1][2] - edges[i][2]).length();
+    if (l > long) { long = l; dir.copy(e).divideScalar(l); }
+  }
+  if (long <= 1) return null;
+  let lo = 0, hi = 0;
+  for (const fi of g.faceIndices) for (const v of faces[fi]?.vertices ?? []) { const t = e.copy(v).sub(anchor).dot(dir); if (t < lo) lo = t; if (t > hi) hi = t; }
+  const pad = Math.min((hi - lo) * 0.12, 40);
+  const a = anchor.clone().addScaledVector(dir, lo + pad), b = anchor.clone().addScaledVector(dir, hi - pad);
+  const inside = (q: THREE.Vector3) => g.faceIndices.some(fi => { const v = faces[fi]?.vertices; return !!v && pointInTriangle3D(q, v[0], v[1], v[2]); });
+  return hi - lo > 60 && [0, 0.25, 0.5, 0.75, 1].every(t => inside(a.clone().lerp(b, t))) ? [a, b] : null;
+}
+/** Kalıcı adlar: bakış yönü + o yöndeki sıra (ok tipi buna bağlanır). */
+function nameSceneFaces(out: SceneFace[]) {
+  const byLabel = new Map<string, SceneFace[]>();
+  for (const f of out) { const l = dominantAxisLabel(f.n); byLabel.set(l, [...(byLabel.get(l) ?? []), f]); }
+  for (const [l, list] of byLabel) {
+    list.sort((a, b) => a.anchor.dot(a.n) - b.anchor.dot(b.n) || a.anchor.x - b.anchor.x || a.anchor.y - b.anchor.y || a.anchor.z - b.anchor.z)
+      .forEach((f, i) => { f.key = `${l}#${i}`; });
+  }
+}
+/** Kutu yüzeyinin (hacim / baza seti) düz yüzleri — hepsi ok alır. `spanOf`: Fixed ölçüsü (yüzün arkasındaki derinlik / setin o eksendeki ölçüsü). */
+function boxSceneFaces(geo: THREE.BufferGeometry, spanOf: (n: THREE.Vector3, anchor: THREE.Vector3) => number): SceneFace[] {
+  const { faces, groups } = getFacesAndGroups(geo);
+  const out: SceneFace[] = [];
+  groups.forEach((g, gi) => {
+    if (g.isCurved || g.totalArea < 4) return;
+    const n = g.normal.clone().normalize(), anchor = faceAnchorOf(faces, g);
+    const fill = createFaceHighlightGeometry(faces, g.faceIndices), edges = edgePointsOf(fill, 1);
+    out.push({ gi, key: '', n, anchor, span: round1(spanOf(n, anchor)), sample: [anchor.x, anchor.y, anchor.z], thick: false, rail: faceRailOf(faces, g, anchor, edges), fill, edges });
+  });
+  nameSceneFaces(out);
+  return out;
+}
+/** Hacim yüzünün arkasındaki derinlik: çıpadan içeri, bitişik bölge kutuları boyunca (motorun `depthBehind`i — Fixed bunu hedefler). */
+function boxColumnDepth(boxes: Array<{ min: Vec3; max: Vec3 }>, p: THREE.Vector3, n: THREE.Vector3): number {
+  const a = [Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)].indexOf(Math.max(Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)));
+  const side = n.getComponent(a) > 0 ? 1 : -1, [u, v] = [0, 1, 2].filter(k => k !== a), pu = p.getComponent(u), pv = p.getComponent(v);
+  let coord = p.getComponent(a), depth = 0;
+  for (let guard = 0; guard < 64; guard++) {
+    const q = coord - side * 0.05;
+    const b = boxes.find(x => q > x.min[a] && q < x.max[a] && pu > x.min[u] - 0.01 && pu < x.max[u] + 0.01 && pv > x.min[v] - 0.01 && pv < x.max[v] + 0.01);
+    if (!b) break;
+    const far = side > 0 ? b.min[a] : b.max[a];
+    depth += Math.abs(coord - far); coord = far;
+  }
+  return depth;
+}
+
 /** Panelin extrude edilebilir düz yüzleri. Kanal / delik gibi son geçiş kesimlerinin açtığı yüzler alınmaz (kesilmemiş ağda karşılığı yok). */
 function sceneFacesOf(panel: Shape): SceneFace[] {
   const geometry = panel.geometry;
@@ -3478,45 +3514,17 @@ function sceneFacesOf(panel: Shape): SceneFace[] {
     // Büyük yüzün kanalla ayrılmış dar şeritleri (kanalın arkasında kalan 10 mm) ayrı kenar değildir.
     const thick = !!bigN && Math.abs(n.dot(bigN)) > 0.95;
     if (thick && g.totalArea < bigA * 0.25) return;
-    // Alan ağırlıklı merkez; yüzün dışına düşerse (L / U yüz) ona en yakın üçgenin merkezi.
-    const c = new THREE.Vector3();
-    let area = 0;
-    for (const fi of g.faceIndices) { const f = faces[fi]; if (f) { c.addScaledVector(f.center, f.area); area += f.area; } }
-    if (area > 0) c.divideScalar(area); else c.copy(g.center);
-    let anchor = c;
-    if (!g.faceIndices.some(fi => { const v = faces[fi]?.vertices; return !!v && pointInTriangle3D(c, v[0], v[1], v[2]); })) {
-      let best = Infinity;
-      for (const fi of g.faceIndices) { const f = faces[fi]; if (!f) continue; const d = f.center.distanceToSquared(c); if (d < best) { best = d; anchor = f.center.clone(); } }
-    }
+    const anchor = faceAnchorOf(faces, g);
     if (preGroups && !preGroups.some(q => q.n.dot(n) > 0.9995 && Math.abs(q.d - anchor.dot(n)) < 0.1 && q.bb.containsPoint(anchor))
       && !isPostSketchFace(panel, gi)) return;
     const k = axisIndexOf(dominantAxisLabel(n).toLowerCase());
     const span = n.getComponent(k) > 0 ? anchor.getComponent(k) - box.min.getComponent(k) : box.max.getComponent(k) - anchor.getComponent(k);
     const fill = createFaceHighlightGeometry(faces, g.faceIndices);
     const edges = edgePointsOf(fill, 1);
-    // Ray: en uzun kenarın yönünde, çıpadan geçen doğru parçası (uçlardan içeri); ara noktaları yüzün içindeyse geçerli.
-    let rail: SceneFace['rail'] = null, long = 0;
-    const dir = new THREE.Vector3(), e = new THREE.Vector3();
-    for (let i = 0; i + 1 < edges.length; i += 2) {
-      const l = e.set(edges[i + 1][0] - edges[i][0], edges[i + 1][1] - edges[i][1], edges[i + 1][2] - edges[i][2]).length();
-      if (l > long) { long = l; dir.copy(e).divideScalar(l); }
-    }
-    if (long > 1) {
-      let lo = 0, hi = 0;
-      for (const fi of g.faceIndices) for (const v of faces[fi]?.vertices ?? []) { const t = e.copy(v).sub(anchor).dot(dir); if (t < lo) lo = t; if (t > hi) hi = t; }
-      const pad = Math.min((hi - lo) * 0.12, 40);
-      const a = anchor.clone().addScaledVector(dir, lo + pad), b = anchor.clone().addScaledVector(dir, hi - pad);
-      const inside = (q: THREE.Vector3) => g.faceIndices.some(fi => { const v = faces[fi]?.vertices; return !!v && pointInTriangle3D(q, v[0], v[1], v[2]); });
-      if (hi - lo > 60 && [0, 0.25, 0.5, 0.75, 1].every(t => inside(a.clone().lerp(b, t)))) rail = [a, b];
-    }
+    const rail = faceRailOf(faces, g, anchor, edges);
     out.push({ gi, key: '', n, anchor, span: round1(span), sample: [anchor.x, anchor.y, anchor.z], thick, rail, fill, edges });
   });
-  const byLabel = new Map<string, SceneFace[]>();
-  for (const f of out) { const l = dominantAxisLabel(f.n); byLabel.set(l, [...(byLabel.get(l) ?? []), f]); }
-  for (const [l, list] of byLabel) {
-    list.sort((a, b) => a.anchor.dot(a.n) - b.anchor.dot(b.n) || a.anchor.x - b.anchor.x || a.anchor.y - b.anchor.y || a.anchor.z - b.anchor.z)
-      .forEach((f, i) => { f.key = `${l}#${i}`; });
-  }
+  nameSceneFaces(out);
   // Örnek nokta: motor adımın yüzünü, katı yüzlerinin KÖŞELERİNE en yakın olana göre eşler. Yüz ortası iki paralel yüze neredeyse eşit
   // uzak kalabiliyor (L panelin iki ucu) → aynı yöne bakan öteki yüzlerin köşelerinden EN UZAK kendi köşesi, 0.5 mm içeri.
   const labelOf = (g: CoplanarFaceGroup) => dominantAxisLabel(g.normal);
@@ -3565,7 +3573,6 @@ const gk = (k: string, t: string): GuideKey => ({ k, t });
 function stopSceneExtrude() {
   const st = useAppStore.getState();
   st.setFaceExtrudeSelectedFace(null); st.setFaceExtrudeRefCandidate(null); st.setFaceExtrudeMode(false);
-  resetRefFacePick();
 }
 /** Ok / nokta tıklaması: yüz extrude modu bu panelde, O OKUN tipiyle açılır, yüz seçilir (ref akışı ve hedef dışı panellerin saydamlığı aynı moddan gelir). */
 function pickSceneFace(panel: Shape, f: SceneFace, type: SceneExMode) {
@@ -3574,7 +3581,6 @@ function pickSceneFace(panel: Shape, f: SceneFace, type: SceneExMode) {
   // Depodaki mod seçili kenarın tipidir (ref akışı ve yüz yakalama onu okur).
   if (st.faceExtrudeValueMode !== type) st.setFaceExtrudeValueMode(type);
   st.setFaceExtrudeRefCandidate(null);
-  resetRefFacePick();
   st.setFaceExtrudeSelectedFace(f.gi);
   st.setFaceExtrudeClickPoint(f.sample);
 }
@@ -3629,6 +3635,10 @@ function SceneExTypeBtn({ type, onCycle, onHover }: { type: SceneExMode; onCycle
   const [hov, setHov] = useState(false);
   const [turns, setTurns] = useState(0);
   const hover = (h: boolean) => { setHov(h); onHover(h); };
+  // Düğme üzerindeyken kalkarsa (ok ↔ nokta dalı değişir) mouseleave gelmez → vurgu burada bırakılır (durum çubuğunda "Switch…" kalıyordu).
+  const hovRef = useRef(false), offRef = useRef(onHover);
+  hovRef.current = hov; offRef.current = onHover;
+  useEffect(() => () => { if (hovRef.current) offRef.current(false); }, []);
   return (
     <button type="button" aria-label="Switch arrow type"
       onClick={e => { e.stopPropagation(); setTurns(t => t + 1); onCycle(); }} onMouseDown={e => e.preventDefault()} onPointerDown={e => e.stopPropagation()}
@@ -3903,36 +3913,45 @@ function SceneNumInput({ initial, placeholder, unit, color, title, parse, onText
   );
 }
 /** Extrude okunun girişi: Fixed'de şimdiki ölçüyle dolu gelir. */
-function SceneExInput({ mode, span, color, onText, onApply }: {
-  mode: 'fixed' | 'dyn'; span: number; color: string; onText: (t: string) => void; onApply: (v: number) => void;
+function SceneExInput({ mode, span, color, onText, onApply, onCancel }: {
+  mode: 'fixed' | 'dyn'; span: number; color: string; onText: (t: string) => void; onApply: (v: number) => void; onCancel: () => void;
 }) {
   return <SceneNumInput initial={mode === 'fixed' ? fmtEx(span) : ''} placeholder={mode === 'fixed' ? fmtEx(span) : '0'} unit="mm" color={color}
-    title={mode === 'fixed' ? 'Size from the opposite edge (mm) — Enter applies, Esc cancels' : 'Move from where it is now (mm): + out, − in — Enter applies, Esc cancels'}
-    parse={t => exEntry(mode, span, t)} onText={onText} onApply={onApply} onCancel={stopSceneExtrude} />;
+    title={mode === 'fixed' ? 'Size (mm) — Enter applies, Esc cancels' : 'Move from where it is now (mm): + out, − in — Enter applies, Esc cancels'}
+    parse={t => exEntry(mode, span, t)} onText={onText} onApply={onApply} onCancel={onCancel} />;
 }
 
+/** Sahne extrude aracının HEDEFİ: panelin kenarları, raf / dikme hacminin yüzleri ya da baza setinin yüzleri. Oklar, okun yanındaki tip düğmesi,
+ *  kutusuz giriş, önizleme ve durum çubuğu ortaktır (`SceneExtrudeTool`); hedef yalnız yüzleri ve adımın nasıl yazılacağını verir. */
+type SceneExTarget = {
+  /** tip hafızası (`_exTypes`) anahtarı */ id: string;
+  /** durum çubuğunda araç adı · yüzün adı */ label: string; noun: 'edge' | 'face';
+  faces: SceneFace[]; matrix: THREE.Matrix4; /** okların dünya ölçeği */ base: number;
+  /** izinli tipler (baza setinde Ref yok); ilki varsayılan */ modes: SceneExMode[];
+  /** depoda seçili yüz (yüz extrude modu bu hedefteyse) */ activeGi: number | null;
+  select: (f: SceneFace, type: SceneExMode) => void; /** seçili yüzü bırakır (araç açık kalır) */ deselect: () => void;
+  apply: (f: SceneFace, mode: 'fixed' | 'dyn', v: number) => Promise<unknown>;
+  fixedText: (span: string) => string; dynText: string; refText: string;
+};
+const SX_NOUN = { edge: 'Edge', face: 'Face' } as const;
+
 let _sceneExBusy = false;
-export function PanelSceneExtrude({ panel }: { panel: Shape }) {
-  const S = useStoreFields('faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'faceExtrudeRefCandidate');
-  const faces = useMemo(() => sceneFacesOf(panel), [panel.geometry, panel.ungroovedGeometry]);   // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => () => { for (const f of faces) f.fill.dispose(); }, [faces]);
-  const matrix = useMemo(() => getShapeMatrix(panel), [panel.position, panel.rotation, panel.scale]);   // eslint-disable-line react-hooks/exhaustive-deps
-  const base = useMemo(() => {
-    const sz = localBboxOf(panel.geometry)?.getSize(new THREE.Vector3());
-    return THREE.MathUtils.clamp((sz ? Math.max(sz.x, sz.y, sz.z) : 400) * 0.12, 34, 96);
-  }, [panel.geometry]);
+function SceneExtrudeTool({ t }: { t: SceneExTarget }) {
+  const S = useStoreFields('faceExtrudeRefCandidate', 'refPickNote');
+  const rp = useRefPick();
+  const { faces, matrix, base } = t;
   const world = useMemo(() => faces.map(f => ({
     origin: worldOf(f.anchor, matrix), normal: f.n.clone().transformDirection(matrix),
     rail: f.rail ? [f.rail[0].clone().applyMatrix4(matrix), f.rail[1].clone().applyMatrix4(matrix)] as [THREE.Vector3, THREE.Vector3] : null,
   })), [faces, matrix]);
-  // HER OKUN KENDİ TİPİ (varsayılan Fixed): okun yanındaki düğme yalnız o oku çevirir.
-  const [types, setTypes] = useState<Record<string, SceneExMode>>(() => _exTypes.get(panel.id) ?? {});
-  const typeOf = (f: SceneFace): SceneExMode => types[f.key] ?? 'fixed';
+  // HER OKUN KENDİ TİPİ (varsayılan: hedefin ilk tipi): okun yanındaki düğme yalnız o oku çevirir.
+  const [types, setTypes] = useState<Record<string, SceneExMode>>(() => _exTypes.get(t.id) ?? {});
+  const typeOf = (f: SceneFace): SceneExMode => { const x = types[f.key]; return x && t.modes.includes(x) ? x : t.modes[0]; };
+  const nextType = (f: SceneFace) => nextOf(t.modes, typeOf(f));
   const [hover, setHover] = useState<number | null>(null);
   const [swHover, setSwHover] = useState<number | null>(null);
   const [entry, setEntry] = useState<{ key: string; text: string } | null>(null);
-  const activeGi = S.faceExtrudeMode && S.faceExtrudeTargetPanelId === panel.id ? S.faceExtrudeSelectedFace : null;
-  const active = activeGi !== null ? faces.find(f => f.gi === activeGi) ?? null : null;
+  const active = t.activeGi !== null ? faces.find(f => f.gi === t.activeGi) ?? null : null;
   const mode = active ? typeOf(active) : null;
   // Vurgu bırakma kısa gecikmeli: imleç oktan yanındaki düğmeye geçerken ok (ve büyük yüzde düğmenin kendisi) kaybolmasın.
   const hoverOff = useRef<number | undefined>(undefined);
@@ -3942,29 +3961,25 @@ export function PanelSceneExtrude({ panel }: { panel: Shape }) {
     else hoverOff.current = window.setTimeout(() => setHover(cur => (cur === gi ? null : cur)), 160);
   };
   useEffect(() => () => window.clearTimeout(hoverOff.current), []);
-  // Geometri değişti (uygulama / başka yerden rebuild): yüz indeksleri eskidir → vurgu ve seçili kenar düşer.
-  const geoRef = useRef(panel.geometry);
+  // Yüzler değişti (uygulama / başka yerden rebuild): yüz indeksleri eskidir → vurgu ve seçili yüz düşer.
+  const facesRef = useRef(faces), activeRef = useRef(t.activeGi), deselectRef = useRef(t.deselect);
+  activeRef.current = t.activeGi; deselectRef.current = t.deselect;
   useEffect(() => {
     window.clearTimeout(hoverOff.current);
     setHover(null);
-    if (geoRef.current === panel.geometry) return;
-    geoRef.current = panel.geometry;
-    const st = useAppStore.getState();
-    if (st.faceExtrudeMode && st.faceExtrudeTargetPanelId === panel.id && st.faceExtrudeSelectedFace !== null && !_sceneExBusy) stopSceneExtrude();
-  }, [faces]);   // eslint-disable-line react-hooks/exhaustive-deps
-  /** Okun tipini sıradakine çevirir; seçili kenarın oku ise kenar korunur, giriş yeni tipte yeniden açılır. */
+    if (facesRef.current === faces) return;
+    facesRef.current = faces;
+    if (activeRef.current !== null && !_sceneExBusy) deselectRef.current();
+  }, [faces]);
+  /** Okun tipini sıradakine çevirir; seçili yüzün oku ise yüz korunur, giriş yeni tipte yeniden açılır. */
   const cycleType = (f: SceneFace) => {
-    const next = SCENE_EX_ORDER[(SCENE_EX_ORDER.indexOf(typeOf(f)) + 1) % SCENE_EX_ORDER.length];
+    const next = nextType(f);
     const all = { ...types, [f.key]: next };
-    _exTypes.set(panel.id, all);
+    _exTypes.set(t.id, all);
     setTypes(all);
-    if (f !== active) return;
-    const st = useAppStore.getState();
-    st.setFaceExtrudeValueMode(next);
-    st.setFaceExtrudeRefCandidate(null);
-    resetRefFacePick();
+    if (f === active) t.select(f, next);
   };
-  // Kenar ya da tip değişince giriş yenilenir: Fixed'de kenarın ŞİMDİKİ ölçüsü yazılı ve seçili gelir, Dyn boş başlar (şimdiki yerden fark).
+  // Yüz ya da tip değişince giriş yenilenir: Fixed'de ŞİMDİKİ ölçü yazılı ve seçili gelir, Dyn boş başlar (şimdiki yerden fark).
   const entryKey = active ? `${active.gi}|${mode}|${active.span}` : '';
   const draft = entry && entry.key === entryKey ? entry.text : active && mode === 'fixed' ? fmtEx(active.span) : '';
   const setDraft = (text: string) => setEntry({ key: entryKey, text });
@@ -3977,19 +3992,14 @@ export function PanelSceneExtrude({ panel }: { panel: Shape }) {
 
   const apply = async (v: number) => {
     if (!active || !mode || mode === 'ref' || _sceneExBusy) return;
-    const st = useAppStore.getState();
-    const fresh = shapeById(panel.id, st.shapes);
-    if (!fresh) return;
     _sceneExBusy = true;
-    try {
-      await executeFaceExtrude({ panelShape: fresh, faceGroupIndex: active.gi, value: v, isFixed: mode === 'fixed', updateShape: st.updateShape,
-        clickPoint: st.faceExtrudeClickPoint ?? undefined });
-    } catch (e) { console.error('[YAGO][SAHNE-EXTRUDE] uygulanamadı:', e); }
+    try { await t.apply(active, mode, v); }
+    catch (e) { console.error('[YAGO][SAHNE-EXTRUDE] uygulanamadı:', e); }
     finally { _sceneExBusy = false; }
-    stopSceneExtrude();
+    t.deselect();
   };
 
-  // Ref: seçili kenarın referans yüze kadar gideceği yol (yüz normali boyunca); çok dik referansta yol yok.
+  // Ref: seçili yüzün referans yüze kadar gideceği yol (yüz normali boyunca); çok dik referansta yol yok.
   const refAmount = useMemo(() => {
     const cand = S.faceExtrudeRefCandidate;
     if (mode !== 'ref' || !active || !cand || cand.faceGroupIndex < 0) return null;
@@ -3999,52 +4009,60 @@ export function PanelSceneExtrude({ panel }: { panel: Shape }) {
   }, [mode, active, S.faceExtrudeRefCandidate, faces, world]);
   const hovered = hover !== null ? faces.find(f => f.gi === hover) ?? null : null;
   const previewFace = active ?? hovered;
-  // Durum çubuğu: okun yanında yazı yok — tip ve ne yaptığı burada.
+  // Durum çubuğu: okun yanında yazı yok — tip, adımlar ve ne yapılacağı burada.
   const swFace = swHover !== null ? faces.find(f => f.gi === swHover) ?? null : null;
-  const refCand = !!S.faceExtrudeRefCandidate && S.faceExtrudeRefCandidate.faceGroupIndex >= 0;
   const exType: SceneExMode | null = active && mode ? mode : hovered ? typeOf(hovered) : null;
-  const exStep = !active || !mode ? 0 : mode === 'ref' ? (refCand ? 2 : 1) : 1;
+  const noun = t.noun, Noun = SX_NOUN[noun];
+  const refStage = active && mode === 'ref' && rp?.tool === 'extrude' ? rp.stage : null;
+  const isolated = refStage === 'isolated';
+  const exStep = !active || !mode ? 0 : mode !== 'ref' ? 1 : refStage === 'picked' ? 3 : isolated ? 2 : 1;
+  const more = refRingCount() > 1;
   useStatusGuide({
-    label: 'Extrude', type: swFace ? typeOf(swFace) : exType,
-    steps: exType === 'ref' ? ['Edge', 'Reference face', 'Confirm'] : ['Edge', exType === 'fixed' ? 'Size' : exType === 'dyn' ? 'Distance' : 'Value'],
+    label: t.label, type: swFace ? typeOf(swFace) : exType,
+    steps: exType === 'ref' ? [Noun, 'Reference panel', 'Its face', 'Confirm'] : [Noun, exType === 'fixed' ? 'Size' : exType === 'dyn' ? 'Distance' : 'Value'],
     step: exStep,
-    text: !active || !mode ? 'Click the arrow of the edge to move · the round button next to an arrow switches its type'
-      : mode === 'fixed' ? `Type the size from the opposite edge (now ${fmtEx(active.span)} mm)`
-      : mode === 'dyn' ? 'Type how far the edge moves: + out, − in'
-      : refCand ? 'Right-click — the edge goes up to that face and follows it' : 'Click the face the edge should reach',
-    note: swFace ? `Switch this arrow → ${SCENE_EX_LABEL[SCENE_EX_ORDER[(SCENE_EX_ORDER.indexOf(typeOf(swFace)) + 1) % 3]]}`
-      : !active && hovered ? (typeOf(hovered) === 'fixed' ? `Fixed — the edge goes to a size measured from the opposite edge (now ${fmtEx(hovered.span)} mm)`
-        : typeOf(hovered) === 'dyn' ? 'Dyn — the edge moves from where it is now: + out, − in' : 'Ref — the edge goes up to a face you pick, and follows it')
+    text: !active || !mode ? `Click the arrow of the ${noun} to move${t.modes.length > 1 ? ' · the round button next to an arrow switches its type' : ''}`
+      : mode === 'fixed' ? t.fixedText(fmtEx(active.span))
+      : mode === 'dyn' ? t.dynText
+      : refStage === 'picked' ? `Right-click — the ${noun} goes up to that face and follows it · click another panel to change it`
+      : isolated ? 'Click the face to reach — the panel is shown alone, turn the view to see every face'
+      : `Click the panel (or the body) the ${noun} should reach — it is then shown alone to pick its face`,
+    note: swFace ? `Switch this arrow → ${SCENE_EX_LABEL[nextType(swFace)]}`
+      : isolated ? S.refPickNote
+      : !active && hovered ? (typeOf(hovered) === 'fixed' ? `Fixed — ${t.fixedText(fmtEx(hovered.span))}` : typeOf(hovered) === 'dyn' ? `Dyn — ${t.dynText}` : `Ref — ${t.refText}`)
       : null,
     keys: !active || !mode ? [gk('Esc', 'close')]
       : mode !== 'ref' ? [gk('Enter', 'apply'), gk('Esc', 'back')]
-      : refCand ? [gk('Right-click', 'confirm'), gk('Click again', 'face behind'), gk('Esc', 'back')] : [gk('Esc', 'back')],
+      : refStage === 'picked' ? [gk('Right-click', 'confirm'), gk('Esc', 'back')]
+      : isolated ? [...(more ? [gk('Tab', 'panel behind')] : []), gk('Esc', 'back')] : [gk('Esc', 'back')],
   });
   const pType = previewFace ? typeOf(previewFace) : 'fixed', PC = SCENE_EX[pType];
   const previewAmount = !previewFace ? null
     : pType === 'ref' ? (previewFace === active ? refAmount : null)
     : previewFace === active && moving ? Math.max(amount!, -active!.span + 0.5) : null;
+  // Referans paneli yalnız bırakılmışken (yüzü seçiliyor) aracın kendi işaretleri çizilmez.
+  if (isolated) return null;
   return (
     <group>
       {faces.map((f, i) => {
-        const t = typeOf(f), C = SCENE_EX[t], isActive = f === active, lit = isActive || hover === f.gi;
-        const typeBtn = <SceneExTypeBtn type={t} onCycle={() => cycleType(f)}
-          onHover={h => { hoverFace(f.gi, h); setSwHover(cur => (h ? f.gi : cur === f.gi ? null : cur)); }} />;
-        if (t === 'ref') {
+        const ty = typeOf(f), C = SCENE_EX[ty], isActive = f === active, lit = isActive || hover === f.gi;
+        const typeBtn = t.modes.length > 1 ? <SceneExTypeBtn type={ty} onCycle={() => cycleType(f)}
+          onHover={h => { hoverFace(f.gi, h); setSwHover(c => (h ? f.gi : c === f.gi ? null : c)); }} /> : undefined;
+        if (ty === 'ref') {
           return (
             <SceneExDot key={f.key} position={world[i].origin} normal={world[i].normal} rail={world[i].rail} thick={f.thick} selected={isActive}
-              onPick={() => pickSceneFace(panel, f, t)} onHover={h => hoverFace(f.gi, h)} side={typeBtn} />
+              onPick={() => t.select(f, ty)} onHover={h => hoverFace(f.gi, h)} side={typeBtn} />
           );
         }
         return (
           <SceneExArrow key={f.key} origin={world[i].origin} normal={world[i].normal} rail={world[i].rail} sign={signOf(f)} base={base} color={C.main} litColor={C.lit}
-            lit={lit} active={isActive} compact={f.thick} phase={i * 1.3} tip={lit && !isActive ? (t === 'fixed' ? `${fmtEx(f.span)} mm` : '± mm') : null}
-            onPick={() => pickSceneFace(panel, f, t)} onHover={h => hoverFace(f.gi, h)} side={typeBtn}>
-            {isActive ? <SceneExInput key={entryKey} mode={t} span={f.span} color={C.main} onText={setDraft} onApply={v => { void apply(v); }} /> : null}
+            lit={lit} active={isActive} compact={f.thick} phase={i * 1.3} tip={lit && !isActive ? (ty === 'fixed' ? `${fmtEx(f.span)} mm` : '± mm') : null}
+            onPick={() => t.select(f, ty)} onHover={h => hoverFace(f.gi, h)} side={typeBtn}>
+            {isActive ? <SceneExInput key={entryKey} mode={ty} span={f.span} color={C.main} onText={setDraft} onApply={v => { void apply(v); }} onCancel={t.deselect} /> : null}
           </SceneExArrow>
         );
       })}
-      {/* Üzerine gelinen kenar (seçili değilken): açık vurgu + yön gösterimi. */}
+      {/* Üzerine gelinen yüz (seçili değilken): açık vurgu + yön gösterimi. */}
       {hovered && hovered !== active && (
         <group matrix={matrix} matrixAutoUpdate={false}>
           <mesh geometry={hovered.fill} renderOrder={11} raycast={noRaycast} dispose={null}><OverlayMat color={new THREE.Color(PC.lit).getHex()} opacity={0.34} /></mesh>
@@ -4061,6 +4079,91 @@ export function PanelSceneExtrude({ panel }: { panel: Shape }) {
       )}
     </group>
   );
+}
+const useFaceDisposal = (faces: SceneFace[]) => useEffect(() => () => { for (const f of faces) f.fill.dispose(); }, [faces]);
+const sceneExBase = (maxDim: number) => THREE.MathUtils.clamp(maxDim * 0.12, 34, 96);
+
+/** PANEL: kenar okları. Adım motoru aynı (executeFaceExtrude / ref onayı). */
+export function PanelSceneExtrude({ panel }: { panel: Shape }) {
+  const S = useStoreFields('faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace');
+  const faces = useMemo(() => sceneFacesOf(panel), [panel.geometry, panel.ungroovedGeometry]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useFaceDisposal(faces);
+  const matrix = useMemo(() => getShapeMatrix(panel), [panel.position, panel.rotation, panel.scale]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const base = useMemo(() => { const sz = localBboxOf(panel.geometry)?.getSize(new THREE.Vector3()); return sceneExBase(sz ? Math.max(sz.x, sz.y, sz.z) : 400); }, [panel.geometry]);
+  return <SceneExtrudeTool t={{
+    id: panel.id, label: 'Extrude', noun: 'edge', faces, matrix, base, modes: SCENE_EX_ORDER,
+    activeGi: S.faceExtrudeMode && S.faceExtrudeTargetPanelId === panel.id ? S.faceExtrudeSelectedFace : null,
+    select: (f, type) => pickSceneFace(panel, f, type), deselect: stopSceneExtrude,
+    apply: async (f, mode, v) => {
+      const st = useAppStore.getState(), fresh = shapeById(panel.id, st.shapes);
+      if (fresh) await executeFaceExtrude({ panelShape: fresh, faceGroupIndex: f.gi, value: v, isFixed: mode === 'fixed', updateShape: st.updateShape,
+        clickPoint: st.faceExtrudeClickPoint ?? undefined });
+    },
+    fixedText: span => `Type the size from the opposite edge (now ${span} mm)`, dynText: 'Type how far the edge moves: + out, − in',
+    refText: 'the edge goes up to a face you pick, and follows it',
+  }} />;
+}
+
+/** Kutu hedefinin (hacim / baza seti) yüz seçimi: depodaki yüz + normal + çıpa (motor adımı bunlarla yazar). */
+function selectBoxFace(f: SceneFace, type: SceneExMode) {
+  const st = useAppStore.getState();
+  if (st.faceExtrudeValueMode !== type) st.setFaceExtrudeValueMode(type);
+  st.setFaceExtrudeRefCandidate(null);
+  st.setFaceExtrudeSelectedFace(f.gi);
+  st.setFaceExtrudeCavityFaceNormal([f.n.x, f.n.y, f.n.z]);
+  st.setFaceExtrudeClickPoint(f.sample);
+}
+function deselectBoxFace() {
+  const st = useAppStore.getState();
+  st.setFaceExtrudeSelectedFace(null); st.setFaceExtrudeCavityFaceNormal(null); st.setFaceExtrudeRefCandidate(null);
+}
+function useBoxFaces(boxes: Array<{ min: Vec3; max: Vec3 }>, spanOf: (n: THREE.Vector3, anchor: THREE.Vector3) => number) {
+  const key = boxesKey(boxes);
+  const geo = useMemo(() => boxSurfaceGeometry(boxes), [key]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useDisposable(geo);
+  const faces = useMemo(() => (geo ? boxSceneFaces(geo, spanOf) : []), [geo]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useFaceDisposal(faces);
+  const base = useMemo(() => {
+    const bb = new THREE.Box3();
+    for (const b of boxes) { bb.expandByPoint(new THREE.Vector3(...b.min)); bb.expandByPoint(new THREE.Vector3(...b.max)); }
+    const sz = bb.getSize(new THREE.Vector3());
+    return sceneExBase(Math.max(sz.x, sz.y, sz.z, 0) || 400);
+  }, [key]);   // eslint-disable-line react-hooks/exhaustive-deps
+  return { faces, base };
+}
+
+/** RAF / DİKME HACMİ (Volume): hacmin her yüzünde ok. Fixed = yüzün arkasındaki derinlik · Dyn = yüz şimdiki yerinden · Ref = panel yüzüne kadar. */
+function VolumeSceneExtrude({ group, parent }: { group: PanelGroup; parent: Shape }) {
+  const S = useStoreFields('faceExtrudeSelectedFace', 'faceExtrudeCavityFaceNormal');
+  const boxes = useMemo(() => (group.region && group.region.length ? group.region : group.cavity ? [group.cavity] : []), [group.region, group.cavity]);
+  const { faces, base } = useBoxFaces(boxes, (n, a) => boxColumnDepth(boxes, a, n));
+  const matrix = useMemo(() => getShapeMatrix(parent), [parent.position, parent.rotation, parent.scale]);   // eslint-disable-line react-hooks/exhaustive-deps
+  return <SceneExtrudeTool t={{
+    id: group.id, label: 'Volume', noun: 'face', faces, matrix, base, modes: SCENE_EX_ORDER,
+    activeGi: S.faceExtrudeCavityFaceNormal ? S.faceExtrudeSelectedFace : null, select: selectBoxFace, deselect: deselectBoxFace,
+    apply: (f, mode, v) => executeCavityExtrudeAt(group.id, [f.n.x, f.n.y, f.n.z], v, mode, f.sample),
+    fixedText: span => `Type the depth of the volume behind this face (now ${span} mm) — the shelves follow`,
+    dynText: 'Type how far the face moves from where it is now: − in, + out (never beyond the free volume)',
+    refText: 'the face goes up to a panel face you pick, and follows it',
+  }} />;
+}
+
+/** BAZA SETİ (Volume): setin her yüzünde ok — yalnız Fixed / Dyn. Fixed = setin o eksendeki ölçüsü · Dyn = yüz değer kadar dışarı (− içeri). */
+function PlinthSceneExtrude({ set, parent, shapes }: { set: PlinthSet; parent: Shape; shapes: Shape[] }) {
+  const S = useStoreFields('faceExtrudeSelectedFace', 'faceExtrudeCavityFaceNormal');
+  const boxes = useMemo(() => plinthBoxesOf(set, shapes), [set, shapes]);
+  const { faces, base } = useBoxFaces(boxes, n => {
+    const a = [Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)].indexOf(Math.max(Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)));
+    return Math.max(...boxes.map(b => b.max[a])) - Math.min(...boxes.map(b => b.min[a]));
+  });
+  const matrix = useMemo(() => getShapeMatrix(parent), [parent.position, parent.rotation, parent.scale]);   // eslint-disable-line react-hooks/exhaustive-deps
+  return <SceneExtrudeTool t={{
+    id: set.id, label: 'Plinth set', noun: 'face', faces, matrix, base, modes: ['fixed', 'dyn'],
+    activeGi: S.faceExtrudeCavityFaceNormal ? S.faceExtrudeSelectedFace : null, select: selectBoxFace, deselect: deselectBoxFace,
+    apply: async (f, mode, v) => { applyPlinthFace(set.id, [f.n.x, f.n.y, f.n.z], v, mode); },
+    fixedText: span => `Type the size of the set along this direction (now ${span} mm)`, dynText: 'Type how far the face moves: + out, − in',
+    refText: '',
+  }} />;
 }
 
 /* ─────────────────────────── SAHNE TAŞIMA + DÖNDÜRME ───────────────────────────
@@ -4175,6 +4278,8 @@ export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
     [sourceVertices, targetVertices]);
   const refAt = useDotOverlap(allMarks, i => vertEq(allMarks[i].group ? tgtVertex : srcVertex, allMarks[i].pos));
   const needsTargetPanel = !!srcVertex && !targetId;
+  // Hedef panel seçildi, köşesi bekleniyor: hedef panel YALNIZ çizilir (refPickOf) → burada yalnız onun köşeleri görünür.
+  const isolated = isRef && !!srcVertex && !!targetId && !tgtVertex;
   const pickSource = (pos: Vec3) => { s.setPanelMoveRefSourceVertex(pos); s.setPanelMoveRefTargetPanelId(null); s.setPanelMoveRefTargetVertex(null); };
 
   // Önizleme: panel-yerel öteleme vektörü.
@@ -4193,12 +4298,13 @@ export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
   const refStep = !srcVertex ? 0 : !targetId ? 1 : !tgtVertex ? 2 : 3;
   useStatusGuide(isRef ? {
     label: 'Move', type, steps: ['Corner', 'Target panel', 'Target corner', 'Confirm'], step: refStep,
-    text: ['Click the corner of this panel to move from', 'Click the panel to move to', 'Click the corner it should land on',
+    text: ['Click the corner of this panel to move from', 'Click the panel to move to — it is then shown alone to pick its corner',
+      'Click the corner it should land on — the target panel is shown alone, turn the view to see every corner',
       'Right-click — the panel moves so the two corners meet'][refStep],
     note: swHover ? `Switch the move type → ${SCENE_EX_LABEL[nextOf(MOVE_TYPES, type)]}` : null,
     keys: refStep === 0 ? [gk('Esc', 'close')]
-      : refStep === 1 ? [gk('Click again', 'panel behind'), gk('Esc', 'start over')]
-      : refStep === 2 ? [gk('Esc', 'start over')] : [gk('Right-click', 'move'), gk('Esc', 'start over')],
+      : refStep === 1 ? [gk('Esc', 'back')]
+      : refStep === 2 ? [...(refRingCount() > 1 ? [gk('Tab', 'panel behind')] : []), gk('Esc', 'back')] : [gk('Right-click', 'move'), gk('Esc', 'back')],
   } : {
     label: 'Move', type, steps: ['Arrow', 'Distance'], step: axis ? 1 : 0,
     text: axis ? `Type the distance along ${AXIS_DISPLAY[axis]} · negative moves the other way`
@@ -4225,7 +4331,7 @@ export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
           </SceneExArrow>
         );
       })}
-      {isRef && !needsTargetPanel && sourceVertices.map((v, i) => (
+      {isRef && !needsTargetPanel && !isolated && sourceVertices.map((v, i) => (
         <GizmoDot key={`src-${i}`} position={v} isSelected={vertEq(srcVertex, v)} accent={SCENE_EX.ref.main} groupRef={refAt(i)} onClick={pickSource} />
       ))}
       {isRef && targetId && targetVertices.map((v, i) => (
@@ -4237,7 +4343,7 @@ export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
         <ScenePanelGhost matrix={matrix} edges={edges} demo={shift.demo} color={isRef ? SCENE_EX.ref.lit : C.lit}
           pose={(e, o) => { o.position.copy(shift.d).multiplyScalar(e); }} />
       )}
-      <SceneTypeSwitch position={layout.center} shift="translate(0, 26px)" type={type} onCycle={cycle} onHover={setSwHover} />
+      {!isolated && <SceneTypeSwitch position={layout.center} shift="translate(0, 26px)" type={type} onCycle={cycle} onHover={setSwHover} />}
     </group>
   );
 }
@@ -4349,8 +4455,8 @@ const ROT_LETTERS: AxisLetter[] = ['x', 'y', 'z'];
 let _sceneRotateBusy = false;
 export function PanelRotateGizmo({ panelShape }: { panelShape: Shape }) {
   const s = useStoreFields('panelRotatePivot', 'setPanelRotatePivot', 'panelRotateAxis', 'setPanelRotateAxis', 'panelRotateValueMode', 'setPanelRotateValueMode',
-    'panelRotateRefArmVertex', 'setPanelRotateRefArmVertex', 'panelRotateRefFace', 'setPanelRotateRefFace', 'virtualFaces');
-  const { panelRotatePivot: pivot, panelRotateRefArmVertex: arm, panelRotateRefFace: refFace } = s;
+    'panelRotateRefArmVertex', 'setPanelRotateRefArmVertex', 'panelRotateRefFace', 'setPanelRotateRefFace', 'virtualFaces', 'refPickNote');
+  const { panelRotatePivot: pivot, panelRotateRefArmVertex: arm, panelRotateRefFace: refFace, refPickNote: refNote } = s;
   const { setPanelRotatePivot, setPanelRotateAxis, setPanelRotateRefArmVertex, setPanelRotateRefFace } = s;
   const type: SceneExMode = s.panelRotateValueMode === 'ref' ? 'ref' : 'dyn', isRef = type === 'ref', C = SCENE_EX[type];
   const hasPivot = pivot !== null, axis = s.panelRotateAxis;
@@ -4442,18 +4548,22 @@ export function PanelRotateGizmo({ panelShape }: { panelShape: Shape }) {
     if (gone(st.panelRotatePivot)) { st.setPanelRotatePivot(null); st.setPanelRotateAxis(null); st.setPanelRotateRefArmVertex(null); st.setPanelRotateRefFace(null); }
     else if (gone(st.panelRotateRefArmVertex)) { st.setPanelRotateRefArmVertex(null); st.setPanelRotateAxis(null); st.setPanelRotateRefFace(null); }
   }, [pivots]);
-  const refStep = !hasPivot ? 0 : !arm ? 1 : !axis ? 2 : !refFace ? 3 : 4;
+  // Referans: panel tıklanır → yalnız bırakılır → yüzü seçilir (REFERANS SEÇİMİ); o sırada gizmo çizilmez.
+  const rp = useRefPick(), isolated = isRef && rp?.tool === 'rotate' && rp.stage === 'isolated';
+  const refStep = !hasPivot ? 0 : !arm ? 1 : !axis ? 2 : refFace ? 5 : isolated ? 4 : 3;
   const dynStep = !hasPivot ? 0 : !axis ? 1 : 2;
   const swNote = swHover ? `Switch the rotate type → ${SCENE_EX_LABEL[nextOf(ROTATE_TYPES, type)]}` : null;
   useStatusGuide(isRef ? {
-    label: 'Rotate', type, steps: ['Pivot', 'Aim point', 'Axis', 'Reference face', 'Confirm'], step: refStep,
+    label: 'Rotate', type, steps: ['Pivot', 'Aim point', 'Axis', 'Reference panel', 'Its face', 'Confirm'], step: refStep,
     text: ['Click the point the panel turns around — a corner or a face centre', 'Click the aim point — the point that will touch the face',
       `Click a ring — the axis to turn around${anyBlocked ? ' · the faded ring passes through the aim point' : ''}`,
-      'Click the face on another panel to aim at', 'Right-click — the panel turns until the aim point touches the face'][refStep],
-    note: swNote ?? (refStep === 2 && hover && !blocked[hover] ? `Turn around ${hover.toUpperCase()}` : null),
+      'Click the panel (or the body) to aim at — it is then shown alone to pick its face',
+      'Click the face to aim at — the panel is shown alone, turn the view to see every face',
+      'Right-click — the panel turns until the aim point touches the face · click another panel to change it'][refStep],
+    note: swNote ?? (isolated ? refNote : refStep === 2 && hover && !blocked[hover] ? `Turn around ${hover.toUpperCase()}` : null),
     keys: refStep === 0 ? [gk('Esc', 'close')]
-      : refStep === 3 ? [gk('Click again', 'face behind'), gk('Esc', 'back')]
-      : refStep === 4 ? [gk('Right-click', 'turn'), gk('Click again', 'face behind'), gk('Esc', 'back')] : [gk('Esc', 'back')],
+      : refStep === 4 ? [...(refRingCount() > 1 ? [gk('Tab', 'panel behind')] : []), gk('Esc', 'back')]
+      : refStep === 5 ? [gk('Right-click', 'turn'), gk('Esc', 'back')] : [gk('Esc', 'back')],
   } : {
     label: 'Rotate', type, steps: ['Pivot', 'Axis', 'Angle'], step: dynStep,
     text: ['Click the point the panel turns around — a corner or a face centre', 'Click a ring — the axis to turn around',
@@ -4461,6 +4571,7 @@ export function PanelRotateGizmo({ panelShape }: { panelShape: Shape }) {
     note: swNote ?? (dynStep === 1 && hover ? `Turn around ${hover.toUpperCase()}` : null),
     keys: dynStep === 2 ? [gk('Enter', 'apply'), gk('Esc', 'back')] : dynStep === 1 ? [gk('Esc', 'back')] : [gk('Esc', 'close')],
   });
+  if (isolated) return null;
   return (
     <group>
       {pivots.map((pv, i) => {
@@ -4502,19 +4613,22 @@ export function PanelRotateGizmo({ panelShape }: { panelShape: Shape }) {
 
 export function PanelGizmos({ shapes }: { shapes: any[] }) {
   const s = useStoreFields('panelMoveMode', 'panelMoveTargetPanelId', 'panelRotateMode', 'panelRotateTargetPanelId', 'faceExtrudeMode',
-    'faceExtrudeValueMode', 'faceExtrudeCavityGroupId', 'faceExtrudePlinthId', 'panelGroups', 'plinthSets');
+    'faceExtrudeCavityGroupId', 'faceExtrudePlinthId', 'panelGroups', 'plinthSets');
+  const rp = useRefPick();
   const panelOf = (on: boolean, id: string | null) => { const p = on && id ? shapeById(id, shapes) : undefined; return p && p.type === 'panel' ? p : null; };
   const mv = panelOf(s.panelMoveMode, s.panelMoveTargetPanelId), rt = panelOf(s.panelRotateMode, s.panelRotateTargetPanelId);
-  const arrowOn = s.faceExtrudeMode && (s.faceExtrudeValueMode === 'arrow' || s.faceExtrudeValueMode === 'arrowFixed');
-  // Panel extrude sahnede: seçili panelin kenar okları / noktaları (PanelSceneExtrude). Ok kipi yalnız hacim ve baza setinde kaldı.
+  // Extrude sahnede: panelin kenarları (PanelSceneExtrude), raf / dikme hacminin yüzleri (VolumeSceneExtrude), baza setinin yüzleri (PlinthSceneExtrude).
   const ex = useSceneExtrudePanel();
-  // Hacim / baza seti ok modu: kutu = grubun hacmi (bölge kutusu) ya da setin etkin kutusu.
-  const cav = arrowOn && s.faceExtrudeCavityGroupId ? s.panelGroups.find(g => g.id === s.faceExtrudeCavityGroupId) : undefined;
-  const ps = arrowOn && s.faceExtrudePlinthId ? s.plinthSets.find(x => x.id === s.faceExtrudePlinthId) : undefined;
-  const boxParent = cav ? shapeById(cav.shapeId, shapes) : ps ? shapeById(ps.shapeId, shapes) : undefined;
-  const box = cav ? cav.cavity : ps ? plinthBoxOf(ps, shapes) : null;
+  const cav = s.faceExtrudeMode && s.faceExtrudeCavityGroupId ? s.panelGroups.find(g => g.id === s.faceExtrudeCavityGroupId) : undefined;
+  const ps = s.faceExtrudeMode && s.faceExtrudePlinthId ? s.plinthSets.find(x => x.id === s.faceExtrudePlinthId) : undefined;
+  const cavParent = cav ? shapeById(cav.shapeId, shapes) : undefined, psParent = ps ? shapeById(ps.shapeId, shapes) : undefined;
+  // Referans seçimi: yalnız bırakılan panelin yüzleri (taşımada köşeleri gizmonun kendisinde) · seçilmiş yüzün vurgusu.
+  const facePick = rp && rp.tool !== 'move' ? rp : null;
   return <>{mv && <PanelMoveGizmo panelShape={mv} />}{rt && <PanelRotateGizmo panelShape={rt} />}{ex && <PanelSceneExtrude key={ex.id} panel={ex} />}
-    {boxParent && box && <BoxExtrudeGizmo parent={boxParent} box={box} />}</>;
+    {cav && cavParent && <VolumeSceneExtrude key={cav.id} group={cav} parent={cavParent} />}
+    {ps && psParent && <PlinthSceneExtrude key={ps.id} set={ps} parent={psParent} shapes={shapes} />}
+    {facePick?.stage === 'isolated' && <RefIsolatePicker key={facePick.isoId} rp={facePick} />}
+    {facePick?.stage === 'picked' && <RefFaceMark rp={facePick} />}</>;
 }
 
 const GL_OPTS = { antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' } as const;
@@ -4533,6 +4647,8 @@ const Scene: React.FC = () => {
       // Kısayollar input/textarea içindeyken ÇALIŞMAZ (Delete gövdeyi silmesin, Escape panel satırını kapatmasın).
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      // Tab: referans paneli yalnız bırakılmışken aynı tıklamanın arkasındaki panele geçer.
+      if (e.key === 'Tab' && cycleRefPanel()) { e.preventDefault(); return; }
       if (e.key === 'Delete' && selectedShapeId) deleteShape(selectedShapeId);
       else if (e.key === 'Escape') {
         // Aktif araç/mod varsa Escape yalnız onu kapatır (şeridin ✕'i gibi); seçim korunur.
@@ -4551,26 +4667,40 @@ const Scene: React.FC = () => {
           return;
         }
         if (st.filletMode) { e.preventDefault(); st.setFilletMode(false); st.setFaceEditMode(false); st.clearFilletFaces(); st.clearFilletFaceData(); return; }
+        // REFERANS SEÇİMİ (extrude · hacim · döndürme): yalnız bırakılan panel → geri (panel seçimi); seçilmiş yüz → geri.
+        if (st.refIsolateId) { e.preventDefault(); st.setRefIsolateId(null); return; }
+        // SAHNE EXTRUDE (panel · hacim · baza seti): Esc bir adım geri — referans yüzü → seçili yüz → araç. Kenar çubuğu açık kalır.
+        if (st.faceExtrudeMode || st.sceneExtrudePanelId) {
+          e.preventDefault();
+          const box = !!st.faceExtrudeCavityGroupId || !!st.faceExtrudePlinthId;
+          if (st.faceExtrudeMode && st.faceExtrudeRefCandidate) st.setFaceExtrudeRefCandidate(null);
+          else if (st.faceExtrudeMode && st.faceExtrudeSelectedFace !== null) {
+            if (box) { st.setFaceExtrudeSelectedFace(null); st.setFaceExtrudeCavityFaceNormal(null); } else st.setFaceExtrudeMode(false);
+          }
+          else if (st.sceneExtrudePanelId) { st.setFaceExtrudeMode(false); st.setSceneExtrudePanelId(null); }
+          else st.setFaceExtrudeMode(false);
+          return;
+        }
         if (isPlinthRow(st.selectedPanelRow)) { finishPlinthEdit(); return; }   // seçili baza seti: önce seti bırak
-        // Sahne extrude: seçili kenar yoksa araç kapanır. preventDefault → kenar çubuğunun Esc'i (aynı tuşta) şeridi kapatmasın.
-        if (st.sceneExtrudePanelId && !st.faceExtrudeMode) { e.preventDefault(); st.setSceneExtrudePanelId(null); return; }
         // Sahne taşıma / döndürme: Esc bir adım geri alır (eksen → seçimler → araç). preventDefault: kenar çubuğu açık kalsın.
         if (st.panelMoveMode) {
           e.preventDefault();
           if (st.panelMoveAxis) st.setPanelMoveAxis(null);
+          else if (st.panelMoveValueMode === 'ref' && st.panelMoveRefTargetVertex) st.setPanelMoveRefTargetVertex(null);   // → hedef panel yine yalnız
+          else if (st.panelMoveValueMode === 'ref' && st.panelMoveRefTargetPanelId) st.setPanelMoveRefTargetPanelId(null);   // → hedef panel seçimi
           else if (st.panelMoveValueMode === 'ref' && st.panelMoveRefSourceVertex) st.setPanelMoveValueMode('ref');
           else st.setPanelMoveMode(false);
           return;
         }
         if (st.panelRotateMode) {
           e.preventDefault();
-          if (st.panelRotateAxis !== null) { st.setPanelRotateAxis(null); st.setPanelRotateRefFace(null); }
+          if (st.panelRotateRefFace) st.setPanelRotateRefFace(null);
+          else if (st.panelRotateAxis !== null) { st.setPanelRotateAxis(null); st.setPanelRotateRefFace(null); }
           else if (st.panelRotateRefArmVertex) st.setPanelRotateRefArmVertex(null);
           else if (st.panelRotatePivot) st.setPanelRotatePivot(null);
           else st.setPanelRotateMode(false);
           return;
         }
-        if (st.faceExtrudeMode) { st.setFaceExtrudeSelectedFace(null); st.setFaceExtrudeRefCandidate(null); st.setFaceExtrudeMode(false); return; }
         selectShape(null); exitIsolation(); setVertexEditMode(false); setFaceEditMode(false); clearFilletFaces();
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'g') {
         e.preventDefault();
@@ -4705,6 +4835,7 @@ const Scene: React.FC = () => {
         <MoveRefPanelPicker shapes={shapes} />
         <MoveRefConfirmOnRightClick />
         <RotateRefConfirmOnRightClick />
+        <ExtrudeRefConfirmOnRightClick />
         <PanelGizmos shapes={shapes} />
         {/* 2B çizim katmanı: çizim düzlemi, nesneler, önizleme, yakalama işareti (DraftView). */}
         <DraftLayer />
