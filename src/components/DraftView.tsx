@@ -172,11 +172,13 @@ function faceCandidates(ray: THREE.Ray, shapes: Shape[], iso: DraftIsolate | nul
 /** Kamerayı düzleme karşıdan getirir: hedef yüz merkezi, bakış yüz normali boyunca, yüz ekrana sığar. */
 type OrbitLike = { target: THREE.Vector3; enableDamping: boolean; update: () => void } | null | undefined;
 let flyGen = 0, flyDamping: boolean | null = null;   // üst üste binen uçuşlarda yalnız sonuncusu sürer; sönümleme ilk uçuştan önceki değere döner
-/** Tuvalin GÖRÜNEN bölgesi: açık sol kenar paneli tuvalin üstünü örter (tuval daralmaz) → yüz, kalan bölgenin ortasına getirilir. */
+/** Tuvalin kayma bittiğindeki GÖRÜNEN genişliği. Sol şerit kayarken tuval tam genişlikte kalır ve sahne projeksiyon kaydırmasıyla görünen
+ *  alana ortalanır (Scene.CameraController) → odak tuvalin ortasında kalır (kaydırma yok); sığdırma, kayma sonundaki genişliğe göre. */
 function viewInset(canvas: HTMLElement): { shiftPx: number; visW: number } {
-  const r = canvas.getBoundingClientRect(), sb = document.querySelector('[data-yago-sidebar="open"]')?.getBoundingClientRect();
-  const cover = sb && sb.left <= r.left + 2 && sb.right > r.left ? Math.min(sb.right - r.left, r.width * 0.7) : 0;
-  return { shiftPx: cover / 2, visW: r.width - cover };
+  const vp = canvas.closest('[data-yago-viewport]'), par = vp?.parentElement;
+  if (!vp || !par) return { shiftPx: 0, visW: canvas.getBoundingClientRect().width };
+  const v = vp.getBoundingClientRect(), p = par.getBoundingClientRect();
+  return { shiftPx: 0, visW: Math.max(160, v.right - (p.left + useAppStore.getState().sidebarInset)) };
 }
 function flyTo(camera: THREE.Camera, controls: OrbitLike, focus: THREE.Vector3, dir: THREE.Vector3, up: THREE.Vector3, extent: number, viewH: number,
   exact?: { dist: number; zoom: number } | null, view?: { shiftPx: number; visW: number }, done?: () => void) {
@@ -1915,9 +1917,7 @@ export const DrawingPanel: React.FC = () => {
   );
 };
 
-/** Sol kenar çubuğunun kayma süresi (Ui.Sidebar `duration-300`). */
-const SIDEBAR_SLIDE_MS = 300;
-/** 3B görünüm sarmalayıcısı: panel açılınca hemen daralır, kapanınca kayma bitince genişler (tuval tek kez boyutlanır). */
+/** 3B görünüm sarmalayıcısı: sağdaki çizim paneli açılınca hemen daralır, kapanınca kayma bitince genişler; sol şerit için aşağıya bakın. */
 export const DraftViewport: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const open = useDraft(s => s.panelOpen);
   const [inset, setInset] = useState(open ? PANEL_W : 0);
@@ -1926,15 +1926,28 @@ export const DraftViewport: React.FC<{ children: React.ReactNode }> = ({ childre
     const t = window.setTimeout(() => setInset(0), PANEL_SLIDE_MS);
     return () => window.clearTimeout(t);
   }, [open]);
-  // Sol kenar çubuğu (sabitli açık şerit) sahneyi örtmez: görünüm soldan da daralır. Açılırken hemen, kapanırken şerit kayıp bittikten sonra.
+  // Sol kenar çubuğu (sabitli açık şerit) sahneyi örtmez: görünüm soldan da daralır. Şerit kayarken tuval TAM genişlikte kalır — sahne
+  // şeridin kenarıyla birlikte kayarak ortalanır (Scene.CameraController) — açılırken kayma bitince daralır, kapanırken hemen genişler
+  // (açılan alan şeridin altında kalır, kayan şerit arkasında sahneyi bulur).
+  // Daralma anı süreye değil şeridin GERÇEK yerine bağlı: kenarı hedefe varınca ya da kımıldamaz olunca (yavaş karede erken daralıp boşluk açmaz).
   const sb = useAppStore(st => st.sidebarInset);
   const [left, setLeft] = useState(sb);
+  const boxRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (sb) { setLeft(sb); return; }
-    const t = window.setTimeout(() => setLeft(0), SIDEBAR_SLIDE_MS);
-    return () => window.clearTimeout(t);
+    if (!sb) { setLeft(0); return; }
+    let raf = 0, last = NaN, still = 0;
+    const tick = () => {
+      const el = document.querySelector('[data-yago-dock]'), par = boxRef.current?.parentElement;
+      if (!el || !par) { setLeft(sb); return; }
+      const r = el.getBoundingClientRect().right - par.getBoundingClientRect().left;
+      still = Math.abs(r - last) < 0.3 ? still + 1 : 0;
+      last = r;
+      if (r >= sb - 0.5 || still >= 12) setLeft(sb); else raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
   }, [sb]);
-  return <div style={{ position: 'absolute', top: 0, left, bottom: 0, right: inset }}>{children}</div>;
+  return <div ref={boxRef} data-yago-viewport="" style={{ position: 'absolute', top: 0, left, bottom: 0, right: inset }}>{children}</div>;
 };
 
 /** Durum çubuğu parçası: etkin düzlem, çizim nesnesi sayısı ve imleç koordinatı. */

@@ -2795,6 +2795,44 @@ const perspDistFor = (zoom: number, h: number) => h / (2 * Math.max(zoom, 1e-6) 
 const NARROW_FOV = 4, CAMERA_BLEND_MS = 260;
 const tanHalfDeg = (deg: number) => Math.tan((deg * Math.PI / 180) / 2);
 
+/** Sola yaslı şeridin sahneyi o an örttüğü genişlik (görünüm kabının soluna göre; kayarken ara değer). Şerit yaslı değilse null. */
+function sidebarVisualInset(parentRect: DOMRect): number | null {
+  const el = document.querySelector('[data-yago-dock]');
+  if (!el) return null;
+  return Math.max(0, Math.min(parentRect.width, el.getBoundingClientRect().right - parentRect.left));
+}
+/** Görünen genişlik `fromW` → `toW` daralırken seçili (yoksa görünen) gövdelerin yatayda sığması için gereken ek pay: perspektifte geri
+ *  çekilme (dünya birimi), ortografikte ln(yakınlaştırma çarpanı) (< 0 = uzaklaş). Daralmadan önce de sığmıyorsa (yakın çalışma) pay yok. */
+function sidebarFitPull(cam: THREE.Camera, controls: { target: THREE.Vector3 }, fromW: number, toW: number, h: number): { persp: number; ortho: number } {
+  const none = { persp: 0, ortho: 0 };
+  if (!(toW < fromW - 1) || toW < 40) return none;
+  const st = useAppStore.getState();
+  const bodies = st.shapes.filter(x => x.type !== 'panel' && x.geometry && x.isolated !== false);
+  const pool = bodies.some(x => x.id === st.selectedShapeId) ? bodies.filter(x => x.id === st.selectedShapeId) : bodies;
+  const box = new THREE.Box3();
+  for (const b of pool) { const bb = localBboxOf(b.geometry); if (bb) box.union(bb.applyMatrix4(getShapeMatrix(b))); }
+  if (box.isEmpty()) return none;
+  cam.updateMatrixWorld();
+  const pts = [0, 1, 2, 3, 4, 5, 6, 7].map(i => new THREE.Vector3(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z)
+    .applyMatrix4(cam.matrixWorldInverse));
+  if (cam instanceof THREE.PerspectiveCamera) {
+    const tan = tanHalfDeg(cam.fov), dist = cam.position.distanceTo(controls.target);
+    const reach = (w: number) => Math.max(...pts.map(q => (q.z < -1 ? Math.abs(q.x) / -q.z / (tan * w / h) : Infinity)));
+    const before = reach(fromW);
+    if (before > 1.001 || reach(toW) <= Math.max(0.9, before)) return none;
+    const lim = Math.max(0.9, before) * tan * toW / h;
+    const back = Math.min(25000 - dist, Math.max(0, ...pts.map(q => Math.abs(q.x) / lim + q.z)));
+    return back > 0.5 ? { persp: back, ortho: 0 } : none;
+  }
+  if (cam instanceof THREE.OrthographicCamera) {
+    const reach = (w: number) => Math.max(...pts.map(q => Math.abs(q.x) * cam.zoom / (w / 2)));
+    const before = reach(fromW), after = reach(toW);
+    if (before > 1.001 || after <= Math.max(0.9, before)) return none;
+    return { persp: 0, ortho: Math.log(Math.max(0.9, before) / after) };
+  }
+  return none;
+}
+
 const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType: CameraType }> = ({ controlsRef, cameraType }) => {
   const cameraRef = useRef<THREE.PerspectiveCamera | THREE.OrthographicCamera>(null);
   const savedRef  = useRef<{ position: THREE.Vector3; target: THREE.Vector3; up: THREE.Vector3 } | null>(null);
@@ -3039,60 +3077,74 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
     if (Math.abs(near - cam.near) / cam.near > 0.05) { cam.near = near; cam.updateProjectionMatrix(); }
   });
 
-  // Sol kenar çubuğu açılıp kapanınca tuval SOLDAN daralır / genişler (size.left değişir). Hedef tuvalin ortasında kaldığı için gövde
-  // kendiliğinden görünen alanın ortasına gelir; daralınca yatayda sığmıyorsa kamera yalnız GEREKTİĞİ kadar geri çekilir (daralmadan önce de
-  // sığmıyorsa — yakın çalışma — dokunulmaz), şerit kapanınca verilen pay geri alınır.
-  const fitPrev = useRef<{ left: number; width: number } | null>(null);
-  const fitUndo = useRef<{ persp: number; ortho: number } | null>(null);
+  // SOL ŞERİT KAYMASI — sahne şeritle birlikte akar: şerit kayarken tuval TAM genişlikte kalır (DraftViewport açılışta kayma bitince
+  // daralır, kapanışta hemen genişler); her karede kamera projeksiyonu (setViewOffset) şeridin GERÇEK kenarına göre kaydırılır → gövde
+  // görünen alanın ortasına süzülür. Daralınca yatayda sığmayacak gövde için kamera yalnız GEREKTİĞİ kadar geri çekilir (daralmadan önce de
+  // sığmıyorsa — yakın çalışma — dokunulmaz), şerit kapanınca verilen pay geri alınır; ikisi de şeridin yolu boyunca, oranla.
+  // Kaymanın sonunda tuval boyutu değişir: R3F yeni boyutu ResizeObserver → React ile bir kare geç görür → değiştiği karede burada uygulanır,
+  // projeksiyon kaydırması da gerçek dikdörtgenlerden hesaplandığından el değişiminde sahne kımıldamaz.
+  const sbInset = useAppStore(st => st.sidebarInset);
+  const prevInset = useRef(sbInset);
+  const pulled = useRef({ persp: 0, ortho: 0 });   // şerit yüzünden verilmiş pay (perspektif: dünya birimi geri · ortografik: ln yakınlaştırma)
+  const glide = useRef<{ from: number; to: number; t0: number; pull: { persp: number; ortho: number }; done: number; still: number; lastV: number } | null>(null);
+  const offCam = useRef<THREE.Camera | null>(null);
   useEffect(() => {
-    const prev = fitPrev.current;
-    fitPrev.current = { left: size.left, width: size.width };
-    if (!prev || Math.abs(prev.left - size.left) < 1 || Math.abs(prev.width - size.width) < 1 || busyRef.current) return;
+    const from0 = prevInset.current;
+    prevInset.current = sbInset;
+    if (from0 === sbInset) return;
+    const cv = document.querySelector('[data-yago-viewport] canvas') as HTMLCanvasElement | null;
+    const vp = cv?.closest('[data-yago-viewport]') as HTMLElement | null, par = vp?.parentElement;
+    const from = par ? sidebarVisualInset(par.getBoundingClientRect()) ?? from0 : from0;
+    let pull = { persp: 0, ortho: 0 };
     const cam = cameraRef.current, controls = controlsRef.current;
-    if (!cam || !controls?.target) return;
-    const persp = cam instanceof THREE.PerspectiveCamera;
-    const dir = cam.position.clone().sub(controls.target), dist = dir.length() || 1;
-    dir.normalize();
-    if (size.width > prev.width) {
-      const u = fitUndo.current;
-      fitUndo.current = null;
-      if (!u) return;
-      if (persp) { if (u.persp > 0) cam.position.copy(controls.target).addScaledVector(dir, Math.max(50, dist - u.persp)); }
-      else if (u.ortho > 0) { cam.zoom *= u.ortho; cam.updateProjectionMatrix(); }
-      controls.update(); invalidate();
-      return;
+    if (sbInset < from) pull = { persp: -pulled.current.persp, ortho: -pulled.current.ortho };   // açılıyor değil → verilen pay geri
+    else if (vp && par && cam && controls?.target && !busyRef.current) {
+      const right = vp.getBoundingClientRect().right, left = par.getBoundingClientRect().left;
+      pull = sidebarFitPull(cam, controls, right - (left + from), right - (left + sbInset), size.height || 1);
     }
-    const st = useAppStore.getState();
-    const bodies = st.shapes.filter(x => x.type !== 'panel' && x.geometry && x.isolated !== false);
-    const pool = bodies.some(x => x.id === st.selectedShapeId) ? bodies.filter(x => x.id === st.selectedShapeId) : bodies;
-    const box = new THREE.Box3();
-    for (const b of pool) { const bb = localBboxOf(b.geometry); if (bb) box.union(bb.applyMatrix4(getShapeMatrix(b))); }
-    if (box.isEmpty()) return;
-    cam.updateMatrixWorld();
-    const pts = [0, 1, 2, 3, 4, 5, 6, 7].map(i => new THREE.Vector3(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z)
-      .applyMatrix4(cam.matrixWorldInverse));
-    const h = size.height || 1;
-    if (persp) {
-      const tan = tanHalfDeg((cam as THREE.PerspectiveCamera).fov);
-      const reach = (w: number, back: number) => Math.max(...pts.map(q => (q.z - back < -1 ? Math.abs(q.x) / (back - q.z) / (tan * w / h) : Infinity)));
-      const before = reach(prev.width, 0);
-      if (before > 1.001 || reach(size.width, 0) <= Math.max(0.9, before)) return;
-      const lim = Math.max(0.9, before) * tan * size.width / h;
-      const back = Math.min(25000 - dist, Math.max(0, ...pts.map(q => Math.abs(q.x) / lim + q.z)));
-      if (!(back > 0.5)) return;
-      cam.position.copy(controls.target).addScaledVector(dir, dist + back);
-      fitUndo.current = { persp: back, ortho: 0 };
-    } else {
-      const reach = (w: number) => Math.max(...pts.map(q => Math.abs(q.x) * cam.zoom / (w / 2)));
-      const before = reach(prev.width), after = reach(size.width);
-      if (before > 1.001 || after <= Math.max(0.9, before)) return;
-      const k = Math.max(0.9, before) / after;
-      cam.zoom *= k; cam.updateProjectionMatrix();
-      fitUndo.current = { persp: 0, ortho: 1 / k };
-    }
-    controls.update(); invalidate();
+    glide.current = { from, to: sbInset, t0: performance.now(), pull, done: 0, still: 0, lastV: NaN };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [size.left, size.width]);
+  }, [sbInset]);
+  useFrame(state => {
+    const g = glide.current;
+    if (!g) return;
+    const cam = state.camera as THREE.PerspectiveCamera | THREE.OrthographicCamera;
+    if (offCam.current && offCam.current !== cam) (offCam.current as THREE.PerspectiveCamera).clearViewOffset?.();
+    offCam.current = cam;
+    const cv = state.gl.domElement, wrapEl = cv.parentElement, vp = cv.closest('[data-yago-viewport]'), par = vp?.parentElement;
+    const end = () => { if (cam.view?.enabled) cam.clearViewOffset(); glide.current = null; };
+    if (!wrapEl || !vp || !par) { end(); return; }
+    // Kap yeni boyuttaysa R3F'in görmesi beklenmez: tuval + kamera bu karede güncellenir.
+    const wr = wrapEl.getBoundingClientRect();
+    if (Math.abs(wr.width - state.size.width) > 0.5 || Math.abs(wr.height - state.size.height) > 0.5) {
+      state.setSize(wr.width, wr.height, undefined, wr.top, wr.left);
+    }
+    const pr = par.getBoundingClientRect(), vr = vp.getBoundingClientRect();
+    const v = sidebarVisualInset(pr) ?? g.to;
+    // Geri çekilme: şeridin yolundaki ilerleme oranında.
+    const e = Math.abs(g.to - g.from) < 0.5 ? 1 : Math.min(1, Math.max(0, (v - g.from) / (g.to - g.from)));
+    const d = e - g.done, controls = controlsRef.current;
+    if (Math.abs(d) > 1e-5 && controls?.target && !busyRef.current) {
+      if (cam instanceof THREE.PerspectiveCamera && g.pull.persp) {
+        const dir = cam.position.clone().sub(controls.target), dist = dir.length() || 1;
+        const next = dist + g.pull.persp * d;
+        if (next >= 50) { cam.position.copy(controls.target).addScaledVector(dir.normalize(), next); pulled.current.persp += g.pull.persp * d; }
+      } else if (cam instanceof THREE.OrthographicCamera && g.pull.ortho) {
+        cam.zoom *= Math.exp(g.pull.ortho * d); cam.updateProjectionMatrix(); pulled.current.ortho += g.pull.ortho * d;
+      }
+      g.done = e;
+    }
+    if (g.to < g.from && e >= 1) pulled.current = { persp: 0, ortho: 0 };
+    // Görünen alanın ortası ↔ tuvalin ortası: fark projeksiyonla kaydırılır.
+    const visL = Math.max(vr.left, Math.min(vr.right - 120, pr.left + v));
+    const off = (visL + vr.right) / 2 - (wr.left + wr.width / 2);
+    if (Math.abs(off) > 0.25) cam.setViewOffset(wr.width, wr.height, -off, 0, wr.width, wr.height);
+    else if (cam.view?.enabled) cam.clearViewOffset();
+    g.still = Math.abs(v - g.lastV) < 0.3 ? g.still + 1 : 0;
+    g.lastV = v;
+    const age = performance.now() - g.t0;
+    if (g.still >= 3 && ((age > 200 && e >= 1 && Math.abs(off) <= 0.25) || age > 2600)) end();   // şerit durduysa; el değişimi gecikirse 2,6 s güvenlik
+  }, -3);
 
   // Mount prop'ları yalnız kamera tipi değişince; yoksa R3F etkileşim ortasında yeniden uygular, kamera kontrolden kopar.
   const mount = useMemo(() => {

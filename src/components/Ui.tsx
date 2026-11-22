@@ -1603,7 +1603,7 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyCon
 
       {/* Tek çerçeve, iki görünüm: aynı ağaç yuvası → docked ↔ floating geçişinde içerik yeniden kurulmaz. */}
       {mode !== 'window' && (
-        <div ref={sidebarRef} data-yago-sidebar={docked && isVisible ? 'open' : undefined}
+        <div ref={sidebarRef} data-yago-dock={docked ? '' : undefined}
           className={docked ? 'fixed z-40 flex transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]' : 'fixed z-40 flex'}
           style={docked
             ? { top: '120px', bottom: '64px', left: 0, width: `${SIDEBAR_WIDTH}px`, transform: isVisible ? 'translateX(0)' : `translateX(-${SIDEBAR_WIDTH}px)` }
