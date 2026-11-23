@@ -655,7 +655,10 @@ export interface AppState {
   sidebarOpenTick: number; requestSidebarOpen: () => void;
   sidebarInset: number; setSidebarInset: (px: number) => void;
   /** Sahne extrude aracı (Assembly › panel satırı › Extrude): okların çizildiği panel. null = araç kapalı. Kapanınca o paneldeki yüz extrude da düşer. */
-  sceneExtrudePanelId: string | null; setSceneExtrudePanelId: (id: string | null) => void;
+  sceneExtrudePanelId: string | null;
+  /** Aynı okların ikinci kipi — Dimensions edit: adımlar düzlem kaydırma olarak yazılır (`ExtrudeStep.plane`; komşu yüzler uzar, yeni yüz doğmaz). */
+  sceneExtrudePlane: boolean;
+  setSceneExtrudePanelId: (id: string | null, plane?: boolean) => void;
   /** Sahne extrude'un durum çubuğu satırı: üzerine gelinen / seçili okun tipi ve ne yaptığı (Scene yazar, StatusBar çizer). */
   sceneExStatus: SceneToolStatus | null;
   setSceneExStatus: (s: SceneToolStatus | null) => void;
@@ -975,13 +978,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPanelSelectMode: (b) => set({ ...NO_GROUP_SEL, panelSelectMode: b, selectedPanelRowParentId: null }),
   sidebarOpenTick: 0, requestSidebarOpen: () => set((s) => ({ sidebarOpenTick: s.sidebarOpenTick + 1 })),
   sidebarInset: 0, setSidebarInset: (px) => { if (get().sidebarInset !== px) set({ sidebarInset: px }); },
-  sceneExtrudePanelId: null,
-  setSceneExtrudePanelId: (id) => {
+  sceneExtrudePanelId: null, sceneExtrudePlane: false,
+  setSceneExtrudePanelId: (id, plane = false) => {
     const s = get();
-    if (s.sceneExtrudePanelId === id) return;
+    if (s.sceneExtrudePanelId === id && (!id || s.sceneExtrudePlane === plane)) return;
     const prev = s.sceneExtrudePanelId;
     const dropFace = !!prev && s.faceExtrudeMode && s.faceExtrudeTargetPanelId === prev && !s.faceExtrudeCavityGroupId && !s.faceExtrudePlinthId;
-    set({ sceneExtrudePanelId: id, ...(dropFace ? { faceExtrudeMode: false, faceExtrudeSelectedFace: null, faceExtrudeRefCandidate: null, faceExtrudeTargetPanelId: null } : {}) });
+    set({ sceneExtrudePanelId: id, sceneExtrudePlane: !!id && plane, ...(dropFace ? { faceExtrudeMode: false, faceExtrudeSelectedFace: null, faceExtrudeRefCandidate: null, faceExtrudeTargetPanelId: null } : {}) });
   },
   sceneExStatus: null,
   setSceneExStatus: (v) => {

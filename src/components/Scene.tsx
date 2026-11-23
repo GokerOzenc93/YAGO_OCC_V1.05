@@ -12,7 +12,7 @@ import {
   DOOR_GAP, pickRectFor, rayDoorEntry, doorCandidatesAt,
 } from './DoorService';
 import {
-  localBboxOf, type Vec3, edgePointsOf, type FaceData, type CoplanarFaceGroup, createFaceHighlightGeometry, flatGroupOfFace, getShapeMatrix,
+  localBboxOf, type Vec3, edgePointsOf, planeCornerShift, planeNeighbourNormal, planeSpanOf, type FaceData, type CoplanarFaceGroup, createFaceHighlightGeometry, flatGroupOfFace, getShapeMatrix,
   REF_COLORS, confirmRefFaceExtrude, getFacesAndGroups, computeFaceComponentContour, panelInnerBigFace,
   panelBehindStackPlane, computeFreeRegionLocal, genId, createFaceDescriptor, getFacePlaneAxes, earClipTriangulate, effectiveBodyGeometry,
   pointInTriangle3D, findPanelCoveringPoint, groupIndexOfFace, panelHasRotation, createGroupBoundaryEdges, applyFillets, matchCurvedFaceGroup,
@@ -3470,6 +3470,9 @@ type SceneFace = {
   /** rebuild'ler arası kalıcı ad: bakış yönü + o yöndeki sıra (ok tipi buna bağlanır; `gi` her üretimde değişebilir) */ key: string;
   /** yüz normali ve yüz ÜSTÜNDE bir nokta (panel-yerel) */ n: THREE.Vector3; anchor: THREE.Vector3;
   /** Fixed ölçüsü: karşı kutu sınırından bu yüze (motorun `faceDist`i) */ span: number;
+  /** Dimensions edit'in Fixed ölçüsü: katının yüz NORMALİ boyunca yüzün arkasındaki boyu (motorun `planeSpanOf`u) */ spanN?: number;
+  /** Dimensions edit: yüz düzlemi 1 mm oynarken sınır köşelerinin kayması (komşu yüzlerin düzleminde; anahtar = `ptKey`). Yoksa köşe dik gider. */
+  shifts?: Map<string, THREE.Vector3>;
   /** motorun yüz eşlemesi için örnek nokta (adımın `samplePoint`i) */ sample: Vec3;
   /** büyük yüz (kalınlık yönü): ok yerine küçük nokta, üzerine gelince ok; arkası dönükken gizli */ thick: boolean;
   /** yüzün uzun ekseni boyunca orta çizgi (yüzün İÇİNDE kalıyorsa): işaret ekran dışına düşünce bu ray üstünde görünen yere kayar */
@@ -3541,6 +3544,50 @@ function boxColumnDepth(boxes: Array<{ min: Vec3; max: Vec3 }>, p: THREE.Vector3
   return depth;
 }
 
+const ptKey = (p: { x: number; y: number; z: number }) => `${Math.round(p.x * 50)},${Math.round(p.y * 50)},${Math.round(p.z * 50)}`;
+/** Dimensions edit önizlemesi: istenen yüz gruplarının sınır köşelerinin birim kayması — motorun `planeMoveTool`uyla aynı kural, ağ üzerinden
+ *  (kenarın komşusu = o kenarı sınırında taşıyan öteki grup; düz ve yüze açılıysa köşe onun düzleminde kayar, değilse dik gider). */
+function planeShiftsOf(faces: FaceData[], groups: CoplanarFaceGroup[], want: number[]): Map<number, Map<string, THREE.Vector3>> {
+  const bounds = groups.map(g => {
+    const seen = new Map<string, { n: number; a: THREE.Vector3; b: THREE.Vector3 }>();
+    for (const fi of g.faceIndices) {
+      const v = faces[fi]?.vertices;
+      if (!v || v.length < 3) continue;
+      for (let i = 0; i < 3; i++) {
+        const a = v[i], b = v[(i + 1) % 3], ka = ptKey(a), kb = ptKey(b);
+        if (ka === kb) continue;
+        const k = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`, hit = seen.get(k);
+        if (hit) hit.n++; else seen.set(k, { n: 1, a, b });
+      }
+    }
+    return [...seen].filter(([, e]) => e.n === 1);
+  });
+  const owners = new Map<string, number[]>();
+  bounds.forEach((list, gi) => { for (const [k] of list) { const o = owners.get(k); if (o) o.push(gi); else owners.set(k, [gi]); } });
+  const out = new Map<number, Map<string, THREE.Vector3>>();
+  for (const gi of want) {
+    const n = groups[gi].normal.clone().normalize();
+    const at = new Map<string, Array<{ e: THREE.Vector3; m: THREE.Vector3 }>>();
+    for (const [k, seg] of bounds[gi]) {
+      const e = seg.b.clone().sub(seg.a).normalize();
+      const nb = (owners.get(k) ?? []).filter(x => x !== gi);
+      const nbN = nb.length === 1 && !groups[nb[0]].isCurved ? groups[nb[0]].normal.clone().normalize() : null;
+      const m = planeNeighbourNormal(n, e, nbN);
+      for (const p of [seg.a, seg.b]) { const key = ptKey(p), l = at.get(key); if (l) l.push({ e, m }); else at.set(key, [{ e, m }]); }
+    }
+    const map = new Map<string, THREE.Vector3>();
+    let tilted = false;
+    for (const [key, l] of at) {
+      if (l.length !== 2) continue;
+      const sft = planeCornerShift(n, l[0].e, l[0].m, l[1].m);
+      if (sft.distanceToSquared(n) > 1e-8) tilted = true;
+      map.set(key, sft);
+    }
+    if (tilted) out.set(gi, map);
+  }
+  return out;
+}
+
 /** Panelin extrude edilebilir düz yüzleri. Kanal / delik gibi son geçiş kesimlerinin açtığı yüzler alınmaz (kesilmemiş ağda karşılığı yok). */
 function sceneFacesOf(panel: Shape): SceneFace[] {
   const geometry = panel.geometry;
@@ -3574,9 +3621,11 @@ function sceneFacesOf(panel: Shape): SceneFace[] {
     const fill = createFaceHighlightGeometry(faces, g.faceIndices);
     const edges = edgePointsOf(fill, 1);
     const rail = faceRailOf(faces, g, anchor, edges);
-    out.push({ gi, key: '', n, anchor, span: round1(span), sample: [anchor.x, anchor.y, anchor.z], thick, rail, fill, edges });
+    out.push({ gi, key: '', n, anchor, span: round1(span), spanN: round1(planeSpanOf(geometry, n, anchor)), sample: [anchor.x, anchor.y, anchor.z], thick, rail, fill, edges });
   });
   nameSceneFaces(out);
+  const shifts = planeShiftsOf(faces, groups, out.map(f => f.gi));
+  for (const f of out) f.shifts = shifts.get(f.gi);
   // Örnek nokta: motor adımın yüzünü, katı yüzlerinin KÖŞELERİNE en yakın olana göre eşler. Yüz ortası iki paralel yüze neredeyse eşit
   // uzak kalabiliyor (L panelin iki ucu) → aynı yöne bakan öteki yüzlerin köşelerinden EN UZAK kendi köşesi, 0.5 mm içeri.
   const labelOf = (g: CoplanarFaceGroup) => dominantAxisLabel(g.normal);
@@ -3867,21 +3916,39 @@ function SceneExDot({ position, normal, rail, thick, selected, onPick, onHover, 
 
 /** Kenarın gideceği yer (panel-yerel çizilir): taranan hacim + hedef çizgisi + kenardan hedefe AKAN hayalet çizgiler.
  *  `demo`: değer yokken yalnız yön gösterimi (dolgu ve hedef yok). `measure`: Fixed ölçüsünün çizgisi — karşı kenardan (kalın çentik) hedefe; değer okun ucundaki girişte. */
-function SceneExPreview({ matrix, face, amount, demo, color, measure }: {
+function SceneExPreview({ matrix, face, amount, demo, color, measure, plane }: {
   matrix: THREE.Matrix4; face: SceneFace; amount: number; demo: boolean; color: string; measure?: { from: number } | null;
+  /** Dimensions edit: köşeler komşu yüzlerin düzleminde kayar (`face.shifts`) → taranan hacim ve hedef çizgisi GERÇEK sonucu gösterir. */ plane?: boolean;
 }) {
   const d = useMemo(() => face.n.clone().multiplyScalar(amount), [face, amount]);
+  const shifts = plane ? face.shifts ?? null : null;
+  // Noktanın tam değerdeki yer değiştirmesi: düzlem kaydırmada köşeye özel, yoksa yüz normali boyunca.
+  const dispOf = useMemo(() => (p: ArrayLike<number>) => {
+    const sft = shifts?.get(ptKey({ x: p[0], y: p[1], z: p[2] }));
+    return sft ? [sft.x * amount, sft.y * amount, sft.z * amount] : [d.x, d.y, d.z];
+  }, [shifts, amount, d]);
   const sweep = useMemo(() => {
     const pos: number[] = [];
     for (let i = 0; i + 1 < face.edges.length; i += 2) {
-      const a = face.edges[i], b = face.edges[i + 1];
-      pos.push(a[0], a[1], a[2], b[0], b[1], b[2], b[0] + d.x, b[1] + d.y, b[2] + d.z, a[0], a[1], a[2], b[0] + d.x, b[1] + d.y, b[2] + d.z, a[0] + d.x, a[1] + d.y, a[2] + d.z);
+      const a = face.edges[i], b = face.edges[i + 1], da = dispOf(a), db = dispOf(b);
+      pos.push(a[0], a[1], a[2], b[0], b[1], b[2], b[0] + db[0], b[1] + db[1], b[2] + db[2], a[0], a[1], a[2], b[0] + db[0], b[1] + db[1], b[2] + db[2], a[0] + da[0], a[1] + da[1], a[2] + da[2]);
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     return g;
-  }, [face, d]);
+  }, [face, dispOf]);
   useEffect(() => () => sweep.dispose(), [sweep]);
+  // Düzlem kaydırma: hedef yüz ve çizgisi yeni biçimiyle (köşeler ayrı ayrı kayar); akan çizgiler her karede köşe köşe ilerler.
+  const warp = useMemo(() => {
+    if (!shifts) return null;
+    const base = new Float32Array(face.edges.length * 3), disp = new Float32Array(face.edges.length * 3);
+    face.edges.forEach((p, i) => { const q = dispOf(p); base.set(p, i * 3); disp.set(q, i * 3); });
+    const target: Vec3[] = face.edges.map((p, i) => [p[0] + disp[i * 3], p[1] + disp[i * 3 + 1], p[2] + disp[i * 3 + 2]]);
+    const fill = face.fill.clone(), pos = fill.getAttribute('position') as THREE.BufferAttribute;
+    for (let i = 0; i < pos.count; i++) { const q = dispOf([pos.getX(i), pos.getY(i), pos.getZ(i)]); pos.setXYZ(i, pos.getX(i) + q[0], pos.getY(i) + q[1], pos.getZ(i) + q[2]); }
+    return { base, disp, target, fill, tmp: new Float32Array(base.length) };
+  }, [shifts, face, dispOf]);
+  useEffect(() => () => warp?.fill.dispose(), [warp]);
   const echoes = useRef<Array<THREE.Group | null>>([]);
   const N = 3;
   useFrame(({ clock }) => {
@@ -3889,8 +3956,12 @@ function SceneExPreview({ matrix, face, amount, demo, color, measure }: {
       const g = echoes.current[i];
       if (!g) continue;
       const p = (clock.elapsedTime / 1.5 + i / N) % 1, e = p * p * (3 - 2 * p);
-      g.position.set(d.x * e, d.y * e, d.z * e);
       const line: any = g.children[0];
+      if (warp) {
+        for (let k = 0; k < warp.tmp.length; k++) warp.tmp[k] = warp.base[k] + warp.disp[k] * e;
+        g.position.set(0, 0, 0);
+        line?.geometry?.setPositions?.(warp.tmp);
+      } else g.position.set(d.x * e, d.y * e, d.z * e);
       if (line?.material) line.material.opacity = Math.sin(Math.PI * p) * (demo ? 0.85 : 0.95);
     }
   });
@@ -3911,8 +3982,17 @@ function SceneExPreview({ matrix, face, amount, demo, color, measure }: {
       {!demo && (
         <>
           <mesh geometry={sweep} renderOrder={14} raycast={noRaycast}><OverlayMat color={css} opacity={0.2} /></mesh>
-          <mesh geometry={face.fill} position={d} renderOrder={14} raycast={noRaycast} dispose={null}><OverlayMat color={css} opacity={0.3} /></mesh>
-          <group position={d}><EdgeLines points={face.edges} color={color} width={2.4} order={16} /></group>
+          {warp ? (
+            <>
+              <mesh geometry={warp.fill} renderOrder={14} raycast={noRaycast} dispose={null}><OverlayMat color={css} opacity={0.3} /></mesh>
+              <EdgeLines points={warp.target} color={color} width={2.4} order={16} />
+            </>
+          ) : (
+            <>
+              <mesh geometry={face.fill} position={d} renderOrder={14} raycast={noRaycast} dispose={null}><OverlayMat color={css} opacity={0.3} /></mesh>
+              <group position={d}><EdgeLines points={face.edges} color={color} width={2.4} order={16} /></group>
+            </>
+          )}
         </>
       )}
       {Array.from({ length: N }, (_, i) => (
@@ -3978,6 +4058,7 @@ function SceneExInput({ mode, span, color, onText, onApply, onCancel }: {
 type SceneExTarget = {
   /** tip hafızası (`_exTypes`) anahtarı */ id: string;
   /** durum çubuğunda araç adı · yüzün adı */ label: string; noun: 'edge' | 'face';
+  /** Dimensions edit: önizleme düzlem kaydırmayı gösterir (köşeler komşu yüzlerde kayar) */ plane?: boolean;
   faces: SceneFace[]; matrix: THREE.Matrix4; /** okların dünya ölçeği */ base: number;
   /** izinli tipler (baza setinde Ref yok); ilki varsayılan */ modes: SceneExMode[];
   /** depoda seçili yüz (yüz extrude modu bu hedefteyse) */ activeGi: number | null;
@@ -4122,10 +4203,10 @@ function SceneExtrudeTool({ t }: { t: SceneExTarget }) {
         </group>
       )}
       {previewFace && pType !== 'ref' && previewAmount === null && (
-        <SceneExPreview matrix={matrix} face={previewFace} amount={demoOf(previewFace)} demo color={PC.lit} />
+        <SceneExPreview matrix={matrix} face={previewFace} amount={demoOf(previewFace)} demo color={PC.lit} plane={t.plane} />
       )}
       {previewFace && previewAmount !== null && Math.abs(previewAmount) > 0.01 && (
-        <SceneExPreview matrix={matrix} face={previewFace} amount={previewAmount} demo={false}
+        <SceneExPreview matrix={matrix} face={previewFace} amount={previewAmount} demo={false} plane={t.plane}
           color={pType === 'ref' ? SCENE_EX.ref.lit : previewAmount < 0 ? SCENE_EX.shrink : SCENE_EX.grow}
           measure={pType === 'fixed' && previewFace === active ? { from: active!.span } : null} />
       )}
@@ -4137,22 +4218,30 @@ const sceneExBase = (maxDim: number) => THREE.MathUtils.clamp(maxDim * 0.12, 34,
 
 /** PANEL: kenar okları. Adım motoru aynı (executeFaceExtrude / ref onayı). */
 export function PanelSceneExtrude({ panel }: { panel: Shape }) {
-  const S = useStoreFields('faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace');
-  const faces = useMemo(() => sceneFacesOf(panel), [panel.geometry, panel.ungroovedGeometry]);   // eslint-disable-line react-hooks/exhaustive-deps
-  useFaceDisposal(faces);
+  const S = useStoreFields('faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'sceneExtrudePlane');
+  const plane = S.sceneExtrudePlane;   // Dimensions edit: aynı oklar; adım düzlem kaydırma, Fixed ölçüsü yüz normali boyunca
+  const all = useMemo(() => sceneFacesOf(panel), [panel.geometry, panel.ungroovedGeometry]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useFaceDisposal(all);
+  const faces = useMemo(() => (plane ? all.map(f => ({ ...f, span: f.spanN ?? f.span })) : all), [all, plane]);
   const matrix = useMemo(() => getShapeMatrix(panel), [panel.position, panel.rotation, panel.scale]);   // eslint-disable-line react-hooks/exhaustive-deps
   const base = useMemo(() => { const sz = localBboxOf(panel.geometry)?.getSize(new THREE.Vector3()); return sceneExBase(sz ? Math.max(sz.x, sz.y, sz.z) : 400); }, [panel.geometry]);
   return <SceneExtrudeTool t={{
-    id: panel.id, label: 'Extrude', noun: 'edge', faces, matrix, base, modes: SCENE_EX_ORDER,
+    id: plane ? `${panel.id}:dims` : panel.id, label: plane ? 'Dimensions edit' : 'Extrude', noun: 'edge', plane, faces, matrix, base, modes: SCENE_EX_ORDER,
     activeGi: S.faceExtrudeMode && S.faceExtrudeTargetPanelId === panel.id ? S.faceExtrudeSelectedFace : null,
     select: (f, type) => pickSceneFace(panel, f, type), deselect: stopSceneExtrude,
     apply: async (f, mode, v) => {
       const st = useAppStore.getState(), fresh = shapeById(panel.id, st.shapes);
       if (fresh) await executeFaceExtrude({ panelShape: fresh, faceGroupIndex: f.gi, value: v, isFixed: mode === 'fixed', updateShape: st.updateShape,
-        clickPoint: st.faceExtrudeClickPoint ?? undefined });
+        clickPoint: st.faceExtrudeClickPoint ?? undefined, plane });
     },
-    fixedText: span => `Type the size from the opposite edge (now ${span} mm)`, dynText: 'Type how far the edge moves: + out, − in',
-    refText: 'the edge goes up to a face you pick, and follows it',
+    ...(plane ? {
+      fixedText: (span: string) => `Type the size across the panel up to this edge (now ${span} mm) — the neighbouring edges stretch to it`,
+      dynText: 'Type how far the edge plane moves: + out, − in — the neighbouring edges stretch or shorten to it',
+      refText: 'the edge plane goes up to a face you pick and follows it — the neighbouring edges stretch to it',
+    } : {
+      fixedText: (span: string) => `Type the size from the opposite edge (now ${span} mm)`, dynText: 'Type how far the edge moves: + out, − in',
+      refText: 'the edge goes up to a face you pick, and follows it',
+    }),
   }} />;
 }
 

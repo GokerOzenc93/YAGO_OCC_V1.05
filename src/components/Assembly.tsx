@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Check, X, type LucideIcon, Lock, SlidersHorizontal, Crosshair, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Footprints, Shapes,
   ChevronRight, Minus, Plus, ChevronDown, Pencil, Trash2, Unlink, MoveVertical, Move, RotateCw, GripVertical, ArrowUp, Box, Move3d, Equal,
-  RotateCcw, Container, ChevronLeft, PenLine,
+  RotateCcw, Container, ChevronLeft, PenLine, Ruler,
 } from 'lucide-react';
 import { type Box3, Vector3 } from 'three';
 import { UI_FONT, INK, TYPE } from './Ui';
@@ -144,10 +144,11 @@ export function NumInput({ draft, setDraft, setValue, fallback, onEnter, onEscap
 }
 
 export type SegItem = { key: string; label: string; Icon?: LucideIcon; title?: string; disabled?: boolean };
-export function Segmented({ items, active, onPick, height = 26 }: { items: SegItem[]; active: string | null; onPick: (k: string) => void; height?: number }) {
+/** `fit`: sütunlar içeriğe göre (uzun adlı düğme kesilmez), artan yer eşit paylaşılır. */
+export function Segmented({ items, active, onPick, height = 26, fit = false }: { items: SegItem[]; active: string | null; onPick: (k: string) => void; height?: number; fit?: boolean }) {
   return (
     <div style={{
-      display: 'grid', gridTemplateColumns: `repeat(${items.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 7,
+      display: 'grid', gridTemplateColumns: fit ? `repeat(${items.length}, auto)` : `repeat(${items.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 7,
       background: '#ece8e1', fontFamily: UI_FONT,
     }}>
       {items.map(({ key, label, Icon, title, disabled }) => {
@@ -1881,6 +1882,7 @@ const STEP_BADGE: Record<string, StepItem['badge']> = {
   move: { label: 'Move', bg: 'rgba(22,163,74,0.08)', color: '#15803d' },
   rotate: { label: 'Rotate', bg: 'rgba(37,99,235,0.08)', color: '#1d4ed8' },
   extrude: { label: 'Ext', bg: 'rgba(217,119,6,0.09)', color: '#b45309' },
+  dims: { label: 'Dim', bg: 'rgba(13,148,136,0.10)', color: '#0f766e' },   // Dimensions edit adımı (düzlem kaydırma)
 };
 const VOL_BADGE = { label: 'Vol', bg: 'rgba(14,116,144,0.09)', color: '#0e7490' };
 const SKETCH_BADGE: Record<'cut' | 'shape', StepItem['badge']> = {
@@ -1963,10 +1965,10 @@ export function PanelSteps({ panel, ...edit }: StepEditProps & { panel?: Shape }
   const sk = panel ? sketchStepItems(panel, liveId) : [];
   if (!panel || (!ext.length && !tr.length && !sk.length && !post.length)) return null;
   const { updateShape } = useAppStore.getState();
-  const item = (s: { id: string; timestamp: number }, type: string, axis: string, value: number, isRef: boolean, tag: string | undefined) => {
+  const item = (s: { id: string; timestamp: number; plane?: boolean }, type: string, axis: string, value: number, isRef: boolean, tag: string | undefined) => {
     const isExt = type === 'extrude';
     return {
-      ts: s.timestamp, id: s.id, badge: STEP_BADGE[type] || STEP_BADGE.move, axis: axis.toUpperCase(),
+      ts: s.timestamp, id: s.id, badge: (isExt && s.plane ? STEP_BADGE.dims : STEP_BADGE[type]) || STEP_BADGE.move, axis: axis.toUpperCase(),
       axisColor: AXIS_COLORS[axis] || '#57534e', value, unit: type === 'rotate' ? '°' : '', tag, editable: !((isExt || type === 'rotate') && isRef),
       save: async (v: number) => { await (isExt ? updateExtrudeStep : updateTransformStep)(panel, s.id, v, updateShape); edit.setEdit(null); },
       remove: () => { void (isExt ? deleteExtrudeStep : deleteTransformStep)(panel, s.id, updateShape); },
@@ -2527,13 +2529,13 @@ export function AssemblyPanel() {
     faceExtrudeMode, faceExtrudeTargetPanelId, faceExtrudeCavityGroupId,
     panelMoveMode, panelMoveTargetPanelId, panelRotateMode, panelRotateTargetPanelId,
     doorGroups, selectedDoorGroupId, doorRefPickGroupId, backGroups, selectedBackGroupId, backRefPickGroupId, quickBodyMode, quickBodyConfig, quickBodyBusy,
-    plinthSets, faceExtrudePlinthId, raycastMode, doorPickMode, backPickMode, plinthPickMode, sceneExtrudePanelId,
+    plinthSets, faceExtrudePlinthId, raycastMode, doorPickMode, backPickMode, plinthPickMode, sceneExtrudePanelId, sceneExtrudePlane,
   } = useStoreFields(
     'selectedShapeId', 'shapes', 'selectedPanelRow', 'virtualFaces', 'panelGroups', 'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId',
     'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeCavityGroupId',
     'panelMoveMode', 'panelMoveTargetPanelId', 'panelRotateMode', 'panelRotateTargetPanelId',
     'doorGroups', 'selectedDoorGroupId', 'doorRefPickGroupId', 'backGroups', 'selectedBackGroupId', 'backRefPickGroupId', 'quickBodyMode', 'quickBodyConfig',
-    'quickBodyBusy', 'plinthSets', 'faceExtrudePlinthId', 'raycastMode', 'doorPickMode', 'backPickMode', 'plinthPickMode', 'sceneExtrudePanelId',
+    'quickBodyBusy', 'plinthSets', 'faceExtrudePlinthId', 'raycastMode', 'doorPickMode', 'backPickMode', 'plinthPickMode', 'sceneExtrudePanelId', 'sceneExtrudePlane',
   );
   // Eylemler sabittir (store kurulurken tanımlanır) → abonelik gerekmez.
   const {
@@ -2805,15 +2807,16 @@ export function AssemblyPanel() {
     // Sketch: Drawing panelinin yüz seçimi yalnız BU panelde açılır; panel çizim yüzüyken düğme etkin görünür (tekrar tık → zemine dön).
     const sketching = !!vp && draftIso?.targetId === vp.id;
     const sceneEx = !!vp && sceneExtrudePanelId === vp.id;
-    const tool = sketching ? 'sketch' : sceneEx ? 'extrude' : (['move', 'rotate'] as Tool[]).find(k => tools[k][0] && tools[k][1] === vp?.id) ?? null;
+    const sceneDims = sceneEx && sceneExtrudePlane;
+    const tool = sketching ? 'sketch' : sceneEx ? (sceneDims ? 'dims' : 'extrude') : (['move', 'rotate'] as Tool[]).find(k => tools[k][0] && tools[k][1] === vp?.id) ?? null;
     const setSceneEx = useAppStore.getState().setSceneExtrudePanelId;
     // Aynı araca tık → kapanır; başka araca → açık olan kapanır, yenisi bu panelde açılır.
     const pickTool = (k: string) => {
       if (!vp) return;
-      if (k === 'extrude') {
+      if (k === 'extrude' || k === 'dims') {   // aynı oklar, iki kip: Extrude (yüz dik uzar) · Dimensions edit (düzlem kayar, komşular uzar)
         if (sketching) void exitFace();
         for (const [on, , off] of Object.values(tools)) if (on) off(false);
-        setSceneEx(sceneEx ? null : vp.id);
+        if (k === tool) setSceneEx(null); else setSceneEx(vp.id, k === 'dims');
         return;
       }
       setSceneEx(null);
@@ -2831,8 +2834,9 @@ export function AssemblyPanel() {
     const dis = !vf.hasPanel;
     return (
       <div className={CARD_BODY} style={{ borderTop: CARD_BODY_STYLE.borderTop }} onClick={stop}>
-        <Segmented active={tool} onPick={pickTool} items={[
+        <Segmented fit active={tool} onPick={pickTool} items={[
           { key: 'extrude', label: 'Extrude', Icon: MoveVertical, title: 'Extrude — arrows appear on the panel edges in the 3D view', disabled: dis },
+          { key: 'dims', label: 'Dimensions edit', Icon: Ruler, title: 'Dimensions edit — the same arrows, but the edge moves as a plane: neighbouring edges stretch or shorten up to it, no new faces (Fixed / Dyn / Ref)', disabled: dis },
           { key: 'move', label: 'Move', Icon: Move, title: 'Move — arrows and corner points appear on the panel in the 3D view', disabled: dis },
           { key: 'rotate', label: 'Rotate', Icon: RotateCw, title: 'Rotate — pivot points and axis rings appear on the panel in the 3D view', disabled: dis },
           { key: 'sketch', label: 'Sketch', Icon: PenLine, title: 'Draw on a face of this panel, then cut it out or give the panel that shape', disabled: dis },

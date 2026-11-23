@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import initOpenCascade from 'opencascade.js';
-import { Plane, cast, draw, makeCylinder, setOC } from 'replicad';
+import { Plane, cast, draw, makeCylinder, makePolygon, makeSolid, setOC } from 'replicad';
 import { type BrepTriInfo, cutShape, fuseShapes, geometryFromMeshData, meshDataOf, placeShapeBy, prismTool, startCutWorker } from './CutWorker';
 import {
   type VirtualFace, type FaceDescriptor, type FilletInfo, type SubtractedGeometry, type Shape, shapeById, requestRebuild, vfOfPanel, type RefFacePick,
@@ -2698,6 +2698,9 @@ export interface ExtrudeStep {
   outer?: boolean;
   /** Çizim sonrası adım (`postExtrudeSteps`): çizim uygulanmış katının yüzüne; yalnız katı / görünüm (komşular tepki vermez). */
   afterSketch?: boolean;
+  /** DIMENSIONS EDIT adımı: yüz OLDUĞU GİBİ (eğikse eğik) kendi düzlemine paralel oynar, komşu yüzler kendi düzlemlerinde yeni düzleme kadar
+   *  uzar / kısalır → yeni yüz oluşmaz (`planeMoveTool`). Fixed ölçüsü kutudan değil yüz NORMALİ boyunca; ref ucu pahlanmaz. */
+  plane?: boolean;
 }
 
 /** Panelin güncel store kopyası (komut, bayat prop yerine bunu kullanır). */
@@ -2897,7 +2900,8 @@ export async function confirmRefFaceExtrude(): Promise<void> {
   const selFace = st.faceExtrudeSelectedFace;
   const ps = shapeById(st.faceExtrudeTargetPanelId, st.shapes);
   if (!cand || cand.faceGroupIndex < 0 || selFace === null || !ps) return;
-  await executeFaceExtrudeToReference(ps, selFace, cand, st.faceExtrudeClickPoint ?? undefined, st.updateShape);
+  await executeFaceExtrudeToReference(ps, selFace, cand, st.faceExtrudeClickPoint ?? undefined, st.updateShape,
+    st.sceneExtrudePlane && st.sceneExtrudePanelId === ps.id);
   st.setFaceExtrudeSelectedFace(null);
   st.setFaceExtrudeMode(false);
   st.setFaceExtrudeRefCandidate(null);
@@ -2944,6 +2948,91 @@ export function findExistingStepForFace(steps: ExtrudeStep[], faceNormal: THREE.
   return best;
 }
 
+/** DÜZLEM KAYDIRMA — köşenin birim kayması: yüz düzlemi normali `n` boyunca 1 mm oynarken, iki komşu düzlemin (normalleri `ma`, `mb`) arakesiti
+ *  üzerinde kalan köşe ne kadar kayar. Komşular yüze dikse sonuç `n` (düz extrude). Bozuksa (komşular paralel / yüze neredeyse paralel) null. */
+export function planeVertexShift(n: THREE.Vector3, ma: THREE.Vector3, mb: THREE.Vector3): THREE.Vector3 | null {
+  const c = new THREE.Vector3().crossVectors(ma, mb), k = c.dot(n);
+  if (Math.abs(k) < 1e-6) return null;
+  return c.multiplyScalar(1 / k);
+}
+/** Kenarın komşu düzlemi kaydırmada kullanılabilir mi (yüze en az ~10° açılı düz yüz)? Değilse kenar DİK uzar: düzlem = kenar + yüz normali. */
+export function planeNeighbourNormal(n: THREE.Vector3, edgeDir: THREE.Vector3, neighbour: THREE.Vector3 | null): THREE.Vector3 {
+  if (neighbour && Math.abs(neighbour.dot(n)) < 0.985 && Math.abs(neighbour.dot(edgeDir)) < 1e-3) return neighbour;
+  return new THREE.Vector3().crossVectors(edgeDir, n).normalize();
+}
+/** Köşe kayması, bozuk durumlar dahil: iki kenar aynı doğrultuda / aynı komşu düzlemdeyse köşe o düzlemde kenara dik kayar. */
+export function planeCornerShift(n: THREE.Vector3, ea: THREE.Vector3, ma: THREE.Vector3, mb: THREE.Vector3): THREE.Vector3 {
+  const s = planeVertexShift(n, ma, mb);
+  if (s && s.length() < 12) return s;
+  const w = new THREE.Vector3().crossVectors(ma, ea), k = w.dot(n);
+  return Math.abs(k) > 0.08 ? w.multiplyScalar(1 / k) : n.clone();
+}
+
+/** DÜZLEM KAYDIRMA aracı (Dimensions edit): `face` düzlemi `amount` kadar oynayınca eklenecek (+) / çıkarılacak (−) katı — yüz ile yeni
+ *  düzlemdeki karşılığı arasında, yanları KOMŞU YÜZLERİN düzlemlerinde kalan çokyüzlü. Katıyla birleşince / kesilince yan yüzler komşularla aynı
+ *  düzlemde olduğundan yeni yüz doğmaz. Yerel: yalnız bu yüzün komşuları (L panelin öteki kolu etkilenmez; yuva dibinde duvarlar uzar).
+ *  'prism' = düz extrude aynı sonucu verir (bütün komşular dik) ya da yüzün kenarı eğri (çokgen değil). null = uygulanamaz (komşular yeni
+ *  düzleme varmadan kesişiyor → bir kenar tersine dönüyor). */
+function planeMoveTool(shape: any, face: any, n: THREE.Vector3, amount: number): any | 'prism' | null {
+  const v3 = (p: any) => new THREE.Vector3(p.x, p.y, p.z);
+  const others: Array<{ normal: THREE.Vector3 | null; edges: any[] }> = [];
+  for (const g of shape.faces || []) {
+    if (g.isSame(face)) continue;
+    let normal: THREE.Vector3 | null = null;
+    try { if (g.geomType === 'PLANE') normal = v3(g.normalAt()).normalize(); } catch { /* düzlem okunamadı → dik uzar */ }
+    others.push({ normal, edges: g.edges });
+  }
+  // Eşleşen yüz adımın yüzüne paralel değilse (yanlış yüz) düzlem kaydırma yapılmaz.
+  try { if (v3(face.normalAt()).normalize().dot(n) < 0.999) return null; } catch { return null; }
+  let tilted = false;
+  const loopTool = (wire: any): any | 'prism' | null => {
+    const segs: Array<{ a: THREE.Vector3; b: THREE.Vector3; e: THREE.Vector3; m: THREE.Vector3 }> = [];
+    for (const edge of wire.edges) {
+      if (edge.geomType !== 'LINE') return 'prism';
+      const a = v3(edge.startPoint), b = v3(edge.endPoint), e = b.clone().sub(a);
+      if (e.length() < 1e-6) continue;
+      e.normalize();
+      const nb = others.find(o => o.edges.some((x: any) => x.isSame(edge)));
+      const m = planeNeighbourNormal(n, e, nb?.normal ?? null);
+      if (Math.abs(m.dot(n)) > 1e-4) tilted = true;
+      segs.push({ a, b, e, m });
+    }
+    if (segs.length < 3) return 'prism';
+    // Kenarları uç uca diz (tel sırası garanti değil; kenar yönü de ters olabilir).
+    const near = (p: THREE.Vector3, q: THREE.Vector3) => p.distanceToSquared(q) < 1e-8;
+    const chain = [segs[0]], left = segs.slice(1);
+    while (left.length) {
+      const tail = chain[chain.length - 1].b;
+      let i = left.findIndex(x => near(x.a, tail));
+      if (i < 0) { i = left.findIndex(x => near(x.b, tail)); if (i < 0) return 'prism'; const x = left[i]; [x.a, x.b] = [x.b, x.a]; x.e.negate(); }
+      chain.push(left.splice(i, 1)[0]);
+    }
+    if (!near(chain[chain.length - 1].b, chain[0].a)) return 'prism';
+    const N = chain.length;
+    const P = chain.map(x => x.a);
+    const Q = chain.map((x, i) => { const prev = chain[(i + N - 1) % N]; return x.a.clone().addScaledVector(planeCornerShift(n, x.e, prev.m, x.m), amount); });
+    for (let i = 0; i < N; i++) {
+      const ep = P[(i + 1) % N].clone().sub(P[i]), eq = Q[(i + 1) % N].clone().sub(Q[i]);
+      if (eq.dot(ep) < 1e-3 * ep.lengthSq() + 1e-6) return null;   // kenar yok oldu / tersine döndü → topoloji değişiyor
+    }
+    const pt = (p: THREE.Vector3): [number, number, number] => [p.x, p.y, p.z];
+    const quads = P.map((p, i) => { const j = (i + 1) % N; return makePolygon([pt(p), pt(P[j]), pt(Q[j]), pt(Q[i])]); });
+    return makeSolid([makePolygon(P.map(pt)), makePolygon(Q.map(pt)), ...quads]);
+  };
+  // replicad'in outerWire() / innerWires()'ı çağrıldığı yüzü SİLER → kopya üzerinden; iç teller = dış tel olmayanlar.
+  const outerWire = face.clone().outerWire();
+  const outer = loopTool(outerWire);
+  if (outer === 'prism' || outer === null) return outer;
+  let tool = outer;
+  for (const w of face.wires) {
+    if (w.isSame(outerWire)) continue;
+    const hole = loopTool(w);
+    if (hole === 'prism' || hole === null) return hole;
+    tool = tool.cut(hole);
+  }
+  return tilted ? tool : 'prism';
+}
+
 function findMatchingReplicadFace(
   replicadShape: any, targetNormal: THREE.Vector3, targetCenter: THREE.Vector3, samplePoint?: THREE.Vector3,
 ): any | null {
@@ -2955,8 +3044,9 @@ function findMatchingReplicadFace(
     try {
       const nv = face.normalAt(0.5, 0.5);
       const faceNormal = new THREE.Vector3(nv.x, nv.y, nv.z);
-      if (dominantAxisLabel(faceNormal) !== targetLabel) continue;
       const dot = faceNormal.dot(targetNormal);
+      // Baskın eksen süzgeci, hedefe PARALEL yüzü elemesin: tam 45° eğik yüzde baskın eksen iki yana da düşebilir (hedef X+, yüz Z+ okunur).
+      if (dominantAxisLabel(faceNormal) !== targetLabel && dot <= 0.9995) continue;
       if (dot < 0.5) continue;
       let center = new THREE.Vector3();
       let minPtDist = Infinity;
@@ -2985,6 +3075,14 @@ function findMatchingReplicadFace(
   if (samplePoint) pool.sort((a, b) => a.minPtDist - b.minPtDist || b.dot - a.dot);
   else pool.sort((a, b) => a.dist - b.dist || b.dot - a.dot);
   return pool[0].face;
+}
+
+/** Düzlem kaydırmanın Fixed ölçüsü: katının yüz NORMALİ boyunca yüzün arkasında kalan boyu (eksen-hizalı yüzde kutu ölçüsüyle aynı). */
+export function planeSpanOf(geometry: THREE.BufferGeometry, n: THREE.Vector3, onFace: THREE.Vector3): number {
+  const pos = geometry.getAttribute('position');
+  let min = Infinity;
+  for (let i = 0; i < pos.count; i++) { const t = pos.getX(i) * n.x + pos.getY(i) * n.y + pos.getZ(i) * n.z; if (t < min) min = t; }
+  return Number.isFinite(min) ? onFace.dot(n) - min : 0;
 }
 
 type ExtrudeResult = { replicadShape: any; geometry: THREE.BufferGeometry; amount: number };
@@ -3038,7 +3136,9 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
     const refN = step.refPlaneNormalLocal ? new THREE.Vector3(...step.refPlaneNormalLocal).normalize() : null;
     const par = refN ? refN.dot(faceNormal) : 1;
     if (Math.abs(par) < 0.5) return null;   // ref yüzü extrude eksenine çok dik → adım atlanır
-    if (refN && Math.abs(par) < 0.9999) {
+    // Düzlem kaydırma: yüz paralel oynar (uç pahlanmaz) — referans düzlemine yüz ORTASINDA değer.
+    if (step.plane) extrudeAmount = refN ? refC.clone().sub(faceCenter).dot(refN) / par : refC.clone().sub(faceCenter).dot(faceNormal);
+    else if (refN && Math.abs(par) < 0.9999) {
       const tOf = (p: THREE.Vector3) => refC.clone().sub(p).dot(refN) / par;
       let tMin = Infinity, tMax = -Infinity;
       for (const fi of bestGroup.faceIndices) {
@@ -3048,6 +3148,8 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
       // Kesilecek yarım-uzay: düzlemin yüz normali tarafı.
       bevel = { refC, nOut: par > 0 ? refN.clone() : refN.clone().negate(), tMin, tMax };
     } else extrudeAmount = refC.clone().sub(faceCenter).dot(faceNormal);
+  } else if (step.isFixed && step.plane) {
+    extrudeAmount = step.value - planeSpanOf(geometry, faceNormal, faceCenter);
   } else if (step.isFixed) {
     const k = dominantAxis(faceNormal);
     const faceDist = faceNormal[k] > 0 ? faceCenter[k] - box.min[k] : box.max[k] - faceCenter[k];
@@ -3078,6 +3180,16 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
     if (!half) return null;
     const finalShape = shape.cut(column.intersect(half));
     return { replicadShape: finalShape, geometry: convertReplicadToThreeGeometry(finalShape), amount: extrudeAmount };
+  }
+  if (step.plane) {
+    let tool: any | 'prism' | null = null;
+    try { tool = planeMoveTool(currentShape, matchingFace, faceNormal, extrudeAmount); }
+    catch (err) { console.warn('[dimensions edit] plane move failed, skipped', err); return null; }
+    if (tool === null) return null;
+    if (tool !== 'prism') {
+      const moved = extrudeAmount > 0 ? currentShape.fuse(tool) : currentShape.cut(tool);
+      return { replicadShape: moved, geometry: convertReplicadToThreeGeometry(moved), amount: extrudeAmount };
+    }
   }
   // OK modu: en dış düzlemdeki TÜM yüzler birlikte (çentikli panelde yuvanın iki yanındaki uç parçaları da) — tek yüz değil.
   const faceList = step.outer ? outermostReplicadFaces(currentShape, faceNormal, matchingFace) : [matchingFace];
@@ -3190,7 +3302,7 @@ function upsertFaceStep(
   panel: Shape, faceGroupIndex: number, value: number, isFixed: boolean, clickPoint: Vec3 | undefined, extra: Partial<ExtrudeStep> = {},
 ): { steps: ExtrudeStep[]; existed: boolean; key: ExtrudeListKey } | null {
   const post = isPostSketchFace(panel, faceGroupIndex);
-  const face = resolveClickedFace(panel, faceGroupIndex, post);
+  const face = resolveClickedFace(panel, faceGroupIndex, post || !!extra.plane);   // düzlem kaydırma: eğik yüz olduğu gibi
   if (!face) return null;
   const key: ExtrudeListKey = post ? 'postExtrudeSteps' : 'extrudeSteps';
   const steps = extrudeStepsOf(panel, key);
@@ -3201,17 +3313,18 @@ function upsertFaceStep(
   const center = new THREE.Vector3(...step.faceCenter), normal = new THREE.Vector3(...step.faceNormal);
   // Çizim sonrası adımda aynı baskın eksende birden çok eğik yüz olabilir → normal de eşleşmeli.
   const idx = steps.findIndex(s => s.axisLabel === step.axisLabel && new THREE.Vector3(...s.faceCenter).distanceTo(center) < 1.0
-    && (!post || new THREE.Vector3(...s.faceNormal).dot(normal) > 0.999));
+    && (!(post || extra.plane) || new THREE.Vector3(...s.faceNormal).dot(normal) > 0.999));
   return { steps: idx >= 0 ? steps.map((s, i) => (i === idx ? step : s)) : [...steps, step], existed: idx >= 0, key };
 }
 
 export interface FaceExtrudeParams {
   panelShape: Shape; faceGroupIndex: number; value: number; isFixed: boolean; updateShape: UpdateShape;
   clickPoint?: Vec3;
+  /** Dimensions edit: düzlem kaydırma adımı (`ExtrudeStep.plane`). */ plane?: boolean;
 }
 
-export async function executeFaceExtrude({ panelShape: panel, faceGroupIndex, value, isFixed, updateShape, clickPoint }: FaceExtrudeParams): Promise<boolean> {
-  const up = upsertFaceStep(panel, faceGroupIndex, value, isFixed, clickPoint);
+export async function executeFaceExtrude({ panelShape: panel, faceGroupIndex, value, isFixed, updateShape, clickPoint, plane }: FaceExtrudeParams): Promise<boolean> {
+  const up = upsertFaceStep(panel, faceGroupIndex, value, isFixed, clickPoint, plane ? { plane: true } : {});
   if (!up) return false;
   // Dinamik modda değer = delta.
   if (!isFixed && Math.abs(value) < 0.01 && !up.existed) return false;
@@ -3220,10 +3333,11 @@ export async function executeFaceExtrude({ panelShape: panel, faceGroupIndex, va
 
 /** Ref extrude: değer rebuild'de referansın güncel düzleminden çözülür (value=0 işaretçi). */
 async function executeFaceExtrudeToReference(
-  panel: Shape, faceGroupIndex: number, ref: RefFacePick, clickPoint: Vec3 | undefined, updateShape: UpdateShape,
+  panel: Shape, faceGroupIndex: number, ref: RefFacePick, clickPoint: Vec3 | undefined, updateShape: UpdateShape, plane = false,
 ): Promise<boolean> {
   const up = upsertFaceStep(panel, faceGroupIndex, 0, true, clickPoint, {
     refShapeId: ref.panelId, refFaceGroupIndex: ref.faceGroupIndex, refNormalWorld: ref.normalWorld, refPointWorld: ref.pointWorld,
+    ...(plane ? { plane: true } : {}),
   });
   if (!up) return false;
   return commitAndRebuild(panel, { [up.key]: up.steps }, updateShape);
