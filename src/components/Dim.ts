@@ -527,6 +527,56 @@ export function resolveArc(ref: ArcRef, R: RCtx): ArcRes {
   return { c: found.c.clone(), n, r: found.r, a: flip ? found.b : found.a, b: flip ? found.a : found.b, sweep: found.sweep, closed: found.closed, u, v };
 }
 
+// ── DELİK: çap + derinlik ──
+/** Deliğin ölçüsü. through: boydan boya · depth: kör delikte derinlik (bulunamadıysa null) · from: panelin delik kaydı mı, geometriden mi. */
+export interface HoleInfo { d: number; depth: number | null; through: boolean; from: 'record' | 'shape' }
+const holeCache = new WeakMap<THREE.BufferGeometry, Map<string, HoleInfo | null>>();
+/** Ağzının (ya da dibinin) dairesi verilen deliğin çapı ve derinliği (dünya koordinatında daire). Önce panelin delik kaydı (motorun yazdığı:
+ *  bağlayıcı, ayak delikleri — üretimdeki değer), yoksa geometride aynı eksende aynı çaplı dairelerin eksen boyunca açıklığı. */
+export function holeInfo(s: Src, cW: V, nW: V, rW: number): HoleInfo | null {
+  const k = s.m.getMaxScaleOnAxis() || 1, C = cW.clone().applyMatrix4(s.inv), N = nW.clone().transformDirection(s.inv).normalize(), r = rW / k;
+  const recs = (s.shape as Shape & { holes?: { id: string; entry: number[]; dir: number[]; diameter: number; depth: number; through: boolean }[] }).holes ?? [];
+  const key = `${C.toArray().map(v => v.toFixed(2)).join(',')}|${N.toArray().map(v => Math.abs(v).toFixed(3)).join(',')}|${r.toFixed(2)}|${recs.map(h => `${h.id}:${h.diameter}:${h.depth}:${h.through}`).join(';')}`;
+  let per = holeCache.get(s.geo);
+  if (!per) { per = new Map(); holeCache.set(s.geo, per); }
+  if (per.has(key)) return per.get(key)!;
+  let out: HoleInfo | null = null;
+  for (const h of recs) {
+    const e = vt(h.entry), d = vt(h.dir).normalize();
+    if (Math.abs(d.dot(N)) < 0.999 || Math.abs(h.diameter - 2 * r) > 0.6) continue;
+    const off = C.clone().sub(e);
+    if (off.addScaledVector(d, -off.dot(d)).length() > 0.6) continue;
+    out = { d: h.diameter, depth: h.depth, through: h.through, from: 'record' };
+    break;
+  }
+  if (!out) {
+    // Geometri: eksen üstündeki eş çaplı daireler (ağız, dip ya da öbür yüzdeki ağız). Boydan boya = iki uç panelin o eksendeki iki yüzünde.
+    const ts: number[] = [];
+    for (const c of curvesOf(s.geo)) {
+      if (c.t !== 'a' || !c.closed || Math.abs(c.n.dot(N)) < 0.999 || Math.abs(c.r - r) > 0.05) continue;
+      const off = c.c.clone().sub(C), t = off.dot(N);
+      if (off.addScaledVector(N, -t).length() < 0.3) ts.push(t);
+    }
+    if (ts.length) {
+      const t0 = Math.min(...ts), t1 = Math.max(...ts), depth = t1 - t0;
+      const pos = s.geo.getAttribute('position'), v = V3();
+      let p0 = Infinity, p1 = -Infinity;
+      for (let i = 0; i < pos.count; i++) { const t = v.fromBufferAttribute(pos, i).sub(C).dot(N); if (t < p0) p0 = t; if (t > p1) p1 = t; }
+      const through = depth > 0.05 && Math.abs(t0 - p0) < 0.1 && Math.abs(t1 - p1) < 0.1;
+      out = { d: r * 2, depth: depth > 0.05 ? depth : null, through, from: 'shape' };
+    }
+  }
+  per.set(key, out);
+  return out;
+}
+const hd = (v: number) => fmt(v, get().style.prec);
+/** Delik yazısı — ölçü etiketi (CAD dili): "Ø 35 ↧ 13" · "Ø 8 THRU" · derinlik yoksa "Ø 8". */
+export const holeLabel = (h: HoleInfo) => `Ø ${hd(h.d)}${h.through ? ' THRU' : h.depth !== null ? ` ↧ ${hd(h.depth)}` : ''}`;
+/** Delik — düz dille (durum çubuğu, okuma kutusu). */
+export const holeWords = (h: HoleInfo) =>
+  `Ø ${hd(h.d)} · ${h.through ? `through${h.depth !== null ? ` (${hd(h.depth)} mm)` : ''}` : h.depth !== null ? `depth ${hd(h.depth)}` : 'depth unknown'}`;
+const holeOfHit = (h: CurveHit) => (h.c.t === 'a' && h.c.closed ? holeInfo(h.src, h.c.c, h.c.n, h.c.r) : null);
+
 // ═════════════════════════════════════════════════ 4. ÖLÇÜ MODELİ · ÇİZİMİ ════════════════════════════════════════════
 export type AngSrc = { k: '3p'; v: Anchor; p1: Anchor; p2: Anchor } | { k: 'll'; a1: Anchor; b1: Anchor; a2: Anchor; b2: Anchor } | { k: 'arc'; arc: ArcRef };
 /** lin: ax = ölçülen yön (a'nın gövde yerelinde; null → hizalı), e = ölçü çizgisinin kaçıklık yönü, off = a'dan ölçü çizgisine uzaklık.
@@ -538,7 +588,9 @@ export type Dim =
   | { id: string; t: 'rad' | 'dia' | 'arc'; arc: ArcRef; ang: number; len: number; txt?: string }
   | { id: string; t: 'jog'; arc: ArcRef; ang: number; len: number; ov: [number, number]; jog: number; txt?: string }
   | { id: string; t: 'ord'; p: Anchor; axis: 0 | 1 | 2; end: T3; txt?: string }
-  | { id: string; t: 'cmark'; arc: ArcRef };
+  | { id: string; t: 'cmark'; arc: ArcRef }
+  /** Delik etiketi: yayın (deliğin dairesi) ang yönündeki noktasından len uzaklığa kılavuz; yazı çap + derinlik, her çizimde kayıttan / geometriden. */
+  | { id: string; t: 'hole'; arc: ArcRef; ang: number; len: number; txt?: string };
 type DistOmit<T, K extends string> = T extends unknown ? Omit<T, K> : never;
 type NewDim = DistOmit<Dim, 'id'>;
 export type ArrowKind = 'open' | 'closed' | 'tick' | 'dot';
@@ -663,6 +715,16 @@ export function drawDim(d: Dim, R: RCtx, wpp: number, st: DimStyle): DimDraw | n
     ext(a.c.clone().addScaledVector(s, a.r), a.c.clone().addScaledVector(s, rr)); ext(a.c.clone().addScaledVector(e, a.r), a.c.clone().addScaledVector(e, rr));
     arrows.push({ tip: pts[0], dir: V3().crossVectors(a.n, s).negate() }, { tip: pts[pts.length - 1], dir: V3().crossVectors(a.n, e) });
     return { lines, arrows, text: label(d.txt, `⌒ ${fmt(value, st.prec)}`), at: a.c.clone().add(rotAbout(s, a.n, a.sweep / 2).multiplyScalar(rr)), value };
+  }
+  if (d.t === 'hole') {
+    const s = d.arc.c.sid ? R.all.get(d.arc.c.sid) : undefined, info = s ? holeInfo(s, a.c, a.n, a.r) : null;
+    const E = a.c.clone().addScaledVector(w, Math.max(d.len, a.r + 6 * wpp)), shoulder = 10 * wpp;
+    // Kılavuz: delik ağzından yazıya; yazının yanında kısa omuz (ekrana göre yatay yön: yayın düzleminde imlecin tarafına).
+    const side = w.dot(a.u) >= 0 ? a.u.clone() : a.u.clone().negate(), S = E.clone().addScaledVector(side, shoulder);
+    lines.push([P, E, S]);
+    arrows.push({ tip: P, dir: P.clone().sub(E).normalize() });
+    const text = label(d.txt, info ? holeLabel(info) : `Ø ${fmt(a.r * 2, st.prec)}`);
+    return { lines, arrows, text, at: S.clone().addScaledVector(side, textW(text) * 0.5 + 4 * wpp), value: a.r * 2 };
   }
   if (d.t !== 'jog') return null;
   // Kırıklı yarıçap: merkez yerine seçilen noktadan çıkar, gerçek yarıçap doğrultusunda yaya varır; arada 45° kırık.
@@ -1347,6 +1409,38 @@ function* distCmd(): G {
   say(lines.join('   '));
   set({ result: { dims: [{ id: TMP, t: 'lin', a: e1.h.anchor, b: e2.h.anchor, ax: null, e: t3(anyPerp(B.clone().sub(A).normalize())), off: 0 }], note: lines, at: B } });
 }
+/** HOLE: deliğin çapı + derinliği. İmleç deliğin dairesindeyken okuma görünür; tık → etiket yeri (tık = kalıcı, ilişkisel etiket ·
+ *  sağ tık = yalnız ölç, sonuç ekranda kalır). Etiketten sonra sıradaki deliğe geçer; Enter / sağ tık bitirir. */
+function* holeCmd(c: Ctx): G {
+  const name = 'HOLE';
+  for (;;) {
+    const ev = yield {
+      prompt: `${name}  Select a hole (click its round edge)`, kind: 'pick', pick: 'arc', s: 0, enter: 'finish',
+      tip: h => { const i = h?.curve ? holeOfHit(h.curve) : null; return i ? `Click to measure this hole — ${holeWords(i)}` : 'Point at the round edge of a hole and click'; },
+      preview: h => { const i = h.curve ? holeOfHit(h.curve) : null; return i && h.curve ? { note: [holeLabel(i), holeWords(i)], at: h.curve.p } : {}; },
+    };
+    if (ev.k === 'enter') return;
+    if (ev.k !== 'pt') continue;
+    if (!ev.h.curve) { say('Click the round edge of a hole.'); continue; }
+    const hit = ev.h.curve, info = holeOfHit(hit);
+    if (!info) { say(hit.c.t === 'a' ? 'That round edge is not a hole.' : 'Click the round edge of a hole.'); continue; }
+    say(`Hole ${holeWords(info)}`);
+    const ref = makeArcRef(hit), circle = (hit.c as ArcC).pts;
+    const build = (cur: Cursor): NewDim | null => {
+      const a = resolveArc(ref, rctx()), Q = rayPlane(cur.ray, a.c, a.n);
+      if (!Q) return null;
+      const w = Q.sub(a.c);
+      return { t: 'hole', arc: ref, ang: Math.atan2(w.dot(a.v), w.dot(a.u)), len: w.length() };
+    };
+    const e2 = yield {
+      prompt: `${name}  Specify label location`, kind: 'point', noSnap: true, s: 1, enter: 'measure only (no label)',
+      tip: `${holeWords(info)} — click to place a label on the hole, or right-click to just measure`,
+      preview: h => ({ dims: tmp(build(h.cur)), hi: [circle] }),
+    };
+    if (e2.k === 'pt') { const d = build(e2.h.cur); if (d) c.add(d); continue; }
+    if (e2.k === 'enter') { set({ result: { hi: [circle], note: [holeLabel(info), holeWords(info)], at: hit.p } }); return; }
+  }
+}
 function* measureRadiusCmd(): G {
   const ev = yield { prompt: 'MEASURERADIUS  Select arc or circle', kind: 'pick', pick: 'arc' };
   if (ev.k !== 'pt' || !ev.h.curve) return;
@@ -1506,6 +1600,7 @@ export const DIM_COMMANDS: DimCmd[] = [
   C('CENTERMARK', 'Center mark', 'series', 'Center cross on a circle or arc', centerMarkCmd, ['DCE', 'DIMCENTER']),
   C('DIST', 'Distance', 'measure', 'Measure between two points (ΔX ΔY ΔZ)', distCmd, ['DI'], ['First point', 'Second point']),
   C('MEASURERADIUS', 'Measure radius', 'measure', 'Radius and diameter of an arc or circle', measureRadiusCmd),
+  C('HOLE', 'Hole', 'measure', 'Diameter and depth of a hole — click its round edge', holeCmd, ['HL', 'MEASUREHOLE'], ['Hole', 'Label']),
   C('MEASUREANGLE', 'Measure angle', 'measure', 'Angle by vertex and two points, or between two edges', measureAngleCmd),
   C('AREA', 'Area', 'measure', 'Area and perimeter by points, or of a face', areaCmd, ['AA']),
   C('ID', 'Point coordinates', 'measure', 'X, Y, Z of a point', idCmd),

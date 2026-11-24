@@ -245,14 +245,14 @@ export type IconName =
   | 'refresh-ccw' | 'maximize-2' | 'box' | 'cog' | 'sliders-horizontal' | 'panel-left' | 'folder-open' | 'camera' | 'box-select' | 'scan-eye'
   | 'cuboid' | 'eye' | 'grid-2x2' | 'layers' | 'cylinder' | 'package' | 'square' | 'flip-horizontal' | 'maximize' | 'bar-chart-3' | 'file-text'
   | 'git-branch' | 'target' | 'rotate-cw' | 'rotate-ccw' | 'zap' | 'inspection-panel' | 'map-pin' | 'ruler' | 'monitor' | 'snap-endpoint'
-  | 'snap-midpoint' | 'snap-center' | 'snap-quadrant' | 'snap-intersection' | 'dimension' | 'dim-linear' | 'dim-angular' | 'dim-distance';
+  | 'snap-midpoint' | 'snap-center' | 'snap-quadrant' | 'snap-intersection' | 'dimension' | 'dim-angular' | 'dim-distance' | 'dim-hole';
 const iconSrc = (name: IconName) => `/icons/${name}.svg`;
 const svgCache: Record<string, string> = {};
 // Ölçü düğmelerinin ikonları koda gömülüdür: public/icons'a dosya kopyalanmasa da görünürler (dosya yoksa sunucu HTML döner, düğme boş kalırdı).
 const SVG_HEAD = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none" stroke="#000000" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">';
 const INLINE_ICONS: Partial<Record<IconName, string>> = {
-  'dim-linear': `${SVG_HEAD}<path d="M76 120v230M436 120v230M76 186h360"/><path d="M146 142 76 186l70 44M366 142l70 44-70 44"/><path d="M60 412h392" stroke-width="34"/></svg>`,
   'dim-angular': `${SVG_HEAD}<path d="M84 424h356M84 424 296 92"/><path d="M318 424A234 234 0 0 0 210 227"/><path d="M286 366l32 58 34-56M276 236l-66-9 12 66"/></svg>`,
+  'dim-hole': `${SVG_HEAD}<ellipse cx="214" cy="128" rx="132" ry="50"/><path d="M82 128v238M346 128v238"/><path d="M82 366a132 50 0 0 0 264 0" stroke-dasharray="34 26"/><path d="M430 150v232M394 342l36 40 36-40"/></svg>`,
   'dim-distance': `${SVG_HEAD}<circle cx="98" cy="414" r="38"/><circle cx="414" cy="98" r="38"/><path d="M138 374 374 138" stroke-dasharray="46 40"/></svg>`,
 };
 for (const [k, v] of Object.entries(INLINE_ICONS)) svgCache[iconSrc(k as IconName)] = v!;
@@ -1074,11 +1074,11 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
           <VLine />
           {/* Ölçülendirme: en gerekli dört araç (ötekiler komut satırından ve Measure menüsünden). Etkin araca yeniden basmak kapatır. */}
           <BtnGroup>
-            {dimBtn('dimension', 'Dimension — click an edge to dimension it (DIM)', 'DIM')}
-            {dimBtn('dim-linear', 'Linear dimension between two points (DLI)', 'DIMLINEAR')}
+            {dimBtn('dimension', 'Dimension — click an edge, or two points (DIM)', 'DIM')}
             {dimBtn('dim-angular', 'Angle between two edges (DAN)', 'DIMANGULAR')}
             <GroupSep />
             {dimBtn('dim-distance', 'Measure distance — leaves nothing on the model (DI)', 'DIST')}
+            {dimBtn('dim-hole', 'Hole — diameter and depth, click its round edge (HL)', 'HOLE')}
           </BtnGroup>
         </div>
       </div>

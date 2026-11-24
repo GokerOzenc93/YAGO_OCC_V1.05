@@ -4,7 +4,7 @@ import {
   engineLoad, entryGate, shapeById, useAppStore, vfOfPanel,
 } from '../store';
 import {
-  type ExtrudeStep, type TransformStep, applyExtrudeSteps, applyTransformSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets,
+  type AxisLetter, type ExtrudeStep, type RotateTransformStep, type TransformStep, applyExtrudeSteps, mapAxisToVfLocal, applyTransformSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets,
   applySketchFeatures, liveSketchFeatures, postExtrudeStepsOf, sketchFeaturesKey, sketchVarsOf,
 } from './Geometry';
 import {
@@ -2111,7 +2111,9 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
         ? fitVertsToBodyEdges(parentFresh.geometry, vf.normal, buildVerts, thickness, vfTilted, 2) : null;
       if (edgeFit) { genVerts = edgeFit.verts; if (!isRotated && edgeFit.clip) needsBodyClip = true; }
       // Üst üste panel ve gövde yüzüne oturan eğik panel büyütülmez (içbükeyde levha gövdenin öbür ucuna uzanıyordu).
-      const grow = isRotated && !isCurved && !vf.stackBaseVfId && !edgeFit ? growForRotated : 0;
+      // Kendi düzleminde dönen panel de büyütülmez: büyütülüp gövdeyle kesilen döndürülmüş dikdörtgen yine aynı levhayı veriyor, dönüş
+      // görünmüyordu (üst / alt panel, raf Y'de dönmüyordu). Levha kendi ölçüsünde döner; taşan köşeleri gövde ve önceki kardeşler keser.
+      const grow = isRotated && !isCurved && !vf.stackBaseVfId && !edgeFit && !rotatesInPlaneOnly(steps, vf) ? growForRotated : 0;
       let rp = isCurved ? await curvedPanelSolid(parentFresh, vf, thickness, earlierCurvedSids()) : null;
       const curvedFitted = !!rp && !hasXform;
       if (!rp) {
@@ -2800,6 +2802,16 @@ const composeFresh = (p: any, vf: VirtualFace) => composeSteps(getUnifiedSteps(p
 function refDeltaOf(p: any): THREE.Vector3 | null {
   const rda = p?.parameters?._refDeltaApplied;
   return Array.isArray(rda) && rda.length === 3 ? new THREE.Vector3(rda[0], rda[1], rda[2]) : null;
+}
+/** Panelin tüm dönüş adımları kendi normali etrafında mı (levha kendi düzleminde döner, eğilmez). Eğik VF'de (adımsız eğim) false. */
+function rotatesInPlaneOnly(steps: TransformStep[], vf: VirtualFace): boolean {
+  const rots = steps.filter(st => st.type === 'rotate') as RotateTransformStep[];
+  if (!rots.length || !vf.normal) return false;
+  const n = new THREE.Vector3(...(vf.normal as Vec3)).normalize();
+  return rots.every(st => {
+    const a = st.axisVec ?? mapAxisToVfLocal(vf, st.axis as AxisLetter);
+    return !!a && Math.abs(new THREE.Vector3(...(a as Vec3)).normalize().dot(n)) > 0.9999;
+  });
 }
 /** Panelin taşıma / döndürme adımlarının bileşik RİJİT dönüşümü, panel geometrisinin koordinatında: adımsız levha → şimdiki levha.
  *  Damgalamadaki çözümün aynısı (composeFresh + uygulanan REF deltası). Ölçü çapaları (Dim) noktayı panelin adımsız çerçevesinde tutar
