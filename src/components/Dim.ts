@@ -825,6 +825,9 @@ let gen: G | null = null, req: Req | null = null, curDef: DimCmd | null = null, 
 let lastWas: 'dim' | 'draft' = 'draft', lastSeries: string | null = null;
 // Çizim komutu başlarsa ölçü komutu düşer (iki sürücü aynı anda fareyi tutmaz).
 useDraft.subscribe((s, p) => { if (s.cmd && !p.cmd) { lastWas = 'draft'; if (gen) cancelDim(); } });
+// Geliştirme (HMR): bu modül sıcak yenilenirse ikinci bir kopya doğar — araç çubuğu yeni kopyada komut başlatır, tuvaldeki
+// DimLayer eski kopyayı dinler; kenar yakalama ölür, düğme "çalışmıyor" görünür (git pull sırasında açık sunucu). Tam yenile.
+if (import.meta.hot) import.meta.hot.accept(() => location.reload());
 
 const snapsOn = (): Record<SnapKind, boolean> | null => {
   const a = useAppStore.getState();
