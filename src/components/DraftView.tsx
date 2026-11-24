@@ -297,7 +297,7 @@ const SNAP_GLYPH: Record<SnapKind, React.ReactNode> = {
   tangent: <><circle cx="10" cy="11.5" r="5" /><path d="M3 5.5h14" /></>,
   nearest: <path d="M4 4h12L4 16h12z" />,
 };
-const SnapGlyph: React.FC<{ kind: SnapKind; size?: number; color?: string }> = ({ kind, size = 20, color = COL.hi }) => (
+export const SnapGlyph: React.FC<{ kind: SnapKind; size?: number; color?: string }> = ({ kind, size = 20, color = COL.hi }) => (
   <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke={color} strokeWidth={1.9} strokeLinejoin="round" strokeLinecap="round">{SNAP_GLYPH[kind]}</svg>
 );
 const TIP_BOX: React.CSSProperties = {

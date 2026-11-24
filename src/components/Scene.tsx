@@ -40,6 +40,7 @@ import {
 import { panelStampsRegions, panelStepRotation } from './PanelEngine';
 import { ErrorBoundary, MONO_FONT } from './Ui';
 import { DraftLayer } from './DraftView';
+import { DimLayer } from './DimView';
 import { useDraft } from './Draft';
 
 // ═════════════════════════════════════════════════ 1. SAHNE NESNELERİ ═════════════════════════════════════════════════
@@ -4980,6 +4981,8 @@ const Scene: React.FC = () => {
         <PanelGizmos shapes={shapes} />
         {/* 2B çizim katmanı: çizim düzlemi, nesneler, önizleme, yakalama işareti (DraftView). */}
         <DraftLayer />
+        {/* 3B ölçülendirme katmanı: ölçüler, önizleme, yakalama işareti (DimView). */}
+        <DimLayer />
 
         <mesh position={[0, -1, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
           <planeGeometry args={[30000, 30000]} />

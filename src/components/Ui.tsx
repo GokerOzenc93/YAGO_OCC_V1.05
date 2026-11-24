@@ -19,6 +19,7 @@ import {
   useDraft, submitText, cancelCommand, commandActive, tabKey, setAids, setTyped, setPlanePick, selectEntity, eraseSelection, undo, redo, isCommandName,
 } from './Draft';
 import { DraftStatus, exitFace, sessionDirty } from './DraftView';
+import { useDim, dimActive, dimRoute, dimEscape, dimDelete, dimUndo, dimTextEntry, dimWantsEnter, dimGuide, isDimCommand } from './Dim';
 
 /* Uygulama kabuğu: tasarım jetonları, ErrorBoundary, ikonlar, durum çubuğu, terminal, üst araç çubuğu ve sol kenar çubuğu. */
 
@@ -483,8 +484,8 @@ function useIdleHint(): string | null {
 export const StatusBar: React.FC = () => {
   const { shapes, selectedShapeId, vertexEditMode, selectedVertexIndex, sceneExStatus } =
     useStoreFields('shapes', 'selectedShapeId', 'vertexEditMode', 'selectedVertexIndex', 'sceneExStatus');
-  const modeGuide = useModeGuide(), idle = useIdleHint();
-  const guide = sceneExStatus ?? modeGuide;
+  const modeGuide = useModeGuide(), idle = useIdleHint(), dimCmd = useDim(s => s.cmd);
+  const guide = (dimCmd ? dimGuide(dimCmd) : null) ?? sceneExStatus ?? modeGuide;   // ölçü komutu sürerken yönerge onundur
   const selectedShape = shapeById(selectedShapeId, shapes);
   const vertexModCount = selectedShape?.vertexModifications?.length || 0;
   const { busy, view } = useBusyView();
@@ -571,7 +572,8 @@ export const Terminal: React.FC = () => {
   const inputRef = useRef<HTMLInputElement>(null);
   const textRef = useRef('');
   textRef.current = commandInput;
-  const cmd = useDraft(s => s.cmd), planePick = useDraft(s => s.planePick), lastLog = useDraft(s => s.log[s.log.length - 1] ?? '');
+  const draftCmd = useDraft(s => s.cmd), dimCmd = useDim(s => s.cmd), planePick = useDraft(s => s.planePick), lastLog = useDraft(s => s.log[s.log.length - 1] ?? '');
+  const cmd = dimCmd ?? draftCmd;   // komut satırı iki sürücüye hizmet eder: 3B ölçülendirme (Dim) ve 2B çizim (Draft)
   const faceCand = useDraft(s => s.planeCandidate?.label ?? null);
   useEffect(() => { setTyped(commandInput); }, [commandInput]);
 
@@ -580,10 +582,14 @@ export const Terminal: React.FC = () => {
     const trimmed = command.trim();
     const w = window as any;
     const num = parseFloat(trimmed);
+    // Ölçü komutu etkinse girdi onundur (seçenek harfi, sayı, ölçü yazısı).
+    if (dimActive()) { dimRoute(command); setCommandInput(''); return; }
     if (!commandActive() && trimmed) {
       if (w.pendingFilletOperation) { if (!isNaN(num) && num > 0) w.handleFilletRadius?.(num); setCommandInput(''); return; }
       if (w.pendingVertexEdit) { if (!isNaN(num)) { w.handleVertexOffset?.(num); setCommandInput(''); } return; }
     }
+    // Boştayken: ölçü komutu adı (DIM, DLI, DIST …) ya da — son komut ölçüyse — boş Enter ile yineleme; gerisi çizim sürücüsüne.
+    if (!commandActive() && dimRoute(trimmed)) { setCommandInput(''); return; }
     submitText(trimmed);
     setCommandInput('');
   }, []);
@@ -599,6 +605,12 @@ export const Terminal: React.FC = () => {
       if (e.key === 'F3') { e.preventDefault(); const a = useAppStore.getState(); a.setSnapEnabled(!a.snapEnabled); return; }
       if (inField && !own) return;
       if (e.key === 'Escape') {
+        // Ölçü komutu varsa Esc onu kapatır; çizimde kapatılacak bir şey yoksa ölçme sonucu / ölçü seçimi kapanır (Scene'in Esc'i çalışmaz).
+        if ((dimActive() || !(active || st.planePick || st.selection.length || st.psel.length)) && dimEscape()) {
+          e.preventDefault(); e.stopPropagation();
+          if (own) setCommandInput('');
+          return;
+        }
         // Çizim komutu / düzlem seçimi / çizim seçimi varsa Esc yalnız onu kapatır (Scene'in Esc'i çalışmaz).
         if (active || st.planePick || st.selection.length || st.psel.length) {
           e.preventDefault(); e.stopPropagation();
@@ -618,14 +630,20 @@ export const Terminal: React.FC = () => {
         if (e.altKey || (own && textRef.current)) return;
         if (k === 'z' && (active || st.undoStack.length || (e.shiftKey && st.redoStack.length))) { e.preventDefault(); e.stopPropagation(); if (e.shiftKey) redo(); else undo(); }
         else if (k === 'y' && st.redoStack.length) { e.preventDefault(); e.stopPropagation(); redo(); }
+        else if (k === 'z' && !e.shiftKey && dimUndo()) { e.preventDefault(); e.stopPropagation(); }   // çizimde geri alınacak yoksa son ölçü
         return;
       }
       if (e.altKey) return;
       if (e.key === 'Delete' && !active && st.selection.length && !(own && textRef.current)) { e.preventDefault(); e.stopPropagation(); eraseSelection(); return; }
+      // Seçili ölçü: Delete onu siler (gövdeyi değil).
+      if (e.key === 'Delete' && !(own && textRef.current) && dimDelete()) { e.preventDefault(); e.stopPropagation(); return; }
       if (own) return;   // odak komut satırında: tuşlar input'un kendi işleyicisinde
+      // Ölçü yazısı girilirken boşluk onay değil, karakterdir.
+      if (e.key === ' ' && dimTextEntry()) { e.preventDefault(); inputRef.current?.focus(); setCommandInput(prev => prev + ' '); return; }
       if (e.key === 'Enter' || e.key === ' ') {
         const onControl = !!t?.closest?.('button,a,select,summary,[role="button"]');
-        if (active || (st.planePick && !onControl) || (st.lastCmd && !onControl && !(window as any).pendingFilletOperation && !(window as any).pendingVertexEdit)) {
+        const pendingOp = !!(window as any).pendingFilletOperation || !!(window as any).pendingVertexEdit;
+        if (active || dimActive() || (dimWantsEnter() && !onControl && !pendingOp) || (st.planePick && !onControl) || (st.lastCmd && !onControl && !pendingOp)) {
           e.preventDefault(); e.stopPropagation();
           if (onControl) t?.blur?.();
           executeCommand(textRef.current);
@@ -635,7 +653,7 @@ export const Terminal: React.FC = () => {
       if (e.key === 'Tab') { if (active && tabKey(textRef.current)) { e.preventDefault(); setCommandInput(''); } return; }
       if (TERM_PASS_KEYS.includes(e.key) || (e.key.length > 1 && e.key.startsWith('F'))) return;
       if (e.key.length > 1 && e.key !== 'Backspace') return;
-      if (/^[a-zA-Z0-9.,+\-*/()@<#]$/.test(e.key) || e.key === 'Backspace') {
+      if (/^[a-zA-Z0-9.,+\-*/()@<#]$/.test(e.key) || e.key === 'Backspace' || (dimTextEntry() && e.key.length === 1)) {
         e.preventDefault();
         if (!inputRef.current) return;
         inputRef.current.focus();
@@ -648,10 +666,10 @@ export const Terminal: React.FC = () => {
 
   const onInputKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') { e.preventDefault(); executeCommand(commandInput); }
-    else if (e.key === ' ' && (commandActive() || !commandInput.trim() || isCommandName(commandInput))) { e.preventDefault(); executeCommand(commandInput); }
+    else if (e.key === ' ' && !dimTextEntry() && (commandActive() || dimActive() || !commandInput.trim() || isCommandName(commandInput) || isDimCommand(commandInput))) { e.preventDefault(); executeCommand(commandInput); }
     else if (e.key === 'Tab' && commandActive() && tabKey(commandInput)) { e.preventDefault(); setCommandInput(''); }
   };
-  const pickOpt = (key: string) => { submitText(key); setCommandInput(''); inputRef.current?.focus(); };
+  const pickOpt = (key: string) => { if (!dimActive() || !dimRoute(key)) submitText(key); setCommandInput(''); inputRef.current?.focus(); };
   const hasCmd = !!commandInput.trim();
   const sendLift = (y: string) => (e: React.MouseEvent<HTMLButtonElement>) => { if (hasCmd) e.currentTarget.style.transform = `translateY(${y})`; };
   const promptText = cmd ? cmd.prompt : !planePick ? ''
@@ -688,7 +706,7 @@ export const Terminal: React.FC = () => {
           )}
           <input ref={inputRef} type="text" value={commandInput} onChange={e => setCommandInput(e.target.value)} onKeyDown={onInputKey}
             onFocus={() => setInputFocus(true)} onBlur={() => setInputFocus(false)} spellCheck={false} autoComplete="off"
-            placeholder={cmd || planePick ? '' : 'Type a command (LINE, CIRCLE, TRIM…) or a value'} style={{ ...TERM_INPUT, minWidth: '60px' }} />
+            placeholder={cmd || planePick ? '' : 'Type a command (LINE, TRIM, DIM, DIST…) or a value'} style={{ ...TERM_INPUT, minWidth: '60px' }} />
           {commandInput ? <span style={TERM_ENTER_HINT}>⏎ Enter</span>
             : lastLog ? <span style={{ color: '#a8a29e', fontSize: '10.5px', fontFamily: MONO_FONT, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '38%' }}>{lastLog}</span> : null}
         </div>
@@ -792,6 +810,8 @@ const MENUS: Array<{ label: string; items: MenuItem[] }> = [
     ['help-circle', 'About', 'Ctrl+H'], ['help-circle', 'Check Updates', 'Ctrl+U']] },
 ];
 const MENU_ACTIONS: Record<string, ViewMode> = { 'Solid View': ViewMode.SOLID, 'Wireframe View': ViewMode.WIREFRAME, 'X-Ray View': ViewMode.XRAY };
+/** Measure menüsü → ölçülendirme komutları (Dim.ts). */
+const MENU_COMMANDS: Record<string, string> = { Distance: 'DIST', Angle: 'MEASUREANGLE', Area: 'AREA', 'Add Dimension': 'DIM', 'Dimension Style': 'DIMSTYLE' };
 
 /** Seçili gövdeyle (dünya kutusu) kesişen diğer gövdeler. */
 const intersectingBodies = (sel: Shape | undefined, shapes: Shape[]): Shape[] => {
@@ -846,12 +866,12 @@ const MENU_ITEM: React.CSSProperties = {
 };
 const MENU_SHORTCUT: React.CSSProperties = { fontFamily: MONO_FONT, fontSize: '10px', letterSpacing: '0.03em', color: T.textFaint, fontWeight: 400 };
 const TOOL_ROW: React.CSSProperties = {
-  position: 'relative', display: 'flex', alignItems: 'center', height: '42px', padding: '0 14px', background: T.rowBg,
+  position: 'relative', display: 'flex', alignItems: 'center', flexWrap: 'wrap', rowGap: '4px', minHeight: '42px', padding: '3px 14px', background: T.rowBg,
   borderBottom: `1px solid ${T.rowBorder}`,
   boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.85),inset 0 -1px 0 rgba(140,120,100,0.06),0 1px 4px rgba(60,50,40,0.04)',
 };
 
-export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog }) => {
+export const Toolbar: React.FC<{ onOpenCatalog: () => void; tools?: React.ReactNode }> = ({ onOpenCatalog, tools }) => {
   const s = useStoreFields('setActiveTool', 'activeTool', 'addShape', 'selectedShapeId', 'cameraType', 'setCameraType',
     'viewMode', 'setViewMode', 'cycleViewMode', 'orthoMode', 'toggleOrthoMode', 'shapes', 'updateShape', 'deleteShape',
     'panelSelectMode', 'setPanelSelectMode', 'showOutlines', 'setShowOutlines');
@@ -971,7 +991,7 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
                       ? <div key={i} style={{ height: '1px', background: '#f0ede8', margin: '3px 0' }} />
                       : (
                         <button key={i} className="tb-mi" style={MENU_ITEM}
-                          onClick={() => { const vm = MENU_ACTIONS[item[1]]; if (vm) s.setViewMode(vm); setActiveMenu(null); }}>
+                          onClick={() => { const vm = MENU_ACTIONS[item[1]], dc = MENU_COMMANDS[item[1]]; if (vm) s.setViewMode(vm); if (dc) dimRoute(dc); setActiveMenu(null); }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                             {item[0] && <Icon name={item[0]} size={11} />}<span>{item[1]}</span>
                           </div>
@@ -1003,11 +1023,10 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
             <SubtractBoxButton onClick={handleSubtract} disabled={noSel || !hasIntersectingShapes}
               className={hasIntersectingShapes ? 'text-red-400 hover:bg-red-50 hover:text-red-500' : ''} />
             <GroupSep />
-            <IconButton icon="dimension" title="Dimensioning" onClick={() => setActiveTool(Tool.DIMENSION)}
-              className={activeTool === Tool.DIMENSION ? 'bg-orange-50 ring-1 ring-orange-200' : ''} />
-            <GroupSep />
             <IconButton icon="folder-open" title="Catalog" onClick={onOpenCatalog} />
           </BtnGroup>
+          {/* Ölçülendirme · ölçme · nesne yakalama düğmeleri (DimView.DimToolbar) — dar pencerede ikinci satıra iner. */}
+          {tools}
         </div>
       </div>
     </>
