@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   type LucideIcon, Spline, Layers, SwatchBook, Radius, Plus, Container, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Hash, ChevronRight, Send, Box,
-  Square, SlidersHorizontal, ListTree, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check, Footprints, Wrench, Link2, Tags, Ruler,
+  Square, SlidersHorizontal, ListTree, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check, Footprints, Wrench, Link2, Tags, Ruler, Magnet,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { createClient } from '@supabase/supabase-js';
@@ -17,9 +17,12 @@ import { PLINTH_FACINGS, PLINTH_FACING_LABEL, type PlinthFacing, bodyFaces, body
 import { FACE_KINDS, FACE_KIND_LABEL, FACE_ROLES, FACE_ROLE_LABEL, type FaceKind, type FaceRole, faceRoleText } from './LegLayout';
 import {
   useDraft, submitText, cancelCommand, commandActive, tabKey, setAids, setTyped, setPlanePick, selectEntity, eraseSelection, undo, redo, isCommandName,
+  SNAP_KINDS, SNAP_LABEL,
 } from './Draft';
-import { DraftStatus, exitFace, sessionDirty } from './DraftView';
-import { useDim, dimActive, dimRoute, dimEscape, dimDelete, dimUndo, dimTextEntry, dimWantsEnter, dimGuide, isDimCommand } from './Dim';
+import { DraftStatus, SnapGlyph, exitFace, sessionDirty } from './DraftView';
+import {
+  useDim, dimActive, dimRoute, dimEscape, dimDelete, dimUndo, dimTextEntry, dimWantsEnter, isDimCommand, startDim, cancelDim, useDimCommandStatus, useDimIdleStatus,
+} from './Dim';
 
 /* Uygulama kabuğu: tasarım jetonları, ErrorBoundary, ikonlar, durum çubuğu, terminal, üst araç çubuğu ve sol kenar çubuğu. */
 
@@ -242,7 +245,7 @@ export type IconName =
   | 'refresh-ccw' | 'maximize-2' | 'box' | 'cog' | 'sliders-horizontal' | 'panel-left' | 'folder-open' | 'camera' | 'box-select' | 'scan-eye'
   | 'cuboid' | 'eye' | 'grid-2x2' | 'layers' | 'cylinder' | 'package' | 'square' | 'flip-horizontal' | 'maximize' | 'bar-chart-3' | 'file-text'
   | 'git-branch' | 'target' | 'rotate-cw' | 'rotate-ccw' | 'zap' | 'inspection-panel' | 'map-pin' | 'ruler' | 'monitor' | 'snap-endpoint'
-  | 'snap-midpoint' | 'snap-center' | 'snap-quadrant' | 'snap-intersection' | 'dimension';
+  | 'snap-midpoint' | 'snap-center' | 'snap-quadrant' | 'snap-intersection' | 'dimension' | 'dim-linear' | 'dim-angular' | 'dim-distance';
 const iconSrc = (name: IconName) => `/icons/${name}.svg`;
 const svgCache: Record<string, string> = {};
 interface IconProps { name: IconName; size?: number; className?: string; style?: React.CSSProperties }
@@ -484,8 +487,9 @@ function useIdleHint(): string | null {
 export const StatusBar: React.FC = () => {
   const { shapes, selectedShapeId, vertexEditMode, selectedVertexIndex, sceneExStatus } =
     useStoreFields('shapes', 'selectedShapeId', 'vertexEditMode', 'selectedVertexIndex', 'sceneExStatus');
-  const modeGuide = useModeGuide(), idle = useIdleHint(), dimCmd = useDim(s => s.cmd);
-  const guide = (dimCmd ? dimGuide(dimCmd) : null) ?? sceneExStatus ?? modeGuide;   // ölçü komutu sürerken yönerge onundur
+  const modeGuide = useModeGuide(), idle = useIdleHint(), dimCmdGuide = useDimCommandStatus(), dimIdleGuide = useDimIdleStatus();
+  // Ölçü komutu sürerken yönerge onundur (adım adım); boştayken seçili / imleç altındaki ölçü ve ölçme sonucu, başka bir kip yoksa gösterilir.
+  const guide = dimCmdGuide ?? sceneExStatus ?? modeGuide ?? dimIdleGuide;
   const selectedShape = shapeById(selectedShapeId, shapes);
   const vertexModCount = selectedShape?.vertexModifications?.length || 0;
   const { busy, view } = useBusyView();
@@ -565,6 +569,32 @@ const OptLabel: React.FC<{ label: string; k: string }> = ({ label, k }) => {
 };
 
 /** Komut satırı: etkin komutun istemi ve seçenekleri; Enter / Boşluk onaylar ya da son komutu yineler, Esc iptal, Tab uzunluk ↔ açı. */
+const SNAP_BTN: React.CSSProperties = {
+  width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', borderRadius: 4, padding: 0, background: 'transparent',
+  cursor: 'pointer', outline: 'none', flexShrink: 0, transition: 'color 0.12s,background 0.12s',
+};
+/** Nesne yakalama — komut satırının sağında küçük şerit: ana anahtar (F3) + 8 kip. Uygulama geneli ayardır (çizim, ölçü ve sonraki araçlar aynısını okur). */
+const SnapStrip: React.FC = () => {
+  const { snapEnabled: on, snapSettings: kinds, setSnapEnabled, toggleSnapSetting } = useStoreFields('snapEnabled', 'snapSettings', 'setSnapEnabled', 'toggleSnapSetting');
+  return (
+    <div role="group" aria-label="Object snap" style={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0, paddingLeft: 8, marginLeft: 2, borderLeft: '1px solid rgba(60,50,40,0.14)' }}>
+      <button style={{ ...SNAP_BTN, width: 22, color: on ? '#ea580c' : '#a8a29e', background: on ? 'rgba(234,88,12,0.09)' : 'transparent' }} aria-pressed={on}
+        title={`Object snap: ${on ? 'on' : 'off'} (F3)`} onMouseDown={e => e.preventDefault()} onClick={() => setSnapEnabled(!on)}>
+        <Magnet size={12.5} strokeWidth={2.1} />
+      </button>
+      {SNAP_KINDS.map(k => {
+        const act = !!(kinds as unknown as Record<string, boolean>)[k];
+        return (
+          <button key={k} style={{ ...SNAP_BTN, opacity: on ? 1 : 0.45 }} aria-pressed={act} title={`${SNAP_LABEL[k]} snap: ${act ? 'on' : 'off'}`}
+            onMouseDown={e => e.preventDefault()} onClick={() => toggleSnapSetting(k as never)}>
+            <SnapGlyph kind={k} size={12} color={act ? '#57534e' : '#cfc8be'} />
+          </button>
+        );
+      })}
+    </div>
+  );
+};
+
 export const Terminal: React.FC = () => {
   const [commandInput, setCommandInput] = useState('');
   const [inputFocus, setInputFocus] = useState(false);
@@ -721,6 +751,7 @@ export const Terminal: React.FC = () => {
           onMouseDown={sendLift('0.5px')} onMouseUp={sendLift('-0.5px')}>
           <Send size={12} strokeWidth={2.2} />
         </button>
+        <SnapStrip />
       </div>
     </div>
   );
@@ -797,7 +828,7 @@ const MENUS: Array<{ label: string; items: MenuItem[] }> = [
     ['rotate-cw', 'Quadrant Snap', 'Qua'], ['zap', 'Perpendicular Snap', 'Per'], ['inspection-panel', 'Intersection Snap', 'Int'],
     ['map-pin', 'Nearest Snap', 'Nea'], '-', ['settings', 'Snap Settings', 'Ctrl+Snap']] },
   { label: 'Measure', items: [['ruler', 'Distance', 'D'], ['ruler', 'Angle', 'A'], ['maximize-2', 'Area', 'Ar'], '-',
-    ['ruler', 'Add Dimension', 'Ctrl+D'], ['settings', 'Dimension Style', 'Ctrl+M']] },
+    ['ruler', 'Add Dimension', 'DIM'], ['settings', 'Dimension Style', 'D'], '-', ['eye', 'Show / Hide Dimensions', ''], ['eraser', 'Erase All Dimensions', '']] },
   { label: 'Display', items: [['monitor', 'Render Settings', 'R'], ['eye', 'View Modes', 'V'], ['camera', 'Camera Settings', 'C'], '-',
     ['layers', 'Material Editor', 'M'], ['settings', 'Lighting', 'L']] },
   { label: 'Settings', items: [['cog', 'General Settings', 'Ctrl+,'], ['grid-2x2', 'Grid Settings', 'G'], ['ruler', 'Unit Settings', 'U'], '-',
@@ -811,7 +842,10 @@ const MENUS: Array<{ label: string; items: MenuItem[] }> = [
 ];
 const MENU_ACTIONS: Record<string, ViewMode> = { 'Solid View': ViewMode.SOLID, 'Wireframe View': ViewMode.WIREFRAME, 'X-Ray View': ViewMode.XRAY };
 /** Measure menüsü → ölçülendirme komutları (Dim.ts). */
-const MENU_COMMANDS: Record<string, string> = { Distance: 'DIST', Angle: 'MEASUREANGLE', Area: 'AREA', 'Add Dimension': 'DIM', 'Dimension Style': 'DIMSTYLE' };
+const MENU_COMMANDS: Record<string, string> = {
+  Distance: 'DIST', Angle: 'MEASUREANGLE', Area: 'AREA', 'Add Dimension': 'DIM', 'Dimension Style': 'DIMSTYLE', 'Show / Hide Dimensions': 'DIMVIS',
+  'Erase All Dimensions': 'DIMCLEAR',
+};
 
 /** Seçili gövdeyle (dünya kutusu) kesişen diğer gövdeler. */
 const intersectingBodies = (sel: Shape | undefined, shapes: Shape[]): Shape[] => {
@@ -866,17 +900,18 @@ const MENU_ITEM: React.CSSProperties = {
 };
 const MENU_SHORTCUT: React.CSSProperties = { fontFamily: MONO_FONT, fontSize: '10px', letterSpacing: '0.03em', color: T.textFaint, fontWeight: 400 };
 const TOOL_ROW: React.CSSProperties = {
-  position: 'relative', display: 'flex', alignItems: 'center', flexWrap: 'wrap', rowGap: '4px', minHeight: '42px', padding: '3px 14px', background: T.rowBg,
+  position: 'relative', display: 'flex', alignItems: 'center', height: '42px', padding: '0 14px', background: T.rowBg,
   borderBottom: `1px solid ${T.rowBorder}`,
   boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.85),inset 0 -1px 0 rgba(140,120,100,0.06),0 1px 4px rgba(60,50,40,0.04)',
 };
 
-export const Toolbar: React.FC<{ onOpenCatalog: () => void; tools?: React.ReactNode }> = ({ onOpenCatalog, tools }) => {
+export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog }) => {
   const s = useStoreFields('setActiveTool', 'activeTool', 'addShape', 'selectedShapeId', 'cameraType', 'setCameraType',
     'viewMode', 'setViewMode', 'cycleViewMode', 'orthoMode', 'toggleOrthoMode', 'shapes', 'updateShape', 'deleteShape',
     'panelSelectMode', 'setPanelSelectMode', 'showOutlines', 'setShowOutlines');
   const { activeTool, setActiveTool, selectedShapeId, panelSelectMode } = s;
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
+  const dimCmdId = useDim(d => d.cmd?.id ?? null);
   const selectedShape = shapeById(selectedShapeId, s.shapes);
   const intersecting = React.useMemo(() => { try { return intersectingBodies(selectedShape, s.shapes); } catch { return []; } }, [selectedShape, s.shapes]);
   const hasIntersectingShapes = intersecting.length > 0;
@@ -919,6 +954,9 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void; tools?: React.ReactN
 
   const toolBtn = (icon: IconName, label: string, tool: Tool, disabled = false) => (
     <TBtn icon={icon} label={label} active={activeTool === tool} disabled={disabled} onClick={() => setActiveTool(tool)} />
+  );
+  const dimBtn = (icon: IconName, label: string, id: string) => (
+    <TBtn icon={icon} label={label} active={dimCmdId === id} onClick={() => { if (dimCmdId === id) cancelDim(); else startDim(id); }} />
   );
   const ViewBtn = s.viewMode === ViewMode.SOLID ? ViewSolidButton : s.viewMode === ViewMode.WIREFRAME ? ViewWireframeButton : ViewXRayButton;
   const noSel = !selectedShapeId;
@@ -1025,8 +1063,15 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void; tools?: React.ReactN
             <GroupSep />
             <IconButton icon="folder-open" title="Catalog" onClick={onOpenCatalog} />
           </BtnGroup>
-          {/* Ölçülendirme · ölçme · nesne yakalama düğmeleri (DimView.DimToolbar) — dar pencerede ikinci satıra iner. */}
-          {tools}
+          <VLine />
+          {/* Ölçülendirme: en gerekli dört araç (ötekiler komut satırından ve Measure menüsünden). Etkin araca yeniden basmak kapatır. */}
+          <BtnGroup>
+            {dimBtn('dimension', 'Dimension — click an edge to dimension it (DIM)', 'DIM')}
+            {dimBtn('dim-linear', 'Linear dimension between two points (DLI)', 'DIMLINEAR')}
+            {dimBtn('dim-angular', 'Angle between two edges (DAN)', 'DIMANGULAR')}
+            <GroupSep />
+            {dimBtn('dim-distance', 'Measure distance — leaves nothing on the model (DI)', 'DIST')}
+          </BtnGroup>
         </div>
       </div>
     </>

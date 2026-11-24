@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { create } from 'zustand';
 import { useAppStore, ViewMode, type Shape, type SceneToolStatus } from '../store';
 import { effectiveBodyGeometry, getFacesAndGroups, getShapeMatrix, groupIndexOfFace } from './Geometry';
-import { useDraft, cancelCommand as cancelDraftCommand, fmt, type CmdView, type Opt, type SnapKind } from './Draft';
+import { useDraft, cancelCommand as cancelDraftCommand, fmt, SNAP_LABEL, type CmdView, type Opt, type SnapKind } from './Draft';
 
 /* 3B ÖLÇÜLENDİRME ÇEKİRDEĞİ — sahnedeki gövde ("referans küp") ve panellerin üzerinde ölçü alma. React'ten bağımsızdır (Node'da denenir).
    Bölümler: 1 kenar / yay çıkarımı · 2 kaynaklar + 3B nesne yakalama · 3 ilişkisel çapa · 4 ölçü modeli + çizimi · 5 sürücü · 6 komutlar.
@@ -656,6 +656,8 @@ export interface Preview { dims?: Dim[]; lines?: V[][]; hi?: V[][]; note?: strin
 interface Req {
   prompt: string; kind: 'point' | 'pick' | 'value' | 'text'; opts?: Opt[]; def?: string; from?: V | null; pick?: PickKind;
   noSnap?: boolean; num?: boolean; preview?: (h: Hit) => Preview;
+  /** Durum çubuğu: komutun kaçıncı adımı · düz dille ne yapılacağı (imlecin altındakine göre değişebilir) · sağ tıkın bu adımdaki anlamı. */
+  s?: number; tip?: string | ((h: Hit | null) => string); enter?: string;
 }
 type Ev = { k: 'pt'; h: Hit } | { k: 'opt'; key: string } | { k: 'num'; v: number } | { k: 'text'; s: string } | { k: 'enter' };
 type G<T = void> = Generator<Req, T, Ev>;
@@ -666,10 +668,14 @@ export interface DimState {
   /** Ölçme komutlarının (DIST, AREA …) sahnede kalan sonucu — sonraki komuta / Esc'ye kadar. */
   result: Preview | null;
   lastCmd: string | null; undo: Dim[][]; dragId: string | null;
+  /** Boştayken imlecin altındaki ölçü (çizgisi, oku ya da yazısı). */
+  hoverId: string | null;
+  /** Etkin komutun durum çubuğu yönergesi: adım, metin, sağ tıkın anlamı. */
+  guideStep: number; guideText: string | null; guideEnter: string | null;
 }
 export const useDim = create<DimState>(() => ({
   dims: [], selection: [], visible: true, style: DEFAULT_STYLE, styleOpen: false, cmd: null, cursor: null, preview: null, result: null,
-  lastCmd: null, undo: [], dragId: null,
+  lastCmd: null, undo: [], dragId: null, hoverId: null, guideStep: 0, guideText: null, guideEnter: null,
 }));
 const get = useDim.getState, set = useDim.setState;
 const say = (t: string) => useDraft.setState(s => ({ log: [...s.log.slice(-59), t] }));
@@ -683,9 +689,9 @@ const snapsOn = (): Record<SnapKind, boolean> | null => {
   return a.snapEnabled ? (a.snapSettings as unknown as Record<SnapKind, boolean>) : null;
 };
 /** Ölçünün ekrandaki uzaklığı (çizgileri + yazısı) — ölçü seçimi için. */
-function dimAt(cur: Cursor, R: RCtx, only: (d: Dim) => boolean): string | null {
+function dimAt(cur: Cursor, R: RCtx, only: (d: Dim) => boolean, tol = SNAP_PX + 2): string | null {
   const st = get(), pa = { x: 0, y: 0 }, pb = { x: 0, y: 0 };
-  let best: string | null = null, bd = SNAP_PX + 2;
+  let best: string | null = null, bd = tol;
   for (const d of st.dims) {
     if (!only(d)) continue;
     const dr = drawDim(d, R, wppAt(cur.view, dimCenter(d, R)), st.style);
@@ -730,7 +736,9 @@ function refresh() {
     if (h.curve && req.pick && (req.kind === 'pick' || objectFirst(h))) hi.push(curvePts(h.curve.c));
     if (hi.length) preview = { ...(preview ?? {}), hi };
   } else if (gen && req?.preview && lastHit) { try { preview = req.preview(lastHit); } catch { preview = null; } }
-  set({ cmd: view, cursor, preview });
+  let guideText: string | null = null;
+  if (gen && req) { try { guideText = typeof req.tip === 'function' ? req.tip(cursor ? lastHit : null) : req.tip ?? null; } catch { guideText = null; } }
+  set({ cmd: view, cursor, preview, guideText, guideStep: req?.s ?? 0, guideEnter: gen ? req?.enter ?? null : null, ...(gen ? { hoverId: null } : null) });
 }
 function finish() { gen = null; req = null; curDef = null; lastHit = null; refresh(); }
 function advance(ev?: Ev) {
@@ -830,11 +838,24 @@ export function selectDim(id: string | null, additive = false) {
 export const setDimStyle = (patch: Partial<DimStyle>) => set(s => ({ style: { ...s.style, ...patch } }));
 export const setDimsVisible = (b: boolean) => set({ visible: b });
 export const setStyleOpen = (b: boolean) => set({ styleOpen: b });
-/** Durum çubuğu yönergesi (etkin ölçü komutu). */
-export function dimGuide(cmd: CmdView): SceneToolStatus {
-  const text = cmd.prompt.replace(/^.*? {2}/, '') + (cmd.opts.length ? ` [${cmd.opts.map(o => o.label).join(' / ')}]` : '');
-  const keys = [...(cmd.kind === 'value' ? [] : [{ k: 'Right-click', t: 'Enter' }, { k: 'Middle-drag', t: 'orbit' }]), { k: 'Esc', t: 'cancel' }];
-  return { label: cmd.label, type: null, text, keys };
+const gk = (k: string, t: string) => ({ k, t });
+/** Durum çubuğu yönergesi — ETKİN ölçü komutu: adımlar, düz dille sıradaki iş, o adımda geçerli tuşlar. */
+export function useDimCommandStatus(): SceneToolStatus | null {
+  const cmd = useDim(s => s.cmd), step = useDim(s => s.guideStep), text = useDim(s => s.guideText), enter = useDim(s => s.guideEnter);
+  if (!cmd) return null;
+  const def = dimCommandById(cmd.id), opts = cmd.opts.length ? ` [${cmd.opts.map(o => o.label).join(' / ')}]` : '';
+  const keys = [...(enter ? [gk('Right-click', enter)] : []), ...(cmd.kind === 'value' ? [gk('Enter', 'confirm')] : [gk('Middle-drag', 'orbit')]), gk('Esc', 'cancel')];
+  return { label: cmd.label, type: null, steps: def?.steps, step, text: text ?? cmd.prompt.replace(/^.*? {2}/, '') + opts, keys };
+}
+/** Durum çubuğu yönergesi — BOŞTAYKEN: sürüklenen / seçili ölçü, ölçme sonucu, imlecin altındaki ölçü. Sahnedeki başka bir kipin yönergesinden sonra gelir. */
+export function useDimIdleStatus(): SceneToolStatus | null {
+  const n = useDim(s => s.selection.length), drag = useDim(s => !!s.dragId), hover = useDim(s => !!s.hoverId), note = useDim(s => s.result?.note ?? null);
+  if (drag) return { label: 'Dimension', type: null, text: 'Release where the dimension line should sit' };
+  if (n) return { label: 'Dimension', type: null, text: `${n > 1 ? `${n} dimensions` : 'Dimension'} selected — press Delete or click × to remove · drag to move the dimension line`,
+    keys: [gk('Delete', 'remove'), gk('Shift+click', 'add'), gk('Esc', 'deselect')] };
+  if (note?.length) return { label: 'Measure', type: null, text: note.join('  ·  '), keys: [gk('Esc', 'clear')] };
+  if (hover) return { label: 'Dimension', type: null, text: 'Click to select this dimension — then Delete removes it, dragging moves its line' };
+  return null;
 }
 
 // ── Ölçüyü sürükleyerek yeniden yerleştirme (yazısından tutulur) ──
@@ -853,6 +874,19 @@ function replaced(d: Dim, cur: Cursor, R: RCtx): Dim {
   if (!Q) return d;
   const w = Q.sub(a.c);
   return d.t === 'jog' ? { ...d, ang: Math.atan2(w.dot(a.v), w.dot(a.u)) } : { ...d, ang: Math.atan2(w.dot(a.v), w.dot(a.u)), len: w.length() };
+}
+/** Sahne başka bir tıklama kipindeyken (panel / raf / kapak yerleşimi, köşe düzenleme, sahne araçları, çizim) ölçüler tıklamayı almaz. */
+function sceneBusy(): boolean {
+  const a = useAppStore.getState(), d = useDraft.getState();
+  return !!(a.raycastMode || a.volumePickMode || a.doorPickMode || a.backPickMode || a.plinthPickMode || a.vertexEditMode || a.filletMode || a.sceneExStatus
+    || d.cmd || d.planePick || d.activePlane !== 'ground' || d.session);
+}
+/** Boştayken imlecin altındaki ölçü (çizgi / ok / yazı, 6 px). Değiştiyse depoya yazar. */
+export function dimHover(cur: Cursor | null): string | null {
+  const st = get();
+  const id = !cur || gen || !st.visible || !st.dims.length || sceneBusy() ? null : dimAt(cur, rctx(), () => true, 6);
+  if (id !== st.hoverId) set({ hoverId: id });
+  return id;
 }
 export function beginDimDrag(id: string) { if (gen) return; pushUndo(); set({ dragId: id, selection: [id] }); }
 export function dragDimTo(cur: Cursor) {
@@ -886,14 +920,20 @@ function* askText(name: string): G<string | undefined> {
 }
 /** İlk uzatma çizgisi başlangıcı (Enter → kenar seç) ve ikincisi. */
 function* twoPoints(name: string): G<Pts | null> {
-  const e1 = yield { prompt: `${name}  Specify first extension line origin or <select edge>`, kind: 'point' };
+  const e1 = yield {
+    prompt: `${name}  Specify first extension line origin or <select edge>`, kind: 'point', s: 0, enter: 'pick a whole edge',
+    tip: h => (h?.snap && h.snapNear ? `Click to start from this ${SNAP_LABEL[h.snap].toLowerCase()} point` : 'Click the first point — corners and edge middles are caught automatically'),
+  };
   if (e1.k === 'enter') {
-    const e = yield { prompt: `${name}  Select an edge to dimension`, kind: 'pick', pick: 'curve' };
+    const e = yield { prompt: `${name}  Select an edge to dimension`, kind: 'pick', pick: 'curve', s: 0, tip: h => (h?.curve ? 'Click to dimension this edge' : 'Point at an edge of a panel or the body and click') };
     return e.k === 'pt' && e.h.curve ? endsOf(e.h.curve) : null;
   }
   if (e1.k !== 'pt') return null;
   const A = e1.h.p;
-  const e2 = yield { prompt: `${name}  Specify second extension line origin`, kind: 'point', from: A, preview: h => ({ lines: [[A, h.p]], note: [L(A.distanceTo(h.p))], at: h.p }) };
+  const e2 = yield {
+    prompt: `${name}  Specify second extension line origin`, kind: 'point', from: A, s: 1, tip: h => `Click the second point${h ? ` — ${L(A.distanceTo(h.p))} from the first` : ''}`,
+    preview: h => ({ lines: [[A, h.p]], note: [L(A.distanceTo(h.p))], at: h.p }),
+  };
   return e2.k === 'pt' ? { a: e1.h.anchor, b: e2.h.anchor } : null;
 }
 function buildLin(p: Pts, cur: Cursor, lock: LinLock, prev: number | null, txt?: string): { dim: NewDim; axis: number | null } {
@@ -901,11 +941,12 @@ function buildLin(p: Pts, cur: Cursor, lock: LinLock, prev: number | null, txt?:
   const pl = placeLinear(A, B, axesOfQ(q), cur, lock, prev);
   return { dim: { t: 'lin', a: p.a, b: p.b, ax: lock === 'ali' ? null : t3(pl.d.clone().applyQuaternion(qi)), e: t3(pl.e.clone().applyQuaternion(qi)), off: pl.off, txt }, axis: pl.axis };
 }
-function* placeLin(c: Ctx, name: string, p: Pts, mode: 'lin' | 'ali'): G<Dim | null> {
+function* placeLin(c: Ctx, name: string, p: Pts, mode: 'lin' | 'ali', s = 2): G<Dim | null> {
   let lock: LinLock = mode === 'ali' ? 'ali' : null, txt: string | undefined, prev: number | null = null;
   for (;;) {
     const ev = yield {
-      prompt: `${name}  Specify dimension line location or`, kind: 'point', noSnap: true,
+      prompt: `${name}  Specify dimension line location or`, kind: 'point', noSnap: true, s,
+      tip: `Move the pointer away from the edge and click to place the dimension${lock === null ? ' — above / below or beside decides the direction; X, Y, Z lock it' : ''}`,
       opts: mode === 'lin' ? [o('Text', 'T'), o('X', 'X'), o('Y', 'Y'), o('Z', 'Z'), o('Aligned', 'A')] : [o('Text', 'T')],
       preview: h => { const b = buildLin(p, h.cur, lock, prev, txt); prev = b.axis; return { dims: tmp(b.dim) }; },
     };
@@ -936,24 +977,30 @@ function* placeAng(c: Ctx, name: string, g: AngSrc): G<Dim | null> {
   let txt: string | undefined;
   const build = (cur: Cursor): NewDim | null => { const a = angPlace(g, cur, rctx()); return a ? { t: 'ang', g, ...a, txt } : null; };
   for (;;) {
-    const ev = yield { prompt: `${name}  Specify dimension arc line location or`, kind: 'point', noSnap: true, opts: [o('Text', 'T')], preview: h => ({ dims: tmp(build(h.cur)) }) };
+    const ev = yield {
+      prompt: `${name}  Specify dimension arc line location or`, kind: 'point', noSnap: true, opts: [o('Text', 'T')], s: 2,
+      tip: 'Move to the side of the angle you want to show and click to place it', preview: h => ({ dims: tmp(build(h.cur)) }),
+    };
     if (ev.k === 'pt') { const d = build(ev.h.cur); if (!d) { say('The two lines are parallel.'); return null; } return c.add(d); }
     if (isOpt(ev, 'T')) txt = yield* askText(name);
     else if (ev.k === 'enter') return null;
   }
 }
 function* threePointAngle(name: string): G<AngSrc | null> {
-  const v = yield { prompt: `${name}  Specify angle vertex`, kind: 'point' };
+  const v = yield { prompt: `${name}  Specify angle vertex`, kind: 'point', s: 0, tip: 'Click the corner (vertex) of the angle' };
   if (v.k !== 'pt') return null;
   const V0 = v.h.p;
-  const p1 = yield { prompt: `${name}  Specify first angle endpoint`, kind: 'point', from: V0, preview: h => ({ lines: [[V0, h.p]] }) };
+  const p1 = yield { prompt: `${name}  Specify first angle endpoint`, kind: 'point', from: V0, s: 1, tip: 'Click a point on the first side of the angle', preview: h => ({ lines: [[V0, h.p]] }) };
   if (p1.k !== 'pt') return null;
   const P1 = p1.h.p;
-  const p2 = yield { prompt: `${name}  Specify second angle endpoint`, kind: 'point', from: V0, preview: h => ({ lines: [[P1, V0, h.p]] }) };
+  const p2 = yield { prompt: `${name}  Specify second angle endpoint`, kind: 'point', from: V0, s: 1, tip: 'Click a point on the second side of the angle', preview: h => ({ lines: [[P1, V0, h.p]] }) };
   return p2.k === 'pt' ? { k: '3p', v: v.h.anchor, p1: p1.h.anchor, p2: p2.h.anchor } : null;
 }
 function* angleSource(name: string): G<AngSrc | null> {
-  const e1 = yield { prompt: `${name}  Select arc, circle, edge or <specify vertex>`, kind: 'pick', pick: 'curve' };
+  const e1 = yield {
+    prompt: `${name}  Select arc, circle, edge or <specify vertex>`, kind: 'pick', pick: 'curve', s: 0, enter: 'use three points',
+    tip: h => (h?.curve ? (h.curve.c.t === 'a' ? 'Click to measure the angle of this arc' : 'Click this edge — it is the first side of the angle') : 'Click the first edge of the angle (or an arc)'),
+  };
   if (e1.k === 'enter') return yield* threePointAngle(name);
   if (e1.k !== 'pt' || !e1.h.curve) return null;
   const h1 = e1.h.curve;
@@ -964,7 +1011,7 @@ function* angleSource(name: string): G<AngSrc | null> {
     return e2.k === 'pt' ? { k: '3p', v: makeAnchor(C, h1.src, 'center'), p1: makeAnchor(P1, h1.src, 'nearest'), p2: e2.h.anchor } : null;
   }
   const first = curvePts(h1.c);
-  const e2 = yield { prompt: `${name}  Select second edge`, kind: 'pick', pick: 'line', preview: () => ({ hi: [first] }) };
+  const e2 = yield { prompt: `${name}  Select second edge`, kind: 'pick', pick: 'line', s: 1, tip: 'Click the second edge — the angle between the two is measured', preview: () => ({ hi: [first] }) };
   if (e2.k !== 'pt' || !e2.h.curve || e2.h.curve.c === h1.c) return null;
   const A = endsOf(h1), B = endsOf(e2.h.curve);
   return { k: 'll', a1: A.a, b1: A.b, a2: B.a, b2: B.b };
@@ -975,7 +1022,7 @@ function* angularCmd(c: Ctx): G {
 }
 type ArcKind = 'rad' | 'dia' | 'arc';
 /** Yarıçap / çap / yay boyu ölçüsünün yeri. `sw`: DIM'den gelindiyse tür değiştirme seçenekleri. */
-function* placeArc(c: Ctx, name: string, hit: CurveHit, t0: ArcKind, sw = false): G<Dim | null> {
+function* placeArc(c: Ctx, name: string, hit: CurveHit, t0: ArcKind, sw = false, s = 1): G<Dim | null> {
   const ref = makeArcRef(hit), closed = (hit.c as ArcC).closed;
   let t = t0, txt: string | undefined;
   const build = (cur: Cursor): NewDim | null => {
@@ -986,7 +1033,8 @@ function* placeArc(c: Ctx, name: string, hit: CurveHit, t0: ArcKind, sw = false)
   };
   for (;;) {
     const ev = yield {
-      prompt: `${name}  Specify dimension line location or`, kind: 'point', noSnap: true,
+      prompt: `${name}  Specify dimension line location or`, kind: 'point', noSnap: true, s,
+      tip: `Move inside or outside the ${closed ? 'circle' : 'arc'} and click to place the ${t === 'rad' ? 'radius' : t === 'dia' ? 'diameter' : 'arc length'}${sw ? ' — R radius, D diameter' : ''}`,
       opts: [o('Text', 'T'), ...(sw ? [o('Radius', 'R'), o('Diameter', 'D'), ...(closed ? [] : [o('arc Length', 'L')])] : [])],
       preview: h => ({ dims: tmp(build(h.cur)) }),
     };
@@ -999,7 +1047,7 @@ function* placeArc(c: Ctx, name: string, hit: CurveHit, t0: ArcKind, sw = false)
   }
 }
 const arcCmd = (name: string, t: ArcKind) => function* (c: Ctx): G {
-  const ev = yield { prompt: `${name}  Select arc${t === 'arc' ? '' : ' or circle'}`, kind: 'pick', pick: 'arc' };
+  const ev = yield { prompt: `${name}  Select arc${t === 'arc' ? '' : ' or circle'}`, kind: 'pick', pick: 'arc', s: 0, tip: h => (h?.curve ? 'Click to dimension this one' : 'Point at a round edge — a hole, a fillet, an arc — and click') };
   if (ev.k !== 'pt' || !ev.h.curve) return;
   if (t === 'arc' && (ev.h.curve.c as ArcC).closed) { say('Arc length needs an open arc — use Diameter for a full circle.'); return; }
   yield* placeArc(c, name, ev.h.curve, t);
@@ -1159,7 +1207,12 @@ function* dimCmd(c: Ctx): G {
   const name = 'DIM';
   for (;;) {
     const ev = yield {
-      prompt: `${name}  Select an edge or specify first extension line origin or`, kind: 'point', pick: 'curve',
+      prompt: `${name}  Select an edge or specify first extension line origin or`, kind: 'point', pick: 'curve', s: 0, enter: 'finish',
+      tip: h => (!h ? 'Point at an edge and click to dimension it — or click a corner to measure between two points'
+        : h.curve && objectFirst(h) ? (h.curve.c.t === 'l' ? `Click to dimension this edge (${L(h.curve.c.a.distanceTo(h.curve.c.b))})`
+          : `Click to dimension this ${h.curve.c.closed ? `circle (Ø ${L(h.curve.c.r * 2)})` : `arc (R ${L(h.curve.c.r)})`}`)
+        : h.snap && h.snapNear ? 'Click this corner, then a second point — the distance between them is dimensioned'
+        : 'Point at an edge and click to dimension it — or click a corner to measure between two points'),
       opts: [o('Angular', 'A'), o('Baseline', 'B'), o('Continue', 'C'), o('Ordinate', 'O'), o('Undo', 'U')],
     };
     if (ev.k === 'enter') return;
@@ -1176,15 +1229,18 @@ function* dimCmd(c: Ctx): G {
       return [v.x, v.y, v.z].filter(x => Math.abs(x) > 0.01).length > 1 ? 'ali' : 'lin';
     };
     if (h.curve && objectFirst(h)) {
-      if (h.curve.c.t === 'a') yield* placeArc(c, name, h.curve, h.curve.c.closed ? 'dia' : 'rad', true);
-      else { const p = endsOf(h.curve); yield* placeLin(c, name, p, modeOf(p)); }
+      if (h.curve.c.t === 'a') yield* placeArc(c, name, h.curve, h.curve.c.closed ? 'dia' : 'rad', true, 1);
+      else { const p = endsOf(h.curve); yield* placeLin(c, name, p, modeOf(p), 1); }
       continue;
     }
     const A = h.p;
-    const e2 = yield { prompt: `${name}  Specify second extension line origin`, kind: 'point', from: A, preview: x => ({ lines: [[A, x.p]], note: [L(A.distanceTo(x.p))], at: x.p }) };
+    const e2 = yield {
+      prompt: `${name}  Specify second extension line origin`, kind: 'point', from: A, s: 0, tip: x => `Click the second point${x ? ` — ${L(A.distanceTo(x.p))} from the first` : ''}`,
+      preview: x => ({ lines: [[A, x.p]], note: [L(A.distanceTo(x.p))], at: x.p }),
+    };
     if (e2.k !== 'pt') continue;
     const p = { a: h.anchor, b: e2.h.anchor };
-    yield* placeLin(c, name, p, modeOf(p));
+    yield* placeLin(c, name, p, modeOf(p), 1);
   }
 }
 /** Komut içi geri al: komutu düşürmeden son ölçüyü kaldırır. */
@@ -1198,14 +1254,14 @@ function dimUndoKeep(): boolean {
 // ── ÖLÇME (kalıcı ölçü bırakmaz; sonuç sahnede ve komut satırında) ──
 const hostCoords = (h: Hit) => (h.src ? h.p.clone().applyMatrix4(h.src.inv) : h.p.clone());
 function* distCmd(): G {
-  const e1 = yield { prompt: 'DIST  Specify first point', kind: 'point' };
+  const e1 = yield { prompt: 'DIST  Specify first point', kind: 'point', s: 0, tip: h => (h?.snap && h.snapNear ? `Click to measure from this ${SNAP_LABEL[h.snap].toLowerCase()} point` : 'Click the first point — nothing is left on the model, the result is only shown') };
   if (e1.k !== 'pt') return;
   const A = e1.h.p, qi = (e1.h.src?.q ?? IDENT_Q).clone().invert();
   const info = (B: V): string[] => {
     const v = B.clone().sub(A).applyQuaternion(qi), d = v.length();
     return [`Distance ${L(d)}`, `ΔX ${L(v.x)}   ΔY ${L(v.y)}   ΔZ ${L(v.z)}`];
   };
-  const e2 = yield { prompt: 'DIST  Specify second point', kind: 'point', from: A, preview: h => ({ lines: [[A, h.p]], note: info(h.p), at: h.p }) };
+  const e2 = yield { prompt: 'DIST  Specify second point', kind: 'point', from: A, s: 1, tip: h => `Click the second point${h ? ` — ${L(A.distanceTo(h.p))} so far` : ''}`, preview: h => ({ lines: [[A, h.p]], note: info(h.p), at: h.p }) };
   if (e2.k !== 'pt') return;
   const B = e2.h.p, lines = info(B);
   say(lines.join('   '));
@@ -1344,18 +1400,23 @@ function* editTextCmd(c: Ctx): G {
     c.update(d.id, { ...d, txt });
   }
 }
-// eslint-disable-next-line require-yield
+// Anlık komutlar (adımı yok): stil penceresi · göster / gizle · hepsini sil.
+/* eslint-disable require-yield */
 function* styleCmd(): G { set({ styleOpen: true }); }
+function* visCmd(): G { const v = !get().visible; set({ visible: v }); say(v ? 'Dimensions shown.' : 'Dimensions hidden.'); }
+function* clearCmd(): G { const n = get().dims.length; eraseAllDims(); say(n ? `${n} dimension${n > 1 ? 's' : ''} erased.` : 'No dimensions to erase.'); }
+/* eslint-enable require-yield */
 
-export interface DimCmd { id: string; label: string; group: 'dim' | 'series' | 'measure' | 'edit'; aliases: string[]; tip: string; run: (c: Ctx) => G }
-const C = (id: string, label: string, group: DimCmd['group'], tip: string, run: (c: Ctx) => G, aliases: string[] = []): DimCmd => ({ id, label, group, tip, run, aliases });
+export interface DimCmd { id: string; label: string; group: 'dim' | 'series' | 'measure' | 'edit'; aliases: string[]; tip: string; run: (c: Ctx) => G; /** durum çubuğundaki adım adları */ steps?: string[] }
+const C = (id: string, label: string, group: DimCmd['group'], tip: string, run: (c: Ctx) => G, aliases: string[] = [], steps?: string[]): DimCmd => ({ id, label, group, tip, run, aliases, steps });
+const PTS = ['First point', 'Second point', 'Place'];
 export const DIM_COMMANDS: DimCmd[] = [
-  C('DIM', 'Dimension', 'dim', 'One tool for all — click an edge, a circle or two points', dimCmd),
-  C('DIMLINEAR', 'Linear', 'dim', 'Distance along X, Y or Z', linearCmd('DIMLINEAR', 'lin'), ['DLI', 'DIMLIN']),
-  C('DIMALIGNED', 'Aligned', 'dim', 'True distance between two points', linearCmd('DIMALIGNED', 'ali'), ['DAL']),
-  C('DIMANGULAR', 'Angular', 'dim', 'Angle between two edges, of an arc, or by three points', angularCmd, ['DAN']),
-  C('DIMRADIUS', 'Radius', 'dim', 'Radius of an arc or circle', arcCmd('DIMRADIUS', 'rad'), ['DRA']),
-  C('DIMDIAMETER', 'Diameter', 'dim', 'Diameter of a circle or arc', arcCmd('DIMDIAMETER', 'dia'), ['DDI']),
+  C('DIM', 'Dimension', 'dim', 'One tool for all — click an edge, a circle or two points', dimCmd, [], ['Edge or corner', 'Place']),
+  C('DIMLINEAR', 'Linear', 'dim', 'Distance along X, Y or Z', linearCmd('DIMLINEAR', 'lin'), ['DLI', 'DIMLIN'], PTS),
+  C('DIMALIGNED', 'Aligned', 'dim', 'True distance between two points', linearCmd('DIMALIGNED', 'ali'), ['DAL'], PTS),
+  C('DIMANGULAR', 'Angular', 'dim', 'Angle between two edges, of an arc, or by three points', angularCmd, ['DAN'], ['First edge', 'Second edge', 'Place']),
+  C('DIMRADIUS', 'Radius', 'dim', 'Radius of an arc or circle', arcCmd('DIMRADIUS', 'rad'), ['DRA'], ['Arc or circle', 'Place']),
+  C('DIMDIAMETER', 'Diameter', 'dim', 'Diameter of a circle or arc', arcCmd('DIMDIAMETER', 'dia'), ['DDI'], ['Arc or circle', 'Place']),
   C('DIMJOGGED', 'Jogged', 'dim', 'Radius of a large arc with a jogged line', joggedCmd, ['DJO', 'DIMJOG']),
   C('DIMARC', 'Arc length', 'dim', 'Length along an arc', arcCmd('DIMARC', 'arc'), ['DAR']),
   C('DIMORDINATE', 'Ordinate', 'dim', 'X, Y or Z of a point from the body origin', ordinateCmd, ['DOR', 'DIMORD']),
@@ -1363,7 +1424,7 @@ export const DIM_COMMANDS: DimCmd[] = [
   C('DIMCONTINUE', 'Continue', 'series', 'A chain — each starts where the last ended', seriesCmd('cont'), ['DCO', 'DIMCONT']),
   C('QDIM', 'Quick dimension', 'series', 'Dimension several edges at once', qdimCmd),
   C('CENTERMARK', 'Center mark', 'series', 'Center cross on a circle or arc', centerMarkCmd, ['DCE', 'DIMCENTER']),
-  C('DIST', 'Distance', 'measure', 'Measure between two points (ΔX ΔY ΔZ)', distCmd, ['DI']),
+  C('DIST', 'Distance', 'measure', 'Measure between two points (ΔX ΔY ΔZ)', distCmd, ['DI'], ['First point', 'Second point']),
   C('MEASURERADIUS', 'Measure radius', 'measure', 'Radius and diameter of an arc or circle', measureRadiusCmd),
   C('MEASUREANGLE', 'Measure angle', 'measure', 'Angle by vertex and two points, or between two edges', measureAngleCmd),
   C('AREA', 'Area', 'measure', 'Area and perimeter by points, or of a face', areaCmd, ['AA']),
@@ -1371,5 +1432,7 @@ export const DIM_COMMANDS: DimCmd[] = [
   C('DIMEDIT', 'Edit text', 'edit', 'Change the text of a dimension', editTextCmd, ['DED', 'DIMTEDIT']),
   C('DIMSPACE', 'Space', 'edit', 'Space dimension lines evenly from a base dimension', spaceCmd),
   C('DIMSTYLE', 'Style', 'edit', 'Text size, arrows, precision', styleCmd, ['D', 'DST']),
+  C('DIMVIS', 'Show / hide', 'edit', 'Show or hide all dimensions', visCmd, ['DIMHIDE', 'DIMSHOW']),
+  C('DIMCLEAR', 'Erase all', 'edit', 'Erase every dimension', clearCmd),
 ];
 export const dimCommandById = (id: string) => DIM_COMMANDS.find(c => c.id === id);
