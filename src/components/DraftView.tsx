@@ -22,6 +22,7 @@ import {
   type ArrowKind, type Cursor, type Dim, type DimStyle, type Preview, type RCtx, beginDimDrag, dimActive, dimCenter, dimDelete, dimEnter, dimHover,
   dimPointerClick, dimPointerLeave, dimPointerMove, dragDimTo, drawDim, endDimDrag, rctx, selectDim, setDimStyle, setStyleOpen, useDim, wppAt,
 } from './Dim';
+import { Icon, type IconName } from './Ui';
 
 /* 2B ÇİZİM GÖRÜNÜMÜ — Draft.ts çekirdeğinin sahne katmanı (DraftLayer) ve sağdaki Drawing paneli. Dosyanın sonunda 3B ölçülendirme görünümü (DimLayer).
    Fare (komut etkinken): sol tık nokta / nesne, sağ tık (sürüklemeden) Enter, sağ sürükle kaydır, tekerlek yakınlaş. */
@@ -293,18 +294,9 @@ const UcsIcon: React.FC<{ matrix: THREE.Matrix4 }> = ({ matrix }) => {
     </group>
   );
 };
-const SNAP_GLYPH: Record<SnapKind, React.ReactNode> = {
-  endpoint: <rect x="4" y="4" width="12" height="12" />,
-  midpoint: <path d="M10 4 17 16H3z" />,
-  center: <circle cx="10" cy="10" r="6.5" />,
-  quadrant: <path d="M10 3 17 10 10 17 3 10z" />,
-  intersection: <path d="M4 4 16 16M16 4 4 16" />,
-  perpendicular: <path d="M4 4v12h12M4 10h6v6" />,
-  tangent: <><circle cx="10" cy="11.5" r="5" /><path d="M3 5.5h14" /></>,
-  nearest: <path d="M4 4h12L4 16h12z" />,
-};
+/** Nesne yakalama işareti — standart CAD şekilleri, src/icons/snap-*.svg (20 birim). */
 export const SnapGlyph: React.FC<{ kind: SnapKind; size?: number; color?: string }> = ({ kind, size = 20, color = COL.hi }) => (
-  <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke={color} strokeWidth={1.9} strokeLinejoin="round" strokeLinecap="round">{SNAP_GLYPH[kind]}</svg>
+  <Icon name={`snap-${kind}` as IconName} size={size} color={color} stroke={(1.9 * size) / 20} />
 );
 const TIP_BOX: React.CSSProperties = {
   display: 'flex', alignItems: 'center', gap: 5, padding: '3px 6px', borderRadius: 6, background: 'rgba(253,252,250,0.96)', border: '1px solid rgba(60,50,40,0.18)',
@@ -1350,85 +1342,10 @@ export const DraftLayer: React.FC = () => {
 };
 
 // ═════════════════════════════════════════════════ 3. DRAWING PANELİ ══════════════════════════════════════════════════
-const dot = (x: number, y: number, r = 1.7) => <circle cx={x} cy={y} r={r} fill="currentColor" stroke="none" />;
-const ring = (x: number, y: number, r = 1.8) => <circle cx={x} cy={y} r={r} fill="#fdfcfa" strokeWidth={1.3} />;
-const dash = { strokeDasharray: '2.2 2.2', strokeWidth: 1.1 } as const;
-const QARC = 'M19 19A13 13 0 0 0 8.26 6.2';     // merkez (6,19), başlangıç (19,19), bitiş (8.26,6.2)
-const SARC = 'M20 16A10 10 0 0 0 4 16';          // merkez (12,22), başlangıç (20,16), bitiş (4,16)
-const HEX = '19,12 15.5,18.06 8.5,18.06 5,12 8.5,5.94 15.5,5.94';
-/** Araç ikonları — 24×24, çizgi tabanlı, özgün. */
-const ICONS: Record<string, React.ReactNode> = {
-  LINE: <><path d="M5 19 19 5" />{ring(5, 19)}{ring(19, 5)}</>,
-  PLINE: <><path d="M4 18 9 8l5 7 6-9" />{ring(4, 18)}{ring(9, 8)}{ring(14, 15)}{ring(20, 6)}</>,
-  CIRCLE: <><circle cx="12" cy="12" r="8" /><path d="M12 12h8" />{dot(12, 12)}</>,
-  CIRCLE_CD: <><circle cx="12" cy="12" r="8" /><path d="M4 12h16" />{dot(12, 12)}</>,
-  CIRCLE_2P: <><circle cx="12" cy="12" r="8" />{ring(4, 12)}{ring(20, 12)}</>,
-  CIRCLE_3P: <><circle cx="12" cy="12" r="8" />{ring(12, 4)}{ring(5.1, 16)}{ring(18.9, 16)}</>,
-  CIRCLE_TTR: <><path d="M3 19h18M7 3v18" strokeWidth={1.2} /><circle cx="13" cy="13" r="6" /><path d="M13 13l4.2-4.2" strokeWidth={1.1} /></>,
-  CIRCLE_TTT: <><path d="M12 3 22 20H2z" strokeWidth={1.2} /><circle cx="12" cy="14.3" r="5.7" /></>,
-  ARC: <><path d={SARC} />{ring(20, 16)}{ring(4, 16)}</>,
-  ARC_3P: <><path d={SARC} />{ring(20, 16)}{ring(12, 12)}{ring(4, 16)}</>,
-  ARC_SCE: <><path d="M6 19h13M6 19 8.26 6.2" {...dash} /><path d={QARC} />{dot(19, 19, 2)}{ring(6, 19)}{ring(8.26, 6.2)}</>,
-  ARC_SCA: <><path d="M6 19h13M6 19 8.26 6.2" strokeWidth={1.1} /><path d="M11 19a5 5 0 0 0-4.13-4.92" strokeWidth={1.1} /><path d={QARC} />{dot(19, 19, 2)}{ring(6, 19)}</>,
-  ARC_SCL: <><path d="M19 19 8.26 6.2" {...dash} /><path d={QARC} />{dot(19, 19, 2)}{ring(6, 19)}{ring(8.26, 6.2)}</>,
-  ARC_SEA: <><path d="M20 16 12 22 4 16" {...dash} /><path d="M14.4 20.2a3 3 0 0 0-4.8 0" strokeWidth={1.1} /><path d={SARC} />{dot(20, 16, 2)}{ring(4, 16)}</>,
-  ARC_SED: <><path d={SARC} /><path d="M20 16 15.5 10M15.5 10l.4 3.4M15.5 10l3.2 1.2" strokeWidth={1.2} />{dot(20, 16, 2)}{ring(4, 16)}</>,
-  ARC_SER: <><path d="M12 22V12" strokeWidth={1.1} /><path d={SARC} />{dot(20, 16, 2)}{ring(4, 16)}{dot(12, 22, 1.4)}</>,
-  ARC_CSE: <><path d="M6 19h13M6 19 8.26 6.2" {...dash} /><path d={QARC} />{dot(6, 19, 2)}{ring(19, 19)}{ring(8.26, 6.2)}</>,
-  ARC_CSA: <><path d="M6 19h13M6 19 8.26 6.2" strokeWidth={1.1} /><path d="M11 19a5 5 0 0 0-4.13-4.92" strokeWidth={1.1} /><path d={QARC} />{dot(6, 19, 2)}{ring(19, 19)}</>,
-  ARC_CSL: <><path d="M19 19 8.26 6.2" {...dash} /><path d={QARC} />{dot(6, 19, 2)}{ring(19, 19)}{ring(8.26, 6.2)}</>,
-  ARC_CONT: <><path d="M3 19h8" /><path d="M11 19a8 8 0 0 0 8-8" />{ring(11, 19)}{ring(19, 11)}</>,
-  RECT: <><rect x="4" y="7" width="16" height="10" />{ring(4, 17)}{ring(20, 7)}</>,
-  RECT_ROT: <><path d="M5 15 14 20 19 9 10 4z" />{ring(5, 15)}{ring(14, 20)}</>,
-  RECT_CEN: <><rect x="4" y="7" width="16" height="10" />{dot(12, 12)}{ring(20, 7)}</>,
-  POLY: <><circle cx="12" cy="12" r="7" {...dash} /><polygon points={HEX} /></>,
-  POLY_C: <><polygon points="20.5,12 16.25,19.36 7.75,19.36 3.5,12 7.75,4.64 16.25,4.64" /><circle cx="12" cy="12" r="7.3" {...dash} /></>,
-  POLY_E: <><polygon points={HEX} /><path d="M8.5 18.06h7" strokeWidth={2.4} />{ring(8.5, 18.06)}{ring(15.5, 18.06)}</>,
-  POLYGON: <polygon points={HEX} />,
-  ELLIPSE: <><ellipse cx="12" cy="12" rx="9" ry="5.5" /><path d="M12 12h9" strokeWidth={1.1} />{dot(12, 12)}</>,
-  ELLIPSE_AXIS: <><ellipse cx="12" cy="12" rx="8" ry="5.5" /><path d="M4 12h16" strokeWidth={1.1} />{ring(4, 12)}{ring(20, 12)}</>,
-  ELLIPSE_ARC: <><path d="M21 12A9 5.5 0 1 0 12 17.5" />{ring(21, 12)}{ring(12, 17.5)}{dot(12, 12, 1.4)}</>,
-  MOVE: <path d="M12 3v18M3 12h18M12 3 9 6M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3" />,
-  COPY: <><rect x="8.5" y="8.5" width="11.5" height="11.5" rx="1.6" /><path d="M15.5 8.5v-3A1.5 1.5 0 0 0 14 4H5.5A1.5 1.5 0 0 0 4 5.5V14a1.5 1.5 0 0 0 1.5 1.5h3" /></>,
-  STRETCH: <><rect x="3" y="8" width="8" height="8" /><path d="M11 8h10v8H11" {...dash} /><path d="M7 12h10M14.5 9.5 17 12l-2.5 2.5" strokeWidth={1.3} /></>,
-  ROTATE: <><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3" /><path d="M19.5 3.5v4h-4" />{dot(12, 12, 1.5)}</>,
-  MIRROR: <><path d="M12 3v18" {...dash} /><path d="M9 7v10H3z" /><path d="M15 7v10h6z" /></>,
-  SCALE: <><rect x="3" y="13" width="8" height="8" /><path d="M3 9V3h18v18h-6" {...dash} /><path d="M11 13l7-7M14 6h4v4" strokeWidth={1.3} /></>,
-  TRIM: <><path d="M15 3v18" /><path d="M3 12h12" /><path d="M15 12h6" stroke="#dc2626" {...dash} strokeWidth={1.5} /><path d="M17 9.5l3 5M20 9.5l-3 5" stroke="#dc2626" strokeWidth={1.2} /></>,
-  EXTEND: <><path d="M19.5 3v18" /><path d="M3 12h8" /><path d="M11 12h8" {...dash} strokeWidth={1.4} /><path d="M15.5 9l3 3-3 3" strokeWidth={1.3} /></>,
-  FILLET: <><path d="M4 12V4h8" {...dash} /><path d="M4 21v-9a8 8 0 0 1 8-8h9" /></>,
-  CHAMFER: <><path d="M4 12V4h8" {...dash} /><path d="M4 21v-9l8-8h9" /></>,
-  ARRAYRECT: <>{[5, 14].flatMap(y => [3, 10, 17].map(x => <rect key={`${x}-${y}`} x={x} y={y} width="4.5" height="4.5" />))}</>,
-  ARRAYPATH: <><path d="M3 19C7 5 17 5 21 19" {...dash} /><rect x="2" y="15.5" width="4" height="4" /><rect x="10" y="6.5" width="4" height="4" /><rect x="18" y="15.5" width="4" height="4" /></>,
-  ARRAYPOLAR: <>{[0, 60, 120, 180, 240, 300].map(a => <circle key={a} cx={12 + 8 * Math.cos(a * Math.PI / 180)} cy={12 + 8 * Math.sin(a * Math.PI / 180)} r="2.1" />)}{dot(12, 12, 1.4)}</>,
-  ERASE: <><path d="M9 20h11" /><path d="M5.2 13.2 12.6 5.8a2 2 0 0 1 2.8 0l3 3a2 2 0 0 1 0 2.8L11 19H8l-2.8-2.8a2 2 0 0 1 0-3z" /><path d="M9.5 9 15 14.5" strokeWidth={1.2} /></>,
-  JOIN: <><path d="M4 17 9 8" /><path d="M9 8h7l4 7" />{ring(9, 8, 2.1)}{ring(16, 8, 2.1)}{dot(4, 17, 1.4)}{dot(20, 15, 1.4)}</>,
-  EXPLODE: <><rect x="9" y="9" width="6" height="6" /><path d="M7 7 3.5 3.5M17 7l3.5-3.5M7 17l-3.5 3.5M17 17l3.5 3.5M3.5 6.5v-3h3M17.5 3.5h3v3M3.5 17.5v3h3M20.5 17.5v3h-3" strokeWidth={1.3} /></>,
-  OFFSET: <><path d="M4 20v-9a7 7 0 0 1 7-7h9" /><path d="M9.5 20v-8.5a2 2 0 0 1 2-2H20" strokeWidth={1.2} {...{ strokeDasharray: '3 2' }} /></>,
-  ground: <><path d="M3 17 8 8h13l-5 9z" /><path d="M5.5 12.5h13M12 8l-3 9M17 8l-3.5 9" strokeWidth={1} /></>,
-  face: <><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" /><path d="M12 12v9M12 12 4 7.5" strokeWidth={1.1} /><path d="M12 12l8-4.5v9L12 21z" fill="currentColor" fillOpacity={0.22} /></>,
-  look: <><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z" /><circle cx="12" cy="12" r="2.8" /></>,
-  ortho: <><path d="M5 4v15h15" /><path d="M5 14h5v5" strokeWidth={1.2} /></>,
-  polar: <><path d="M4 19h16M4 19 17 6" /><path d="M13 19a9 9 0 0 0-2.6-6.4" strokeWidth={1.2} /></>,
-  osnap: <><rect x="5" y="5" width="14" height="14" /><rect x="15.5" y="2.5" width="6" height="6" fill="currentColor" stroke="none" /></>,
-  dyn: <><path d="M4 4l5.5 13 1.8-5.7L17 9.5z" /><rect x="13" y="15" width="8" height="5.5" rx="1" strokeWidth={1.3} /></>,
-  caret: <path d="M7 10l5 5 5-5" strokeWidth={2.2} />,
-  check: <path d="M5 12.5l4.5 4.5L19 7.5" strokeWidth={2.1} />,
-  solo: <><rect x="3.5" y="3.5" width="17" height="17" rx="1.5" {...dash} /><rect x="8" y="8" width="8" height="8" rx="1" /></>,
-  auto: <><path d="M4 4v16h16" /><path d="M9 15l3-3M14 10l3-3" /><rect x="11" y="9" width="4" height="4" rx="0.6" transform="rotate(45 13 11)" /></>,
-  modeA: <><rect x="4" y="4" width="16" height="16" rx="1.5" /><circle cx="8" cy="16" r="1.8" fill="currentColor" stroke="none" /></>,
-  modeP: <><rect x="4" y="4" width="16" height="16" rx="1.5" {...dash} /><path d="M8 4v4M4 8h4M16 20v-4M20 16h-4" /><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none" /><circle cx="16" cy="16" r="1.5" fill="currentColor" stroke="none" /></>,
-  cut: <><rect x="4" y="4" width="16" height="16" rx="1.5" /><circle cx="12" cy="12" r="4.2" {...dash} strokeWidth={1.4} /></>,
-  shape: <><rect x="3.5" y="3.5" width="17" height="17" {...dash} /><path d="M6 18.5V11a5 5 0 0 1 5-5h7.5v7.5a5 5 0 0 1-5 5z" /></>,
-  stretchx: <path d="M3 12h18M3 12l3.5-3.5M3 12l3.5 3.5M21 12l-3.5-3.5M21 12l-3.5 3.5" />,
-  stretchy: <path d="M12 3v18M12 3 8.5 6.5M12 3l3.5 3.5M12 21l-3.5-3.5M12 21l3.5-3.5" />,
-  pencil: <><path d="M4 20l1.2-4.4L16.6 4.2a2 2 0 0 1 2.8 0l.4.4a2 2 0 0 1 0 2.8L8.4 18.8z" /><path d="M14.5 6.3l3.2 3.2" /></>,
-  trash: <path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13M10 11v6M14 11v6" />,
-  close: <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" strokeWidth={1.8} />,
-  drawing: <><path d="M4 20l1.2-4.4L16.6 4.2a2 2 0 0 1 2.8 0l.4.4a2 2 0 0 1 0 2.8L8.4 18.8z" /><path d="M14.5 6.3l3.2 3.2" /><path d="M13 20h7" /></>,
-};
-const DIcon: React.FC<{ name: string; size?: number }> = ({ name, size = 18 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>{ICONS[name]}</svg>
+/** Panel ikonları src/icons/draw-*.svg dosyalarıdır (Ui.tsx'teki Icon): komut kimliği → dosya adı (LINE → draw-line, ARC_SCE → draw-arc-sce). */
+const DICON_ALIAS: Record<string, IconName> = { look: 'eye', check: 'check', close: 'close', caret: 'caret', ortho: 'ortho', polar: 'polar' };
+const DIcon: React.FC<{ name: string; size?: number }> = ({ name, size = 26 }) => (
+  <Icon name={DICON_ALIAS[name] ?? (`draw-${name.toLowerCase().replace(/_/g, '-')}` as IconName)} size={size} />
 );
 // ── Sağ Drawing paneli ──
 /* Sağdan açılan Drawing paneli (sol kenar çubuğunun aynası); açıkken 3B görünüm sağdan daralır. */
@@ -1456,7 +1373,7 @@ const PANEL_CSS = `
   .dp-card{display:grid;gap:1px;padding:2px;background:linear-gradient(180deg,#fdfcfa 0%,#f6f3ed 100%);border:1px solid ${P.group};border-radius:8px;
     box-shadow:0 1.5px 3px rgba(40,30,20,0.09),0 0.5px 1px rgba(40,30,20,0.05),0 0 0 0.5px rgba(60,50,40,0.07),inset 0 0.5px 0 rgba(255,255,255,0.95)}
   .dp-btn{position:relative;display:flex;align-items:center;justify-content:center;gap:6px;width:30px;height:30px;padding:0;border:none;border-radius:6px;
-    background:transparent;color:#6b6560;cursor:pointer;outline:none;flex-shrink:0;font:500 12px ${UI_FONT};
+    background:transparent;color:#292524;cursor:pointer;outline:none;flex-shrink:0;font:500 12px ${UI_FONT};
     transition:background .1s,color .1s,box-shadow .1s,transform .1s}
   .dp-btn:hover{background:rgba(0,0,0,0.05);color:${P.ink};transform:scale(1.06)}
   .dp-btn:active{transform:scale(0.95)}
@@ -1471,7 +1388,7 @@ const PANEL_CSS = `
     color:${P.mute};font:500 11.5px ${UI_FONT};cursor:pointer;outline:none;text-align:left;white-space:nowrap;overflow:hidden;
     transition:box-shadow .12s,background .12s,color .12s,opacity .12s}
   .dp-chip:hover{box-shadow:0 0 0 1px #cfc7bc;color:${P.ink}}
-  .dp-chip svg{color:#a8a29e}
+  .dp-chip svg{color:#57534e}
   .dp-chip.on{background:#fff;color:${P.ink};box-shadow:0 0 0 1px rgba(234,88,12,0.38),0 1px 2px rgba(40,30,20,0.06)}
   .dp-chip.on svg{color:${P.accent}}
   .dp-chip.dim{opacity:0.45}
@@ -1561,7 +1478,7 @@ const Section: React.FC<{ title: string; right?: React.ReactNode; closed?: boole
   return (
     <div className="dp-sec">
       <div className="dp-sec-h">
-        <button className={`dp-sec-t${open ? '' : ' shut'}`} onClick={() => setOpen(!open)} aria-expanded={open}><DIcon name="caret" size={12} />{title}</button>
+        <button className={`dp-sec-t${open ? '' : ' shut'}`} onClick={() => setOpen(!open)} aria-expanded={open}><DIcon name="caret" size={14} />{title}</button>
         {right}
       </div>
       {open && <div className="dp-sec-b">{children}</div>}
@@ -1651,10 +1568,10 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
         )}
         <div className="dp-seg">
           <button className={op === 'cut' ? 'on' : ''} onClick={() => setApply({ op: 'cut' })} {...tip(`Cut — remove the drawn profile from the ${noun}`)}>
-            <DIcon name="cut" size={16} />Cut
+            <DIcon name="cut" size={18} />Cut
           </button>
           <button className={shaped ? 'on' : ''} onClick={() => setApply({ op: 'shape' })} {...tip(`Shape — the ${noun} takes the outline of the drawn profile`)}>
-            <DIcon name="shape" size={16} />Shape
+            <DIcon name="shape" size={18} />Shape
           </button>
         </div>
         {!shaped && (
@@ -1672,11 +1589,11 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
         )}
         <div className="dp-seg">
           <button className={!param ? 'on' : ''} onClick={() => setApply({ mode: 'anchor' })} {...tip(`Simple — the drawing follows one anchor of the ${noun}, with optional stretch`)}>
-            <DIcon name="modeA" size={16} />Simple
+            <DIcon name="modeA" size={18} />Simple
           </button>
           <button className={param ? 'on' : ''} onClick={() => { setApply({ mode: 'points', auto: true }); resolveDims(); }}
             {...tip('Parametric — click an edge and give it a length or a parameter; click a point, then the face edge it follows')}>
-            <DIcon name="modeP" size={16} />Parametric
+            <DIcon name="modeP" size={18} />Parametric
           </button>
         </div>
         {param ? (
@@ -1698,7 +1615,7 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
             </button>
             <button className="dp-chip" style={{ height: 26, padding: '0 9px', gap: 5 }} disabled={!stats.count} onClick={autoBind}
               {...tip(nSel ? 'Auto — tie the selected points to their nearest edges' : 'Auto — tie every point to its nearest edges')}>
-              <DIcon name="auto" size={15} />Auto
+              <DIcon name="auto" size={17} />Auto
             </button>
           </div>
         ) : (
@@ -1714,7 +1631,7 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
                 <button key={k} className={`dp-chip${apply.stretch[i] ? ' on' : ''}`} style={{ gap: 6 }} aria-pressed={apply.stretch[i]} aria-label={`Stretch ${k}`}
                   onClick={() => setApply({ stretch: i === 0 ? [!apply.stretch[0], apply.stretch[1]] : [apply.stretch[0], !apply.stretch[1]] })}
                   {...tip(`Stretch ${k} — the drawing scales with the face ${i === 0 ? 'width' : 'height'}`)}>
-                  <DIcon name={i === 0 ? 'stretchx' : 'stretchy'} size={15} />Stretch {k}
+                  <DIcon name={i === 0 ? 'stretchx' : 'stretchy'} size={17} />Stretch {k}
                 </button>
               ))}
             </div>
@@ -1732,7 +1649,7 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
         )}
         <div style={{ display: 'flex', gap: 5, marginTop: 2 }}>
           <button className="dp-primary" disabled={busy || !stats.loops} onClick={() => { void go(); }} {...tip(stats.loops ? '' : 'Draw a closed profile on the face first')}>
-            <DIcon name="check" size={15} />{busy ? 'Working…' : session ? (shaped ? 'Update shape' : 'Update cut') : shaped ? 'Apply shape' : 'Apply cut'}
+            <DIcon name="check" size={17} />{busy ? 'Working…' : session ? (shaped ? 'Update shape' : 'Update cut') : shaped ? 'Apply shape' : 'Apply cut'}
           </button>
           {session && <button className="dp-ghost" disabled={busy} onClick={() => { void cancelEdit(); }}>Cancel</button>}
         </div>
@@ -1767,7 +1684,7 @@ export const DrawingPanel: React.FC = () => {
   const titleOf = (b: Block | null, id: string) => { const def = commandById(id)!; return b?.prefix ? `${b.prefix} · ${def.label}` : def.label; };
   const tool = (id: string, b: Block | null, big: boolean, onPick?: () => void) => (
     <button key={id} className={`dp-btn${big ? ' lg' : ''}${cmd?.id === id ? ' on' : ''}`} onClick={() => { onPick?.(); run(id); }} aria-label={titleOf(b, id)} {...tip(titleOf(b, id), aliasOf(id))}>
-      <DIcon name={id} size={big ? 21 : 18} />
+      <DIcon name={id} size={big ? 32 : 26} />
     </button>
   );
   const group = (label: string, kids: React.ReactNode, n: number) => (
@@ -1781,7 +1698,7 @@ export const DrawingPanel: React.FC = () => {
     return (
       <button key={b.label} className={`dp-btn lg${on ? ' on' : ''}${fam === b.label ? ' fam' : ''}`} aria-label={titleOf(b, id)} aria-expanded={fam === b.label}
         onClick={() => { setFam(b.label); run(id); }} {...tip(`${titleOf(b, id)}  ·  ${b.ids.length} methods`, aliasOf(id))}>
-        <DIcon name={id} size={21} />
+        <DIcon name={id} size={32} />
       </button>
     );
   };
@@ -1831,12 +1748,12 @@ export const DrawingPanel: React.FC = () => {
         boxShadow: open ? '-4px 0 18px -8px rgba(40,30,20,0.12),-1px 0 2px rgba(40,30,20,0.06)' : 'none',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 40, padding: '0 6px 0 14px', background: P.head, borderBottom: `1px solid ${P.soft}`, flexShrink: 0 }}>
-          <span style={{ color: P.accent, display: 'flex' }}><DIcon name="drawing" size={16} /></span>
+          <span style={{ color: P.accent, display: 'flex' }}><DIcon name="drawing" size={20} /></span>
           <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '0.01em' }}>Drawing</span>
           <span style={{ fontSize: 10.5, fontWeight: 500, color: P.mute, background: 'rgba(60,50,40,0.06)', padding: '2px 7px', borderRadius: 99, whiteSpace: 'nowrap' }}>
             {planeLabel}
           </span>
-          <button className="dp-x" style={{ marginLeft: 'auto' }} onClick={() => setPanelOpen(false)} aria-label="Close" {...tip('Close the panel')}><DIcon name="close" size={15} /></button>
+          <button className="dp-x" style={{ marginLeft: 'auto' }} onClick={() => setPanelOpen(false)} aria-label="Close" {...tip('Close the panel')}><DIcon name="close" size={20} /></button>
         </div>
         <div className="dp-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
           {/* Çizim yalnız seçilen yüzde: panel açılınca yüz seçimi başlar; aday vurgulanır, ONAYLANINCA düzlem olur (sağ tık / Enter da onaylar). */}
@@ -1844,7 +1761,7 @@ export const DrawingPanel: React.FC = () => {
             <div className="dp-card" style={{ display: 'flex' }}>
               <button className={`dp-btn txt${planePick ? ' on' : ''}`} disabled={!!session} onClick={() => (planePick ? cancelFacePick() : beginFacePick())}
                 {...tip(session ? 'Finish editing the step first' : onFace ? 'Pick another body or panel face' : 'Pick a body or panel face to draw on')}>
-                <DIcon name="face" size={17} />{planePick ? 'Picking…' : onFace ? 'Change face' : 'Pick face'}
+                <DIcon name="face" size={22} />{planePick ? 'Picking…' : onFace ? 'Change face' : 'Pick face'}
               </button>
               {onFace && !planePick && (
                 <>
@@ -1854,7 +1771,7 @@ export const DrawingPanel: React.FC = () => {
                   <button className="dp-btn" aria-label="Leave face" onClick={() => {
                     if (sessionDirty()) useDraft.setState(s => ({ log: [...s.log.slice(-59), 'Unsaved changes on this step — Update or Cancel first.'] }));
                     else void exitFace();
-                  }} {...tip('Leave the face', 'Esc')}><DIcon name="close" size={15} /></button>
+                  }} {...tip('Leave the face', 'Esc')}><DIcon name="close" size={20} /></button>
                 </>
               )}
             </div>
@@ -1865,7 +1782,7 @@ export const DrawingPanel: React.FC = () => {
                 </span>
                 <button className="dp-primary" style={{ flex: 'none', padding: '0 11px' }} disabled={!candLabel} onClick={confirmFacePick}
                   {...tip('Confirm the highlighted face — click the same spot again for the face behind', 'Enter')}>
-                  <DIcon name="check" size={15} />Confirm
+                  <DIcon name="check" size={17} />Confirm
                 </button>
                 <button className="dp-ghost" style={{ padding: '0 9px' }} onClick={() => cancelFacePick()}>Cancel</button>
               </div>
@@ -1884,7 +1801,7 @@ export const DrawingPanel: React.FC = () => {
                 const on = !!snapSettings[k as unknown as SnapType];
                 return (
                   <button key={k} className={`dp-chip${on ? ' on' : ''}${snapOn ? '' : ' dim'}`} onClick={() => toggleSnap(k as unknown as SnapType)} aria-pressed={on}>
-                    <SnapGlyph kind={k} size={16} color="currentColor" />{SNAP_LABEL[k]}
+                    <SnapGlyph kind={k} size={18} color="currentColor" />{SNAP_LABEL[k]}
                   </button>
                 );
               })}
@@ -1893,15 +1810,15 @@ export const DrawingPanel: React.FC = () => {
           <Section title="Drafting aids" closed>
             <div className="dp-chips">
               <button className={`dp-chip${ortho ? ' on' : ''}`} onClick={toggleOrtho} aria-pressed={ortho} {...tip('Ortho — lock to horizontal / vertical', 'F8')}>
-                <DIcon name="ortho" size={16} />Ortho<kbd>F8</kbd>
+                <DIcon name="ortho" size={18} />Ortho<kbd>F8</kbd>
               </button>
               <button className={`dp-chip${aids.polar ? ' on' : ''}`} onClick={() => setAids({ polar: !aids.polar })} aria-pressed={aids.polar}
                 {...tip(`Polar tracking every ${aids.polarStep}°`, 'F10')}>
-                <DIcon name="polar" size={16} />Polar<kbd>F10</kbd>
+                <DIcon name="polar" size={18} />Polar<kbd>F10</kbd>
               </button>
               <button className={`dp-chip wide${aids.dyn ? ' on' : ''}`} onClick={() => setAids({ dyn: !aids.dyn })} aria-pressed={aids.dyn}
                 {...tip('Dynamic input — prompt and length / angle next to the cursor', 'Tab')}>
-                <DIcon name="dyn" size={16} />Dynamic input<kbd>Tab</kbd>
+                <DIcon name="dyn" size={18} />Dynamic input<kbd>Tab</kbd>
               </button>
             </div>
             <div className="dp-cap" style={{ margin: '12px 0 5px' }}>Polar angle</div>

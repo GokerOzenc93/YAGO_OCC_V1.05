@@ -1,8 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import {
-  type LucideIcon, Spline, Layers, SwatchBook, Radius, Plus, Container, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Hash, ChevronRight, Send, Box,
-  Square, SlidersHorizontal, ListTree, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check, Footprints, Wrench, Link2, Tags, Ruler, Magnet,
-} from 'lucide-react';
+import { Plus, Hash, ChevronRight, Send, Trash2, X, Check } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { createClient } from '@supabase/supabase-js';
 import * as THREE from 'three';
@@ -109,16 +106,16 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode; 
 export const RAIL_W = 60;
 type SidebarTab = 'parameters' | 'assembly' | 'accessories';
 type RailSpec = {
-  key: string; label: string; icon: LucideIcon; title: string; active?: boolean; badge?: string | number; onClick: () => void;
+  key: string; label: string; icon: IconName; title: string; active?: boolean; badge?: string | number; onClick: () => void;
   /** Sekme açıkken de pasif (ör. hızlı gövde zaten yerleşmiş). */ disabled?: boolean;
 };
 /* Panelin YEREL durumuna bağlı ray eylemleri buraya kaydolur (ParametersPanel → özel parametre ekleme). */
 export const railActions: { addCustomParameter: (() => void) | null } = { addCustomParameter: null };
 
 const RAIL_BTN: React.CSSProperties = {
-  // Yükseklik etikete göre: tek satır 46 px, iki satırlık etiket ("Connector\nlayout") kendiliğinden uzar.
-  position: 'relative', width: '54px', minHeight: '46px', borderRadius: '8px', border: 'none', outline: 'none', padding: '6px 0', flexShrink: 0,
-  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px',
+  // Yükseklik etikete göre: tek satır 52 px, iki satırlık etiket ("Connector\nlayout") kendiliğinden uzar. İkon düğme genişliğini doldurur (28 px).
+  position: 'relative', width: '54px', minHeight: '52px', borderRadius: '8px', border: 'none', outline: 'none', padding: '5px 0 6px', flexShrink: 0,
+  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '3px',
   transition: 'background 0.12s,box-shadow 0.12s,opacity 0.15s', fontFamily: UI_FONT,
 };
 const RAIL_BADGE: React.CSSProperties = {
@@ -136,10 +133,10 @@ const RAIL_STYLE: React.CSSProperties = {
   boxShadow: 'inset -1px 0 0 rgba(255,255,255,0.7)', fontFamily: UI_FONT,
 };
 
-const RailTool: React.FC<Omit<RailSpec, 'key'> & { passive: boolean }> = ({ label, icon: Icon, active = false, badge, onClick, title, passive }) => {
+const RailTool: React.FC<Omit<RailSpec, 'key'> & { passive: boolean }> = ({ label, icon, active = false, badge, onClick, title, passive }) => {
   const [hov, hoverProps] = useHover();
   const on = active && !passive, hv = hov && !passive;
-  const idle = hv ? '#1c1917' : '#57534e';
+  const idle = hv ? '#0c0a09' : '#292524';
   return (
     <button type="button" onClick={onClick} aria-pressed={on} disabled={passive} title={`${label.replace(/\n/g, ' ')} — ${title}`} {...hoverProps} className="yago-rail-btn"
       style={{
@@ -149,7 +146,7 @@ const RailTool: React.FC<Omit<RailSpec, 'key'> & { passive: boolean }> = ({ labe
           : hv ? '0 0 0 1px rgba(60,50,40,0.10),0 1px 2px rgba(40,30,20,0.06)' : 'none',
       }}>
       <span style={{ position: 'relative', display: 'flex' }}>
-        <Icon size={17} strokeWidth={2} style={{ color: on ? '#ea580c' : idle, transition: 'color 0.12s' }} />
+        <Icon name={icon} size={28} muted={passive} style={{ color: on ? '#ea580c' : idle, transition: 'color 0.12s' }} />
         {badge !== undefined && badge !== '' && <span style={{ ...RAIL_BADGE, background: on ? '#ea580c' : '#78716c' }}>{badge}</span>}
       </span>
       <span style={{
@@ -193,36 +190,36 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
     if (n) { s.setVertexEditMode(false); s.setSubtractionViewMode(false); }
   };
   const params: RailSpec[] = [
-    { key: 'vertex', label: 'Vertex', icon: Spline, title: 'Edit the body outline by moving vertices', ...toggleEdit(s.vertexEditMode, s.setVertexEditMode) },
-    { key: 'subtract', label: 'Subtract', icon: Layers, title: 'Show and edit boolean subtractions', badge: subN > 0 ? subN : undefined,
+    { key: 'vertex', label: 'Vertex', icon: 'vertex', title: 'Edit the body outline by moving vertices', ...toggleEdit(s.vertexEditMode, s.setVertexEditMode) },
+    { key: 'subtract', label: 'Subtract', icon: 'subtract', title: 'Show and edit boolean subtractions', badge: subN > 0 ? subN : undefined,
       ...toggleEdit(s.subtractionViewMode, s.setSubtractionViewMode) },
-    { key: 'fillet', label: 'Fillet', icon: Radius, title: 'Round the edge between two faces', active: s.filletMode,
+    { key: 'fillet', label: 'Fillet', icon: 'fillet', title: 'Round the edge between two faces', active: s.filletMode,
       badge: filletN > 0 ? `${filletN}/2` : undefined, onClick: toggleFillet },
-    { key: 'param', label: 'Param', icon: Plus, title: 'Add a custom parameter', onClick: () => railActions.addCustomParameter?.() },
+    { key: 'param', label: 'Param', icon: 'param-add', title: 'Add a custom parameter', onClick: () => railActions.addCustomParameter?.() },
   ];
   const vp = (m: 'shelf' | 'divider') => s.volumePickMode === m && !s.volumePickGroupId;
   const volume = (m: 'shelf' | 'divider') => ({ active: vp(m), onClick: () => s.setVolumePickMode(vp(m) ? null : m) });
   const panels: RailSpec[] = [
-    { key: 'body', label: 'Body', icon: Container, ...toggle(s.quickBodyMode, s.setQuickBodyMode), disabled: bodyPlaced,
+    { key: 'body', label: 'Body', icon: 'body', ...toggle(s.quickBodyMode, s.setQuickBodyMode), disabled: bodyPlaced,
       title: bodyPlaced ? 'Body panels are already placed — open the Body row at the top of the list to revise them, or delete them to place again'
         : 'Quick body: corner joints, base (plain / legs / plinth) and back panel placed in one step' },
-    { key: 'panel', label: 'Panel', icon: LayoutPanelTop, title: 'Body panel: click a body face in the 3D view', ...toggle(s.raycastMode, s.setRaycastMode) },
-    { key: 'shelf', label: 'Shelf', icon: Rows3, title: 'Click inside a cavity in the 3D view', ...volume('shelf') },
-    { key: 'divider', label: 'Divider', icon: Columns3, title: 'Click inside a cavity in the 3D view', ...volume('divider') },
-    { key: 'door', label: 'Door', icon: DoorClosed, ...toggle(s.doorPickMode, s.setDoorPickMode),
+    { key: 'panel', label: 'Panel', icon: 'panel', title: 'Body panel: click a body face in the 3D view', ...toggle(s.raycastMode, s.setRaycastMode) },
+    { key: 'shelf', label: 'Shelf', icon: 'shelf', title: 'Click inside a cavity in the 3D view', ...volume('shelf') },
+    { key: 'divider', label: 'Divider', icon: 'divider', title: 'Click inside a cavity in the 3D view', ...volume('divider') },
+    { key: 'door', label: 'Door', icon: 'door', ...toggle(s.doorPickMode, s.setDoorPickMode),
       title: 'Mark door references on panels, then click a body face' },
-    { key: 'back', label: 'Back', icon: SendToBack, ...toggle(s.backPickMode, s.setBackPickMode),
+    { key: 'back', label: 'Back', icon: 'back', ...toggle(s.backPickMode, s.setBackPickMode),
       title: 'Back panel: mark back references on panels, then click the body — each click cycles the candidates, largest first' },
-    { key: 'plinth', label: 'Plinth', icon: Footprints, ...toggle(s.plinthPickMode, s.setPlinthPickMode),
+    { key: 'plinth', label: 'Plinth', icon: 'plinth', ...toggle(s.plinthPickMode, s.setPlinthPickMode),
       title: 'Plinth leg set: click the body — the volume under the bottom panel / below the body is highlighted, click cycles, right-click places' },
   ];
   // Aksesuar: kategori raydan seçilir (panelde ayrıca tip seçimi yok); kütüphane gövdeden bağımsız → şekil seçili olmasa da etkin.
   const accessories: RailSpec[] = [
-    { key: 'acc-legs', label: 'Legs', icon: Footprints, title: 'Leg models and leg sets', active: s.accessoryCategory === 'legs', onClick: () => s.setAccessoryCategory('legs') },
-    { key: 'acc-connectors', label: 'Connector', icon: Link2, title: 'the connector itself: holes, drawn operations and a 3D model on a two-panel joint', active: s.accessoryCategory === 'connectors', onClick: () => s.setAccessoryCategory('connectors') },
-    { key: 'acc-layouts', label: 'Connector\nlayout', icon: Ruler, title: 'where connectors sit along a joint — four rules, per joint-length range, several connectors in one layout', active: s.accessoryCategory === 'layouts', onClick: () => s.setAccessoryCategory('layouts') },
-    { key: 'acc-types', label: 'Connector\nrules', icon: Tags, title: 'per panel type, which edges get a connector (fixed / movable / none), and the default type per face', active: s.accessoryCategory === 'panelTypes', onClick: () => s.setAccessoryCategory('panelTypes') },
-    { key: 'acc-layers', label: 'Layers', icon: SwatchBook, title: 'Accessory layers — shared by every accessory part (name + colour)', active: s.accessoryCategory === 'layers', onClick: () => s.setAccessoryCategory('layers') },
+    { key: 'acc-legs', label: 'Legs', icon: 'legs', title: 'Leg models and leg sets', active: s.accessoryCategory === 'legs', onClick: () => s.setAccessoryCategory('legs') },
+    { key: 'acc-connectors', label: 'Connector', icon: 'connector', title: 'the connector itself: holes, drawn operations and a 3D model on a two-panel joint', active: s.accessoryCategory === 'connectors', onClick: () => s.setAccessoryCategory('connectors') },
+    { key: 'acc-layouts', label: 'Connector\nlayout', icon: 'connector-layout', title: 'where connectors sit along a joint — four rules, per joint-length range, several connectors in one layout', active: s.accessoryCategory === 'layouts', onClick: () => s.setAccessoryCategory('layouts') },
+    { key: 'acc-types', label: 'Connector\nrules', icon: 'connector-rules', title: 'per panel type, which edges get a connector (fixed / movable / none), and the default type per face', active: s.accessoryCategory === 'panelTypes', onClick: () => s.setAccessoryCategory('panelTypes') },
+    { key: 'acc-layers', label: 'Layers', icon: 'layers', title: 'Accessory layers — shared by every accessory part (name + colour)', active: s.accessoryCategory === 'layers', onClick: () => s.setAccessoryCategory('layers') },
   ];
   // Yalnız ETKİN sekmenin araçları çizilir (pasif / soluk grup yok).
   const group = (list: RailSpec[], tab: SidebarTab, needShape = true) =>
@@ -236,45 +233,56 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
   );
 };
 
-// /public/icons/<ad>.svg — stroke="currentColor" sayesinde düğme rengini alır.
+/* ───────── İKONLAR ─────────
+   Tüm düğme ikonları src/icons/<ad>.svg dosyalarıdır (24 birimlik ızgara, stroke="currentColor"); derlemede metin olarak gömülür —
+   ağ isteği yok, eksik dosyada boş düğme yok. Çizgi kalınlığı ekran pikseline göre (--sw) hesaplanır: her boyutta aynı ince/kalın denge.
+   SVG içi sınıflar: b = kalın, t = ince, r = kırmızı (kritik / yıkıcı), o = turuncu (ekleme); .mute (pasif düğme) renkleri siyaha indirir. */
 export type IconName =
-  | 'add-box' | 'subtract-box' | 'camera-perspective' | 'camera-orthographic' | 'view-solid' | 'view-wireframe' | 'view-xray'
-  | 'linear-mode-on' | 'linear-mode-off' | 'search' | 'settings' | 'help-circle' | 'log-out' | 'crosshair' | 'file-plus' | 'file-down'
-  | 'save' | 'upload' | 'undo-2' | 'redo-2' | 'scissors' | 'copy' | 'clipboard-paste' | 'eraser' | 'mouse-pointer-2' | 'move' | 'navigation'
-  | 'refresh-ccw' | 'maximize-2' | 'box' | 'cog' | 'sliders-horizontal' | 'panel-left' | 'folder-open' | 'camera' | 'box-select' | 'scan-eye'
-  | 'cuboid' | 'eye' | 'grid-2x2' | 'layers' | 'cylinder' | 'package' | 'square' | 'flip-horizontal' | 'maximize' | 'bar-chart-3' | 'file-text'
-  | 'git-branch' | 'target' | 'rotate-cw' | 'rotate-ccw' | 'zap' | 'inspection-panel' | 'map-pin' | 'ruler' | 'monitor'
-  | 'dimension' | 'dim-angular' | 'dim-distance' | 'dim-hole';
-const iconSrc = (name: IconName) => `/icons/${name}.svg`;
-const svgCache: Record<string, string> = {};
-// Ölçü düğmelerinin ikonları koda gömülüdür: public/icons'a dosya kopyalanmasa da görünürler (dosya yoksa sunucu HTML döner, düğme boş kalırdı).
-const SVG_HEAD = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none" stroke="#000000" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">';
-const INLINE_ICONS: Partial<Record<IconName, string>> = {
-  'dim-angular': `${SVG_HEAD}<path d="M84 424h356M84 424 296 92"/><path d="M318 424A234 234 0 0 0 210 227"/><path d="M286 366l32 58 34-56M276 236l-66-9 12 66"/></svg>`,
-  'dim-hole': `${SVG_HEAD}<ellipse cx="214" cy="128" rx="132" ry="50"/><path d="M82 128v238M346 128v238"/><path d="M82 366a132 50 0 0 0 264 0" stroke-dasharray="34 26"/><path d="M430 150v232M394 342l36 40 36-40"/></svg>`,
-  'dim-distance': `${SVG_HEAD}<circle cx="98" cy="414" r="38"/><circle cx="414" cy="98" r="38"/><path d="M138 374 374 138" stroke-dasharray="46 40"/></svg>`,
-};
-for (const [k, v] of Object.entries(INLINE_ICONS)) svgCache[iconSrc(k as IconName)] = v!;
-interface IconProps { name: IconName; size?: number; className?: string; style?: React.CSSProperties }
-
-export const Icon: React.FC<IconProps> = ({ name, size = 16, className = '', style }) => {
-  const src = iconSrc(name);
-  const [markup, setMarkup] = useState<string>(() => svgCache[src] ?? '');
-  useEffect(() => {
-    if (svgCache[src]) { setMarkup(svgCache[src]); return; }
-    let cancelled = false;
-    fetch(src).then(r => r.text()).then(txt => {
-      // Dosyası olmayan ikonda sunucu index.html döndürür: yalnız gerçek SVG basılır (boyutu sarmalayıcı belirler).
-      const cleaned = /<svg[\s>]/i.test(txt) && !/<(!doctype html|html[\s>])/i.test(txt) ? txt.replace(/\swidth="[^"]*"/i, '').replace(/\sheight="[^"]*"/i, '') : '';
-      svgCache[src] = cleaned || ' ';   // boş sonuç da saklanır: aynı eksik dosya yeniden istenmez
-      if (!cancelled) setMarkup(cleaned);
-    }).catch(() => { if (!cancelled) setMarkup(''); });
-    return () => { cancelled = true; };
-  }, [src]);
-  // SVG içeriği /public/icons altındaki yerel dosyalardan gelir — enjeksiyon güvenli.
+  | 'accessories' | 'add-box' | 'area' | 'assembly' | 'back' | 'body' | 'cam-ortho' | 'cam-persp' | 'caret' | 'catalog' | 'check' | 'chevron-right'
+  | 'close' | 'connector' | 'connector-layout' | 'connector-rules' | 'copy' | 'cut' | 'cutlist' | 'cylinder' | 'delete' | 'dim-angular'
+  | 'dim-distance' | 'dim-hole' | 'dim-linear' | 'divider' | 'door' | 'draw-arc-3p' | 'draw-arc-cont' | 'draw-arc-csa' | 'draw-arc-cse'
+  | 'draw-arc-csl' | 'draw-arc-sca' | 'draw-arc-sce' | 'draw-arc-scl' | 'draw-arc-sea' | 'draw-arc-sed' | 'draw-arc-ser' | 'draw-arraypath'
+  | 'draw-arraypolar' | 'draw-arrayrect' | 'draw-auto' | 'draw-chamfer' | 'draw-circle' | 'draw-circle-2p' | 'draw-circle-3p' | 'draw-circle-cd'
+  | 'draw-circle-ttr' | 'draw-circle-ttt' | 'draw-copy' | 'draw-cut' | 'draw-drawing' | 'draw-dyn' | 'draw-ellipse' | 'draw-ellipse-arc'
+  | 'draw-ellipse-axis' | 'draw-erase' | 'draw-explode' | 'draw-extend' | 'draw-face' | 'draw-fillet' | 'draw-join' | 'draw-line' | 'draw-mirror'
+  | 'draw-modea' | 'draw-modep' | 'draw-move' | 'draw-offset' | 'draw-pline' | 'draw-poly' | 'draw-poly-c' | 'draw-poly-e' | 'draw-rect'
+  | 'draw-rect-cen' | 'draw-rect-rot' | 'draw-rotate' | 'draw-scale' | 'draw-shape' | 'draw-solo' | 'draw-stretch' | 'draw-stretchx'
+  | 'draw-stretchy' | 'draw-trim' | 'exit' | 'export' | 'eye' | 'file-new' | 'fillet' | 'float' | 'fullscreen' | 'grid' | 'grip' | 'help' | 'import'
+  | 'layers' | 'layout' | 'legs' | 'light' | 'material' | 'monitor' | 'move' | 'move-p2p' | 'open' | 'ortho' | 'ortho-off' | 'outlines' | 'panel'
+  | 'param-add' | 'params' | 'paste' | 'pin' | 'plinth' | 'polar' | 'redo' | 'report' | 'rotate' | 'ruler' | 'save' | 'save-as' | 'scale' | 'search'
+  | 'select' | 'select-body' | 'select-panel' | 'settings' | 'shelf' | 'snap' | 'snap-center' | 'snap-endpoint' | 'snap-intersection'
+  | 'snap-midpoint' | 'snap-nearest' | 'snap-perpendicular' | 'snap-quadrant' | 'snap-tangent' | 'subtract' | 'undo' | 'unpin' | 'vertex'
+  | 'view-solid' | 'view-wireframe' | 'view-xray' | 'window';
+const ICON_FILES = import.meta.glob('../icons/*.svg', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+const ICON_SRC: Record<string, { svg: string; vb: number }> = {};
+for (const [path, svg] of Object.entries(ICON_FILES)) {
+  ICON_SRC[path.slice(path.lastIndexOf('/') + 1, -4)] = { svg, vb: Number(/viewBox="0 0 ([\d.]+)/.exec(svg)?.[1] ?? 24) };
+}
+const ICON_CSS = `
+  .yi{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;line-height:0}
+  .yi svg{width:100%;height:100%;display:block;overflow:visible;stroke-width:var(--sw,1.5)}
+  .yi .b{stroke-width:calc(var(--sw,1.5)*1.5)}
+  .yi .t{stroke-width:calc(var(--sw,1.5)*0.62)}
+  .yi.mute .r,.yi.mute .o{stroke:currentColor}
+  .yi.mute .r[fill]{fill:currentColor}
+`;
+if (typeof document !== 'undefined' && !document.getElementById('yago-icon-css')) {
+  const el = document.createElement('style');
+  el.id = 'yago-icon-css'; el.textContent = ICON_CSS; document.head.appendChild(el);
+}
+/** Ekranda hedef çizgi kalınlığı (px): küçük ikonda biraz incelir, büyükte dolgunlaşır. */
+const iconStrokePx = (size: number) => (size >= 28 ? 1.7 : size >= 22 ? 1.6 : size >= 16 ? 1.45 : 1.3);
+interface IconProps {
+  name: IconName; size?: number; className?: string; style?: React.CSSProperties;
+  /** Çizgi kalınlığı, ekran pikseli. */ stroke?: number; /** Pasif: kırmızı / turuncu vurgular da siyaha döner. */ muted?: boolean; color?: string;
+}
+export const Icon: React.FC<IconProps> = ({ name, size = 16, className = '', style, stroke, muted = false, color }) => {
+  const src = ICON_SRC[name];
+  const sw = ((stroke ?? iconStrokePx(size)) * (src?.vb ?? 24)) / size;
+  // SVG içeriği derlemeye gömülü yerel dosyalardan gelir (src/icons) — enjeksiyon güvenli.
   return (
-    <span role="img" aria-label={name} className={className} dangerouslySetInnerHTML={{ __html: markup }}
-      style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: size, height: size, lineHeight: 0, flexShrink: 0, ...style }} />
+    <span role="img" aria-label={name} className={`yi${muted ? ' mute' : ''}${className ? ` ${className}` : ''}`} dangerouslySetInnerHTML={{ __html: src?.svg ?? '' }}
+      style={{ width: size, height: size, color, ['--sw' as string]: sw.toFixed(3), ...style }} />
   );
 };
 
@@ -283,36 +291,36 @@ const ICON_BTN = 'flex items-center justify-center rounded transition-all durati
 interface IconButtonProps {
   icon: IconName; title: string; onClick?: () => void; disabled?: boolean; className?: string; size?: number; iconSize?: number; tone?: 'default' | 'exit';
 }
-/** <img> tabanlı (kendi renklerini koruyan) ikon düğmesi. */
-export const IconButton: React.FC<IconButtonProps> = ({ icon, title, onClick, disabled = false, className = '', size = 30, iconSize = 18, tone }) => {
-  const toneCls = tone === 'exit' ? 'text-amber-700 hover:bg-amber-50 hover:text-amber-800' : 'hover:bg-stone-100';
+/** İkon düğmesi: ikon düğme alanını doldurur (30 px düğmede 26 px ikon). */
+export const IconButton: React.FC<IconButtonProps> = ({ icon, title, onClick, disabled = false, className = '', size = 30, iconSize, tone }) => {
+  const toneCls = tone === 'exit' ? 'text-stone-800 hover:bg-red-50' : 'text-stone-800 hover:bg-stone-100 hover:text-black';
   return (
     <button onClick={onClick} disabled={disabled} style={{ width: size, height: size }} title={title}
       className={`${ICON_BTN} ${toneCls} ${disabled ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'} ${className}`}>
-      <img src={iconSrc(icon)} width={iconSize} height={iconSize} alt={icon} draggable={false} />
+      <Icon name={icon} size={iconSize ?? size - 4} muted={disabled} />
     </button>
   );
 };
-/** Açık/kapalı ikon düğmesi (lucide) — IconButton ile aynı ölçü; açıkken açık turuncu zemin + turuncu ikon. */
-type ToggleIconButtonProps = { active: boolean; onClick: () => void; title: string; icon: LucideIcon; size?: number };
-export const ToggleIconButton: React.FC<ToggleIconButtonProps> = ({ active, onClick, title, icon: Icon, size = 30 }) => (
+/** Açık/kapalı ikon düğmesi — IconButton ile aynı ölçü; açıkken açık turuncu zemin + turuncu ikon. */
+type ToggleIconButtonProps = { active: boolean; onClick: () => void; title: string; icon: IconName; size?: number };
+export const ToggleIconButton: React.FC<ToggleIconButtonProps> = ({ active, onClick, title, icon, size = 30 }) => (
   <button onClick={onClick} title={title} aria-pressed={active} style={{ width: size, height: size }}
     className={`${ICON_BTN} cursor-pointer ${active
-      ? 'bg-[#fff1e6] text-[#ea580c] shadow-[inset_0_0_0_1px_rgba(234,88,12,0.28)]' : 'text-stone-600 hover:bg-stone-100 hover:text-stone-900'}`}>
-    <Icon size={17} strokeWidth={1.9} />
+      ? 'bg-[#fff1e6] text-[#ea580c] shadow-[inset_0_0_0_1px_rgba(234,88,12,0.28)]' : 'text-stone-800 hover:bg-stone-100 hover:text-black'}`}>
+    <Icon name={icon} size={size - 4} />
   </button>
 );
 type PresetProps = Omit<IconButtonProps, 'icon' | 'title'>;
 const preset = (icon: IconName, title: string): React.FC<PresetProps> => (props) => <IconButton icon={icon} title={title} {...props} />;
 export const AddBoxButton = preset('add-box', 'Add Box (B)');
-export const SubtractBoxButton = preset('subtract-box', 'Subtract Intersecting Shapes');
-export const CameraPerspectiveButton = preset('camera-perspective', 'Perspective View');
-export const CameraOrthographicButton = preset('camera-orthographic', 'Orthographic View');
+export const SubtractBoxButton = preset('subtract', 'Subtract Intersecting Shapes');
+export const CameraPerspectiveButton = preset('cam-persp', 'Perspective View');
+export const CameraOrthographicButton = preset('cam-ortho', 'Orthographic View');
 export const ViewSolidButton = preset('view-solid', 'Solid View');
 export const ViewWireframeButton = preset('view-wireframe', 'Wireframe View');
 export const ViewXRayButton = preset('view-xray', 'X-Ray View');
-export const LinearModeOnButton = preset('linear-mode-on', 'Linear Mode: On');
-export const LinearModeOffButton = preset('linear-mode-off', 'Linear Mode: Off');
+export const LinearModeOnButton = preset('ortho', 'Ortho: On — lines lock to horizontal / vertical');
+export const LinearModeOffButton = preset('ortho-off', 'Ortho: Off — free angle');
 
 const STATUS_BAR: React.CSSProperties = {
   bottom: '38px', height: '26px', display: 'flex', alignItems: 'center', padding: '0 14px', gap: '10px', background: TOKENS.bg,
@@ -577,7 +585,7 @@ const OptLabel: React.FC<{ label: string; k: string }> = ({ label, k }) => {
 
 /** Komut satırı: etkin komutun istemi ve seçenekleri; Enter / Boşluk onaylar ya da son komutu yineler, Esc iptal, Tab uzunluk ↔ açı. */
 const SNAP_BTN: React.CSSProperties = {
-  width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', borderRadius: 4, padding: 0, background: 'transparent',
+  width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', borderRadius: 4, padding: 0, background: 'transparent',
   cursor: 'pointer', outline: 'none', flexShrink: 0, transition: 'color 0.12s,background 0.12s',
 };
 /** Nesne yakalama — komut satırının sağında küçük şerit: ana anahtar (F3) + 8 kip. Uygulama geneli ayardır (çizim, ölçü ve sonraki araçlar aynısını okur). */
@@ -585,16 +593,16 @@ const SnapStrip: React.FC = () => {
   const { snapEnabled: on, snapSettings: kinds, setSnapEnabled, toggleSnapSetting } = useStoreFields('snapEnabled', 'snapSettings', 'setSnapEnabled', 'toggleSnapSetting');
   return (
     <div role="group" aria-label="Object snap" style={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0, paddingLeft: 8, marginLeft: 2, borderLeft: '1px solid rgba(60,50,40,0.14)' }}>
-      <button style={{ ...SNAP_BTN, width: 22, color: on ? '#ea580c' : '#a8a29e', background: on ? 'rgba(234,88,12,0.09)' : 'transparent' }} aria-pressed={on}
+      <button style={{ ...SNAP_BTN, width: 24, color: on ? '#ea580c' : '#57534e', background: on ? 'rgba(234,88,12,0.09)' : 'transparent' }} aria-pressed={on}
         title={`Object snap: ${on ? 'on' : 'off'} (F3)`} onMouseDown={e => e.preventDefault()} onClick={() => setSnapEnabled(!on)}>
-        <Magnet size={12.5} strokeWidth={2.1} />
+        <Icon name="snap" size={20} />
       </button>
       {SNAP_KINDS.map(k => {
         const act = !!(kinds as unknown as Record<string, boolean>)[k];
         return (
           <button key={k} style={{ ...SNAP_BTN, opacity: on ? 1 : 0.45 }} aria-pressed={act} title={`${SNAP_LABEL[k]} snap: ${act ? 'on' : 'off'}`}
             onMouseDown={e => e.preventDefault()} onClick={() => toggleSnapSetting(k as never)}>
-            <SnapGlyph kind={k} size={12} color={act ? '#57534e' : '#cfc8be'} />
+            <SnapGlyph kind={k} size={18} color={act ? '#292524' : '#cfc8be'} />
           </button>
         );
       })}
@@ -771,7 +779,7 @@ const T = {
   groupShadow: '0 1.5px 3px rgba(40,30,20,0.09),0 0.5px 1px rgba(40,30,20,0.05),0 0 0 0.5px rgba(60,50,40,0.07),'
     + 'inset 0 0.5px 0 rgba(255,255,255,0.95),inset 0 -0.5px 0 rgba(140,120,100,0.06)',
   hdrBorder: '#e4dfd7', rowBorder: '#d6d1c8', menuBorder: '#dcd6cb',
-  iconIdle: '#6b6560', iconHover: '#1c1917', iconActive: '#ea580c',
+  iconIdle: '#292524', iconHover: '#0c0a09', iconActive: '#ea580c',
   activeBg: 'rgba(234,88,12,0.08)', activeBord: 'rgba(234,88,12,0.28)', hoverBg: 'rgba(0,0,0,0.05)',
   textStrong: '#292524', textBody: '#44403c', textMute: '#706b65', textFaint: '#9c9590', textWhisper: '#c9c4be',
 };
@@ -796,7 +804,7 @@ const TBtn: React.FC<TBtnProps> = ({ icon, label, active = false, disabled = fal
         ...TBTN_BASE, background: bg, color, boxShadow: !disabled && active ? `0 0 0 1px ${T.activeBord}` : 'none',
         cursor: disabled ? 'not-allowed' : 'pointer', transform: hov && !disabled && !active ? 'scale(1.06)' : 'scale(1)',
       }}>
-      <Icon name={icon} size={18} />
+      <Icon name={icon} size={26} muted={disabled} />
       <span style={{ ...TBTN_TIP, opacity: hov && !disabled ? 1 : 0 }}>{label}</span>
     </button>
   );
@@ -820,32 +828,32 @@ const Breadcrumb: React.FC<{ label: string; value: string; color: string }> = ({
 /** Menü tanımları: [ikon, etiket, kısayol]; '-' = ayırıcı. */
 type MenuItem = [IconName | null, string, string] | '-';
 const MENUS: Array<{ label: string; items: MenuItem[] }> = [
-  { label: 'File', items: [['file-plus', 'New Project', 'Ctrl+N'], ['upload', 'Open Project...', 'Ctrl+O'], '-', ['save', 'Save', 'Ctrl+S'],
-    ['file-down', 'Save As...', 'Ctrl+Shift+S'], '-', ['upload', 'Import...', 'Ctrl+I'], ['file-down', 'Export...', 'Ctrl+E']] },
-  { label: 'Edit', items: [['undo-2', 'Undo', 'Ctrl+Z'], ['redo-2', 'Redo', 'Ctrl+Y'], '-', ['scissors', 'Cut', 'Ctrl+X'], ['copy', 'Copy', 'Ctrl+C'],
-    ['clipboard-paste', 'Paste', 'Ctrl+V'], '-', ['eraser', 'Delete', 'Del']] },
-  { label: 'View', items: [['grid-2x2', 'Show Grid', 'G'], ['layers', 'Show Layers', 'L'], ['eye', 'Visibility', 'V'], '-',
-    ['cuboid', 'Solid View', '1'], ['box-select', 'Wireframe View', '2'], ['scan-eye', 'X-Ray View', '3'], '-',
+  { label: 'File', items: [['file-new', 'New Project', 'Ctrl+N'], ['open', 'Open Project...', 'Ctrl+O'], '-', ['save', 'Save', 'Ctrl+S'],
+    ['save-as', 'Save As...', 'Ctrl+Shift+S'], '-', ['import', 'Import...', 'Ctrl+I'], ['export', 'Export...', 'Ctrl+E']] },
+  { label: 'Edit', items: [['undo', 'Undo', 'Ctrl+Z'], ['redo', 'Redo', 'Ctrl+Y'], '-', ['cut', 'Cut', 'Ctrl+X'], ['copy', 'Copy', 'Ctrl+C'],
+    ['paste', 'Paste', 'Ctrl+V'], '-', ['delete', 'Delete', 'Del']] },
+  { label: 'View', items: [['grid', 'Show Grid', 'G'], ['layers', 'Show Layers', 'L'], ['eye', 'Visibility', 'V'], '-',
+    ['view-solid', 'Solid View', '1'], ['view-wireframe', 'Wireframe View', '2'], ['view-xray', 'X-Ray View', '3'], '-',
     [null, 'Zoom In', 'Ctrl++'], [null, 'Zoom Out', 'Ctrl+-'], [null, 'Fit to View', 'F']] },
-  { label: 'Place', items: [['box', 'Add Box', 'B'], ['cylinder', 'Add Cylinder', 'C'], ['package', '3D Objects', '3'], '-',
-    ['square', '2D Shapes', '2'], ['git-branch', 'Drawing Tools', 'L']] },
-  { label: 'Modify', items: [['move', 'Move', 'M'], ['rotate-ccw', 'Rotate', 'R'], ['maximize', 'Scale', 'S'], '-',
-    ['flip-horizontal', 'Mirror', 'Mi'], ['copy', 'Array', 'Ar'], ['sliders-horizontal', 'Edit', 'E']] },
-  { label: 'Snap', items: [['target', 'Endpoint Snap', 'End'], ['navigation', 'Midpoint Snap', 'Mid'], ['crosshair', 'Center Snap', 'Cen'],
-    ['rotate-cw', 'Quadrant Snap', 'Qua'], ['zap', 'Perpendicular Snap', 'Per'], ['inspection-panel', 'Intersection Snap', 'Int'],
-    ['map-pin', 'Nearest Snap', 'Nea'], '-', ['settings', 'Snap Settings', 'Ctrl+Snap']] },
-  { label: 'Measure', items: [['ruler', 'Distance', 'D'], ['ruler', 'Angle', 'A'], ['maximize-2', 'Area', 'Ar'], '-',
-    ['ruler', 'Add Dimension', 'DIM'], ['settings', 'Dimension Style', 'D'], '-', ['eye', 'Show / Hide Dimensions', ''], ['eraser', 'Erase All Dimensions', '']] },
-  { label: 'Display', items: [['monitor', 'Render Settings', 'R'], ['eye', 'View Modes', 'V'], ['camera', 'Camera Settings', 'C'], '-',
-    ['layers', 'Material Editor', 'M'], ['settings', 'Lighting', 'L']] },
-  { label: 'Settings', items: [['cog', 'General Settings', 'Ctrl+,'], ['grid-2x2', 'Grid Settings', 'G'], ['ruler', 'Unit Settings', 'U'], '-',
-    ['settings', 'Toolbar', 'T'], ['panel-left', 'Panel Layout', 'P']] },
-  { label: 'Report', items: [['file-text', 'Project Report', 'Ctrl+R'], ['bar-chart-3', 'Material List', 'Ctrl+L'],
-    ['file-text', 'Dimension Report', 'Ctrl+M'], '-', ['file-down', 'PDF Export', 'Ctrl+P'], ['file-down', 'Excel Export', 'Ctrl+E']] },
-  { label: 'Window', items: [['panel-left', 'New Window', 'Ctrl+N'], ['layers', 'Window Layout', 'Ctrl+W'], '-',
-    ['monitor', 'Full Screen', 'F11'], ['panel-left', 'Hide Panels', 'Tab']] },
-  { label: 'Help', items: [['help-circle', 'User Manual', 'F1'], ['help-circle', 'Keyboard Shortcuts', 'Ctrl+?'], ['monitor', 'Video Tutorials', 'Ctrl+T'], '-',
-    ['help-circle', 'About', 'Ctrl+H'], ['help-circle', 'Check Updates', 'Ctrl+U']] },
+  { label: 'Place', items: [['add-box', 'Add Box', 'B'], ['cylinder', 'Add Cylinder', 'C'], ['catalog', '3D Objects', '3'], '-',
+    ['draw-rect', '2D Shapes', '2'], ['draw-drawing', 'Drawing Tools', 'L']] },
+  { label: 'Modify', items: [['move', 'Move', 'M'], ['rotate', 'Rotate', 'R'], ['scale', 'Scale', 'S'], '-',
+    ['draw-mirror', 'Mirror', 'Mi'], ['draw-arrayrect', 'Array', 'Ar'], ['params', 'Edit', 'E']] },
+  { label: 'Snap', items: [['snap-endpoint', 'Endpoint Snap', 'End'], ['snap-midpoint', 'Midpoint Snap', 'Mid'], ['snap-center', 'Center Snap', 'Cen'],
+    ['snap-quadrant', 'Quadrant Snap', 'Qua'], ['snap-perpendicular', 'Perpendicular Snap', 'Per'], ['snap-intersection', 'Intersection Snap', 'Int'],
+    ['snap-nearest', 'Nearest Snap', 'Nea'], '-', ['snap', 'Snap Settings', 'Ctrl+Snap']] },
+  { label: 'Measure', items: [['dim-distance', 'Distance', 'D'], ['dim-angular', 'Angle', 'A'], ['area', 'Area', 'Ar'], '-',
+    ['dim-linear', 'Add Dimension', 'DIM'], ['settings', 'Dimension Style', 'D'], '-', ['eye', 'Show / Hide Dimensions', ''], ['delete', 'Erase All Dimensions', '']] },
+  { label: 'Display', items: [['monitor', 'Render Settings', 'R'], ['view-solid', 'View Modes', 'V'], ['cam-persp', 'Camera Settings', 'C'], '-',
+    ['material', 'Material Editor', 'M'], ['light', 'Lighting', 'L']] },
+  { label: 'Settings', items: [['settings', 'General Settings', 'Ctrl+,'], ['grid', 'Grid Settings', 'G'], ['ruler', 'Unit Settings', 'U'], '-',
+    ['settings', 'Toolbar', 'T'], ['layout', 'Panel Layout', 'P']] },
+  { label: 'Report', items: [['report', 'Project Report', 'Ctrl+R'], ['cutlist', 'Material List', 'Ctrl+L'],
+    ['report', 'Dimension Report', 'Ctrl+M'], '-', ['export', 'PDF Export', 'Ctrl+P'], ['export', 'Excel Export', 'Ctrl+E']] },
+  { label: 'Window', items: [['window', 'New Window', 'Ctrl+N'], ['layout', 'Window Layout', 'Ctrl+W'], '-',
+    ['fullscreen', 'Full Screen', 'F11'], ['layout', 'Hide Panels', 'Tab']] },
+  { label: 'Help', items: [['help', 'User Manual', 'F1'], ['help', 'Keyboard Shortcuts', 'Ctrl+?'], ['monitor', 'Video Tutorials', 'Ctrl+T'], '-',
+    ['help', 'About', 'Ctrl+H'], ['help', 'Check Updates', 'Ctrl+U']] },
 ];
 const MENU_ACTIONS: Record<string, ViewMode> = { 'Solid View': ViewMode.SOLID, 'Wireframe View': ViewMode.WIREFRAME, 'X-Ray View': ViewMode.XRAY };
 /** Measure menüsü → ölçülendirme komutları (Dim.ts). */
@@ -874,7 +882,7 @@ const HEADER_ROW: React.CSSProperties = {
   borderBottom: `1px solid ${T.hdrBorder}`, boxShadow: '0 1px 0 rgba(255,255,255,0.5)', gap: '12px',
 };
 const SEARCH_INPUT: React.CSSProperties = {
-  width: '180px', height: '28px', paddingLeft: '30px', paddingRight: '10px', fontSize: TS.ui, fontFamily: UI_FONT, fontWeight: 400,
+  width: '180px', height: '28px', paddingLeft: '31px', paddingRight: '10px', fontSize: TS.ui, fontFamily: UI_FONT, fontWeight: 400,
   letterSpacing: TS.ls, color: T.textStrong, background: '#f7f6f3', border: `1px solid ${T.groupBorder}`, borderRadius: '7px', outline: 'none',
   boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.04)', transition: 'border-color 0.15s,box-shadow 0.15s,background 0.15s',
 };
@@ -981,7 +989,7 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px' }}>
             <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
               <span style={{ position: 'absolute', left: '10px', pointerEvents: 'none', color: '#b0aaa4', display: 'inline-flex' }}>
-                <Icon name="search" size={12} />
+                <Icon name="search" size={15} />
               </span>
               <input type="text" placeholder="Search..." style={SEARCH_INPUT}
                 onFocus={e => paint(e.currentTarget, {
@@ -995,9 +1003,9 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
               {/* Seçim kipi Body ↔ Panel ve panel çizgileri — tel görünüş düğmesinin yanında. */}
               <ToggleIconButton active={panelSelectMode} onClick={() => s.setPanelSelectMode(!panelSelectMode)}
                 title={panelSelectMode ? 'Selection: Panel — click to select whole bodies' : 'Selection: Body — click to select individual panels'}
-                icon={panelSelectMode ? Layers : Box} />
+                icon={panelSelectMode ? 'select-panel' : 'select-body'} />
               <ToggleIconButton active={s.showOutlines} onClick={() => s.setShowOutlines(!s.showOutlines)}
-                title={s.showOutlines ? 'Panel outlines: on' : 'Panel outlines: off'} icon={Square} />
+                title={s.showOutlines ? 'Panel outlines: on' : 'Panel outlines: off'} icon="outlines" />
               <GroupSep />
               {s.cameraType === CameraType.PERSPECTIVE
                 ? <CameraPerspectiveButton onClick={() => s.setCameraType(CameraType.ORTHOGRAPHIC)} />
@@ -1005,9 +1013,9 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
               {s.orthoMode === OrthoMode.ON ? <LinearModeOnButton onClick={s.toggleOrthoMode} /> : <LinearModeOffButton onClick={s.toggleOrthoMode} />}
               <GroupSep />
               <IconButton icon="settings" title="Settings" />
-              <IconButton icon="help-circle" title="Help" />
+              <IconButton icon="help" title="Help" />
               <GroupSep />
-              <IconButton icon="log-out" title="Exit" tone="exit" />
+              <IconButton icon="exit" title="Exit" tone="exit" />
             </BtnGroup>
           </div>
         </div>
@@ -1038,7 +1046,7 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
                         <button key={i} className="tb-mi" style={MENU_ITEM}
                           onClick={() => { const vm = MENU_ACTIONS[item[1]], dc = MENU_COMMANDS[item[1]]; if (vm) s.setViewMode(vm); if (dc) dimRoute(dc); setActiveMenu(null); }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            {item[0] && <Icon name={item[0]} size={11} />}<span>{item[1]}</span>
+                            <span style={{ width: 16, display: 'inline-flex', color: T.textStrong }}>{item[0] && <Icon name={item[0]} size={16} />}</span><span>{item[1]}</span>
                           </div>
                           <span style={MENU_SHORTCUT}>{item[2]}</span>
                         </button>
@@ -1051,29 +1059,28 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
         </div>
 
         <div style={TOOL_ROW}>
-          <BtnGroup><TBtn icon="file-plus" label="New (Ctrl+N)" /><TBtn icon="save" label="Save (Ctrl+S)" /><TBtn icon="file-down" label="Save As" /></BtnGroup>
+          <BtnGroup><TBtn icon="file-new" label="New (Ctrl+N)" /><TBtn icon="save" label="Save (Ctrl+S)" /><TBtn icon="save-as" label="Save As" /></BtnGroup>
           <VLine />
-          <BtnGroup><TBtn icon="undo-2" label="Undo (Ctrl+Z)" /><TBtn icon="redo-2" label="Redo (Ctrl+Y)" /></BtnGroup>
+          <BtnGroup><TBtn icon="undo" label="Undo (Ctrl+Z)" /><TBtn icon="redo" label="Redo (Ctrl+Y)" /></BtnGroup>
           <VLine />
           <BtnGroup>
-            {toolBtn('mouse-pointer-2', 'Select (V)', Tool.SELECT)}
+            {toolBtn('select', 'Select (V)', Tool.SELECT)}
             {toolBtn('move', 'Move (M)', Tool.MOVE, noSel)}
-            {toolBtn('navigation', 'Point to Point', Tool.POINT_TO_POINT_MOVE, noSel)}
-            {toolBtn('refresh-ccw', 'Rotate (R)', Tool.ROTATE, noSel)}
-            {toolBtn('maximize-2', isBoxSelected ? 'Scale — disabled for box' : 'Scale (S)', Tool.SCALE, noSel || isBoxSelected)}
+            {toolBtn('move-p2p', 'Point to Point', Tool.POINT_TO_POINT_MOVE, noSel)}
+            {toolBtn('rotate', 'Rotate (R)', Tool.ROTATE, noSel)}
+            {toolBtn('scale', isBoxSelected ? 'Scale — disabled for box' : 'Scale (S)', Tool.SCALE, noSel || isBoxSelected)}
           </BtnGroup>
           <VLine />
           <BtnGroup>
             <AddBoxButton onClick={handleAddBox} />
-            <SubtractBoxButton onClick={handleSubtract} disabled={noSel || !hasIntersectingShapes}
-              className={hasIntersectingShapes ? 'text-red-400 hover:bg-red-50 hover:text-red-500' : ''} />
+            <SubtractBoxButton onClick={handleSubtract} disabled={noSel || !hasIntersectingShapes} className={hasIntersectingShapes ? 'hover:bg-red-50' : ''} />
             <GroupSep />
-            <IconButton icon="folder-open" title="Catalog" onClick={onOpenCatalog} />
+            <IconButton icon="catalog" title="Catalog" onClick={onOpenCatalog} />
           </BtnGroup>
           <VLine />
           {/* Ölçülendirme: en gerekli dört araç (ötekiler komut satırından ve Measure menüsünden). Etkin araca yeniden basmak kapatır. */}
           <BtnGroup>
-            {dimBtn('dimension', 'Dimension — click an edge, or two points (DIM)', 'DIM')}
+            {dimBtn('dim-linear', 'Dimension — click an edge, or two points (DIM)', 'DIM')}
             {dimBtn('dim-angular', 'Angle between two edges (DAN)', 'DIMANGULAR')}
             <GroupSep />
             {dimBtn('dim-distance', 'Measure distance — leaves nothing on the model (DI)', 'DIST')}
@@ -1576,15 +1583,15 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyCon
         style={{ ...SIDEBAR_HEADER, cursor: floating ? 'move' : 'default' }}>
         <div style={HEADER_SIDE}>
           <TabBtn active={activeTab === 'parameters'} onClick={() => setActiveTab('parameters')}
-            icon={<SlidersHorizontal size={13.5} strokeWidth={2} />} label="Parameters" />
+            icon={<Icon name="params" size={18} />} label="Parameters" />
           <div style={VSEP} />
           {/* ASSEMBLY — hiyerarşik ürün ağacı (eski "Panel Editor"). */}
           <TabBtn active={activeTab === 'assembly'} onClick={() => setActiveTab('assembly')}
-            icon={<ListTree size={13.5} strokeWidth={2} />} label="Assembly" />
+            icon={<Icon name="assembly" size={18} />} label="Assembly" />
           {accessoriesContent && <>
             <div style={VSEP} />
             <TabBtn active={activeTab === 'accessories'} onClick={() => setActiveTab('accessories')}
-              icon={<Wrench size={13.5} strokeWidth={2} />} label="Accessories" />
+              icon={<Icon name="accessories" size={18} />} label="Accessories" />
           </>}
         </div>
         {/* Yüzen kipte boş şerit tutamaktır; ortadaki grip yalnız ipucu. */}
@@ -1592,18 +1599,18 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyCon
           flex: 1, minWidth: 0, height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: SB.textMuted,
           opacity: floating ? 0.7 : 0, pointerEvents: 'none',
         }}>
-          <GripHorizontal size={14} strokeWidth={2} />
+          <Icon name="grip" size={18} />
         </div>
         <div style={HEADER_SIDE}>
           <div style={VSEP} />
           {/* Yerleşim: yüzen panel ↔ sol şerit; ayrı pencere ↔ ana pencere. Etkin olan düğmeye basmak sola yaslar. */}
           <HeaderToggle active={floating} onClick={floating ? dockSidebar : floatSidebar}
             title={floating ? 'Dock the panel back to the left edge' : 'Undock — floating panel you can drag and resize'}
-            icon={<PictureInPicture2 size={14} strokeWidth={2} />} />
+            icon={<Icon name="float" size={22} />} />
           {(SIDEBAR_WINDOW_ENABLED || mode === 'window') && (
             <HeaderToggle active={mode === 'window'} onClick={mode === 'window' ? dockSidebar : popOutSidebar}
               title={mode === 'window' ? 'Return the panel to the main window' : 'Open the panel in a separate browser window'}
-              icon={<AppWindow size={14} strokeWidth={2} />} />
+              icon={<Icon name="window" size={22} />} />
           )}
           {docked && (
             <>
@@ -1617,7 +1624,7 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyCon
                   transition: 'background 0.12s,color 0.12s,transform 0.18s', transform: pinHover && !isPinned ? 'rotate(-12deg)' : 'rotate(0deg)',
                   position: 'relative',
                 }}>
-                {isPinned ? <Pin size={14} strokeWidth={2.2} /> : <PinOff size={14} strokeWidth={2} />}
+                <Icon name={isPinned ? 'pin' : 'unpin'} size={22} />
                 {isPinned && <div style={ACCENT_UNDERLINE('65%')} />}
               </button>
             </>
@@ -1628,10 +1635,10 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyCon
         <SidebarRail activeTab={activeTab} hasShape={!!selectedShapeId} />
         <div className="custom-scrollbar bone-skin" style={SIDEBAR_SCROLL}>
           {tabPane('parameters', parametersContent,
-            <EmptyState icon={<SlidersHorizontal size={18} strokeWidth={1.6} />} title="No shape selected"
+            <EmptyState icon={<Icon name="params" size={30} />} title="No shape selected"
               description="Select an object from the 3D view to edit its parameters" hint="Tip: Click an object or drag a selection box" />)}
           {tabPane('assembly', assemblyContent,
-            <EmptyState icon={<ListTree size={18} strokeWidth={1.6} />} title="No body selected"
+            <EmptyState icon={<Icon name="assembly" size={30} />} title="No body selected"
               description="Select a body in the 3D view to see and build its parts — panels, legs, doors, backs" hint="Tip: Click a body, then pick a tool on the left" />)}
           {accessoriesContent && tabPane('accessories', accessoriesContent, null, false)}
         </div>
@@ -1666,11 +1673,11 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyCon
   return (
     <>
       {docked && !isVisible && edgeHandle(
-        <ChevronRight size={14} strokeWidth={2.5}
+        <Icon name="chevron-right" size={16}
           style={{ color: handleInk, transition: 'color 0.15s,transform 0.22s', transform: handleHover ? 'translateX(1.5px)' : 'translateX(0)' }} />,
         'Open sidebar', openSidebar)}
       {mode === 'window' && edgeHandle(
-        <AppWindow size={14} strokeWidth={2.2} style={{ color: handleInk, transition: 'color 0.15s' }} />,
+        <Icon name="window" size={18} style={{ color: handleInk, transition: 'color 0.15s' }} />,
         'Panel is open in a separate window — click to bring it to front', popOutSidebar)}
 
       {/* Tek çerçeve, iki görünüm: aynı ağaç yuvası → docked ↔ floating geçişinde içerik yeniden kurulmaz. */}
