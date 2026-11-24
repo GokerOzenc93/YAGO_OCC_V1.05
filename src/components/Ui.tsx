@@ -107,6 +107,7 @@ export const RAIL_W = 60;
 type SidebarTab = 'parameters' | 'assembly' | 'accessories';
 type RailSpec = {
   key: string; label: string; icon: IconName; title: string; active?: boolean; badge?: string | number; onClick: () => void;
+  /** Bu düğmeyle başlayan grubun başlığı (CARCASS, INTERIOR …) — rayda düğmenin üstüne yazılır. */ group?: string;
   /** Sekme açıkken de pasif (ör. hızlı gövde zaten yerleşmiş). */ disabled?: boolean;
 };
 /* Panelin YEREL durumuna bağlı ray eylemleri buraya kaydolur (ParametersPanel → özel parametre ekleme). */
@@ -133,6 +134,16 @@ const RAIL_STYLE: React.CSSProperties = {
   boxShadow: 'inset -1px 0 0 rgba(255,255,255,0.7)', fontFamily: UI_FONT,
 };
 
+const RAIL_CAP: React.CSSProperties = {
+  width: '54px', padding: '7px 0 3px', textAlign: 'center', fontSize: '8.5px', lineHeight: '10px', fontWeight: 600, letterSpacing: '0.08em',
+  textTransform: 'uppercase', color: '#a39b91', whiteSpace: 'nowrap', userSelect: 'none', flexShrink: 0,
+};
+/** Ray grup başlığı; ilki dışında üstünde ince ayırıcı çizgi. */
+const RailCap: React.FC<{ label: string; first: boolean }> = ({ label, first }) => (
+  <div style={{ ...RAIL_CAP, paddingTop: first ? '1px' : '7px', borderTop: first ? 'none' : '1px solid rgba(60,50,40,0.10)', marginTop: first ? 0 : '4px' }}>
+    {label}
+  </div>
+);
 const RailTool: React.FC<Omit<RailSpec, 'key'> & { passive: boolean }> = ({ label, icon, active = false, badge, onClick, title, passive }) => {
   const [hov, hoverProps] = useHover();
   const on = active && !passive, hv = hov && !passive;
@@ -190,40 +201,45 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
     if (n) { s.setVertexEditMode(false); s.setSubtractionViewMode(false); }
   };
   const params: RailSpec[] = [
-    { key: 'vertex', label: 'Vertex', icon: 'vertex', title: 'Edit the body outline by moving vertices', ...toggleEdit(s.vertexEditMode, s.setVertexEditMode) },
+    { key: 'vertex', group: 'Shape', label: 'Vertex', icon: 'vertex', title: 'Edit the body outline by moving vertices', ...toggleEdit(s.vertexEditMode, s.setVertexEditMode) },
     { key: 'subtract', label: 'Subtract', icon: 'subtract', title: 'Show and edit boolean subtractions', badge: subN > 0 ? subN : undefined,
       ...toggleEdit(s.subtractionViewMode, s.setSubtractionViewMode) },
     { key: 'fillet', label: 'Fillet', icon: 'fillet', title: 'Round the edge between two faces', active: s.filletMode,
       badge: filletN > 0 ? `${filletN}/2` : undefined, onClick: toggleFillet },
-    { key: 'param', label: 'Param', icon: 'param-add', title: 'Add a custom parameter', onClick: () => railActions.addCustomParameter?.() },
+    { key: 'param', group: 'Data', label: 'Param', icon: 'param-add', title: 'Add a custom parameter', onClick: () => railActions.addCustomParameter?.() },
   ];
   const vp = (m: 'shelf' | 'divider') => s.volumePickMode === m && !s.volumePickGroupId;
   const volume = (m: 'shelf' | 'divider') => ({ active: vp(m), onClick: () => s.setVolumePickMode(vp(m) ? null : m) });
   const panels: RailSpec[] = [
-    { key: 'body', label: 'Body', icon: 'body', ...toggle(s.quickBodyMode, s.setQuickBodyMode), disabled: bodyPlaced,
+    { key: 'body', group: 'Carcass', label: 'Body', icon: 'body', ...toggle(s.quickBodyMode, s.setQuickBodyMode), disabled: bodyPlaced,
       title: bodyPlaced ? 'Body panels are already placed — open the Body row at the top of the list to revise them, or delete them to place again'
         : 'Quick body: corner joints, base (plain / legs / plinth) and back panel placed in one step' },
     { key: 'panel', label: 'Panel', icon: 'panel', title: 'Body panel: click a body face in the 3D view', ...toggle(s.raycastMode, s.setRaycastMode) },
-    { key: 'shelf', label: 'Shelf', icon: 'shelf', title: 'Click inside a cavity in the 3D view', ...volume('shelf') },
+    { key: 'shelf', group: 'Interior', label: 'Shelf', icon: 'shelf', title: 'Click inside a cavity in the 3D view', ...volume('shelf') },
     { key: 'divider', label: 'Divider', icon: 'divider', title: 'Click inside a cavity in the 3D view', ...volume('divider') },
-    { key: 'door', label: 'Door', icon: 'door', ...toggle(s.doorPickMode, s.setDoorPickMode),
+    { key: 'door', group: 'Covers', label: 'Door', icon: 'door', ...toggle(s.doorPickMode, s.setDoorPickMode),
       title: 'Mark door references on panels, then click a body face' },
     { key: 'back', label: 'Back', icon: 'back', ...toggle(s.backPickMode, s.setBackPickMode),
       title: 'Back panel: mark back references on panels, then click the body — each click cycles the candidates, largest first' },
-    { key: 'plinth', label: 'Plinth', icon: 'plinth', ...toggle(s.plinthPickMode, s.setPlinthPickMode),
+    { key: 'plinth', group: 'Base', label: 'Plinth', icon: 'plinth', ...toggle(s.plinthPickMode, s.setPlinthPickMode),
       title: 'Plinth leg set: click the body — the volume under the bottom panel / below the body is highlighted, click cycles, right-click places' },
   ];
   // Aksesuar: kategori raydan seçilir (panelde ayrıca tip seçimi yok); kütüphane gövdeden bağımsız → şekil seçili olmasa da etkin.
   const accessories: RailSpec[] = [
-    { key: 'acc-legs', label: 'Legs', icon: 'legs', title: 'Leg models and leg sets', active: s.accessoryCategory === 'legs', onClick: () => s.setAccessoryCategory('legs') },
+    { key: 'acc-legs', group: 'Hardware', label: 'Legs', icon: 'legs', title: 'Leg models and leg sets', active: s.accessoryCategory === 'legs', onClick: () => s.setAccessoryCategory('legs') },
     { key: 'acc-connectors', label: 'Connector', icon: 'connector', title: 'the connector itself: holes, drawn operations and a 3D model on a two-panel joint', active: s.accessoryCategory === 'connectors', onClick: () => s.setAccessoryCategory('connectors') },
-    { key: 'acc-layouts', label: 'Connector\nlayout', icon: 'connector-layout', title: 'where connectors sit along a joint — four rules, per joint-length range, several connectors in one layout', active: s.accessoryCategory === 'layouts', onClick: () => s.setAccessoryCategory('layouts') },
+    { key: 'acc-layouts', group: 'Rules', label: 'Connector\nlayout', icon: 'connector-layout', title: 'where connectors sit along a joint — four rules, per joint-length range, several connectors in one layout', active: s.accessoryCategory === 'layouts', onClick: () => s.setAccessoryCategory('layouts') },
     { key: 'acc-types', label: 'Connector\nrules', icon: 'connector-rules', title: 'per panel type, which edges get a connector (fixed / movable / none), and the default type per face', active: s.accessoryCategory === 'panelTypes', onClick: () => s.setAccessoryCategory('panelTypes') },
-    { key: 'acc-layers', label: 'Layers', icon: 'layers', title: 'Accessory layers — shared by every accessory part (name + colour)', active: s.accessoryCategory === 'layers', onClick: () => s.setAccessoryCategory('layers') },
+    { key: 'acc-layers', group: 'Library', label: 'Layers', icon: 'layers', title: 'Accessory layers — shared by every accessory part (name + colour)', active: s.accessoryCategory === 'layers', onClick: () => s.setAccessoryCategory('layers') },
   ];
   // Yalnız ETKİN sekmenin araçları çizilir (pasif / soluk grup yok).
   const group = (list: RailSpec[], tab: SidebarTab, needShape = true) =>
-    activeTab === tab ? list.map(({ key, disabled, ...t }) => <RailTool key={key} {...t} passive={(needShape && !hasShape) || !!disabled} />) : null;
+    activeTab === tab ? list.map(({ key, disabled, group: cap, ...t }, i) => (
+      <React.Fragment key={key}>
+        {cap && <RailCap label={cap} first={i === 0} />}
+        <RailTool {...t} passive={(needShape && !hasShape) || !!disabled} />
+      </React.Fragment>
+    )) : null;
   return (
     <div className="yago-rail" style={RAIL_STYLE}>
       {group(params, 'parameters')}
@@ -258,6 +274,36 @@ const ICON_SRC: Record<string, { svg: string; vb: number }> = {};
 for (const [path, svg] of Object.entries(ICON_FILES)) {
   ICON_SRC[path.slice(path.lastIndexOf('/') + 1, -4)] = { svg, vb: Number(/viewBox="0 0 ([\d.]+)/.exec(svg)?.[1] ?? 24) };
 }
+/* Hover animasyonları: SVG içindeki <g class="a a-<ad>"> katmanı, düğmenin üzerine gelince BİR KEZ oynar (dönen dişli, açılan kapak,
+   yerine inen raf, kendini çizen çizgi …). Merkez varsayılan 12,12; dosyada style="transform-origin:…" ile değişir. Pasif düğmede ve
+   "hareketi azalt" ayarında oynamaz. */
+const ICON_ANIM: Record<string, string> = {
+  pop: '45%{transform:scale(1.32)}', breathe: '45%{transform:scale(1.1)}', pulse: '45%{transform:scale(1.14)}',
+  dip: '45%{transform:translateY(1.6px)}', lift: '45%{transform:translateY(-2px)}',
+  nl: '45%{transform:translateX(-2px)}', nr: '45%{transform:translateX(2.2px)}', nu: '45%{transform:translateY(-2.2px)}', nd: '45%{transform:translateY(2.2px)}',
+  nul: '45%{transform:translate(-1.6px,-1.6px)}', nur: '45%{transform:translate(1.6px,-1.6px)}',
+  ndl: '45%{transform:translate(-1.6px,1.6px)}', ndr: '45%{transform:translate(1.6px,1.6px)}',
+  back: '45%{transform:rotate(-26deg)}', fwd: '45%{transform:rotate(26deg)}',
+  spin: 'to{transform:rotate(360deg)}', spin90: 'to{transform:rotate(90deg)}', spin180: 'to{transform:rotate(180deg)}',
+  tilt: '30%{transform:rotate(-11deg)}70%{transform:rotate(8deg)}', swing: '45%{transform:rotate(-16deg)}', sweep: '45%{transform:rotate(-38deg)}',
+  turn: '50%{transform:scaleX(.5)}', door: '45%{transform:scaleX(.42)}', fold: '45%{transform:scaleX(.2)}',
+  snipl: '50%{transform:rotate(-13deg)}', snipr: '50%{transform:rotate(13deg)}', lid: '45%{transform:rotate(14deg) translateY(-.6px)}',
+  flap: '45%{transform:rotate(-9deg)}', look: '30%{transform:translateX(-1.8px)}70%{transform:translateX(1.8px)}',
+  write: '25%{transform:translate(-1.2px,1.2px)}50%{transform:translate(1px,-.6px)}75%{transform:translate(-.8px,1px)}',
+  rub: '20%{transform:translate(-1.6px,1.6px)}40%{transform:translate(1.6px,-1.6px)}60%{transform:translate(-1.6px,1.6px)}80%{transform:translate(1.6px,-1.6px)}',
+  tap: '40%{transform:scale(.82)}', slide: '35%{transform:translateX(4px)}75%{transform:translateX(-1.5px)}',
+  slidel: '35%{transform:translateX(-4px)}75%{transform:translateX(1.5px)}', tape: '45%{transform:translateX(3px)}',
+  p2p: '50%{transform:translate(12.5px,-12.5px)}', grow2: '50%{transform:scale(2.15)}',
+  px: '45%{transform:scaleX(1.18)}', py: '45%{transform:scaleY(1.18)}',
+  growx: 'from{transform:scaleX(.1)}', growy: 'from{transform:scaleY(.1)}', flipin: 'from{transform:scaleX(0)}', popin: 'from{transform:scale(0)}',
+  inl: 'from{transform:translateX(-5px);opacity:0}', inr: 'from{transform:translateX(5px);opacity:0}',
+  int: 'from{transform:translateY(-5px);opacity:0}', inb: 'from{transform:translateY(5px);opacity:0}',
+  intr: 'from{transform:translate(4px,-4px);opacity:0}', fromdl: 'from{transform:translate(-10px,10px);opacity:.25}',
+  fromul: 'from{transform:translate(-6px,-6px);opacity:.25}', rotin: 'from{transform:rotate(50deg)}', fadein: 'from{opacity:0}',
+  flick: '50%{transform:translateX(2.5px);opacity:.15}', blink: '35%{opacity:.08}', flash: '50%{opacity:1}',
+  march: 'to{stroke-dashoffset:-8}', draw: 'from{stroke-dasharray:1 1;stroke-dashoffset:1}to{stroke-dasharray:1 1;stroke-dashoffset:0}',
+};
+const ICON_HOVER = ':is(button:not(:disabled),[role="button"]):hover .yi';
 const ICON_CSS = `
   .yi{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;line-height:0}
   .yi svg{width:100%;height:100%;display:block;overflow:visible;stroke-width:var(--sw,1.5)}
@@ -265,10 +311,20 @@ const ICON_CSS = `
   .yi .t{stroke-width:calc(var(--sw,1.5)*0.62)}
   .yi.mute .r,.yi.mute .o{stroke:currentColor}
   .yi.mute .r[fill]{fill:currentColor}
+  .yi .a{transform-box:view-box;transform-origin:12px 12px}
+  .yi .a-flash{opacity:0}
+  @media (prefers-reduced-motion:no-preference){
+    ${ICON_HOVER} .a{animation-duration:.62s;animation-timing-function:cubic-bezier(.4,0,.2,1);animation-fill-mode:backwards}
+    ${ICON_HOVER} :is(.a-spin,.a-spin180){animation-duration:.85s}
+    ${ICON_HOVER} :is(.a-draw,.a-march){animation-duration:.7s;animation-timing-function:ease-out}
+    ${ICON_HOVER} :is(.a-rub,.a-write,.a-look,.a-tilt){animation-duration:.75s}
+${Object.entries(ICON_ANIM).map(([k, f]) => `    @keyframes yi-${k}{${f}} ${ICON_HOVER} .a-${k}{animation-name:yi-${k}}`).join('\n')}
+  }
 `;
-if (typeof document !== 'undefined' && !document.getElementById('yago-icon-css')) {
-  const el = document.createElement('style');
-  el.id = 'yago-icon-css'; el.textContent = ICON_CSS; document.head.appendChild(el);
+if (typeof document !== 'undefined') {
+  const el = document.getElementById('yago-icon-css') ?? Object.assign(document.createElement('style'), { id: 'yago-icon-css' });
+  el.textContent = ICON_CSS;   // HMR'de güncel kalsın
+  if (!el.parentNode) document.head.appendChild(el);
 }
 /** Ekranda hedef çizgi kalınlığı (px): küçük ikonda biraz incelir, büyükte dolgunlaşır. */
 const iconStrokePx = (size: number) => (size >= 28 ? 1.7 : size >= 22 ? 1.6 : size >= 16 ? 1.45 : 1.3);
@@ -814,6 +870,19 @@ const BTN_GROUP: React.CSSProperties = {
   borderRadius: '8px', boxShadow: T.groupShadow, flexShrink: 0,
 };
 const BtnGroup: React.FC<{ children: React.ReactNode }> = ({ children }) => <div style={BTN_GROUP}>{children}</div>;
+/* Grup başlığı: düğme grubunun altında ne işe yaradığını söyleyen küçük yazı (şerit / ribbon düzeni). */
+const GROUP_CAP: React.CSSProperties = {
+  fontSize: '9px', lineHeight: '10px', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#9c9590', whiteSpace: 'nowrap',
+  fontFamily: UI_FONT, userSelect: 'none',
+};
+const CapGroup: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <div role="group" aria-label={label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', flexShrink: 0 }}>
+    <BtnGroup>{children}</BtnGroup>
+    <span style={GROUP_CAP}>{label}</span>
+  </div>
+);
+/** Gruplar arası ayırıcı — başlığın yüksekliği kadar yukarıda, düğmelerin ortasına hizalı. */
+const CapSep: React.FC<{ m?: string }> = ({ m = '0 8px' }) => <div style={{ ...vline(18, 0.12, m), marginBottom: '13px' }} />;
 const VLine: React.FC<{ h?: number; m?: string; o?: number }> = ({ h = 18, m = '0 8px', o = 0.12 }) => <div style={vline(h, o, m)} />;
 /** Düğme grubu içi ayırıcı. */
 const GroupSep = () => <VLine h={16} m="0 2px" o={0.14} />;
@@ -877,8 +946,11 @@ const TOOLBAR_CSS = `
     background:linear-gradient(90deg,transparent,#f97316 50%,transparent);}
   .tb-mi:hover{background:#fff7ed!important;color:#ea580c!important;}
 `;
+/* Üst şeritlerin yüksekliği — sol kenar çubuğu bunların altından başlar (TOOLBAR_STACK_H). Başlık ve araç satırı grup başlıkları için yüksek. */
+const HEADER_H = 54, MENU_H = 34, TOOL_H = 56;
+const TOOLBAR_STACK_H = HEADER_H + MENU_H + TOOL_H - 2;
 const HEADER_ROW: React.CSSProperties = {
-  position: 'relative', display: 'flex', alignItems: 'center', height: '46px', padding: '0 18px', background: T.headerBg,
+  position: 'relative', display: 'flex', alignItems: 'center', height: `${HEADER_H}px`, padding: '0 18px', background: T.headerBg,
   borderBottom: `1px solid ${T.hdrBorder}`, boxShadow: '0 1px 0 rgba(255,255,255,0.5)', gap: '12px',
 };
 const SEARCH_INPUT: React.CSSProperties = {
@@ -887,7 +959,7 @@ const SEARCH_INPUT: React.CSSProperties = {
   boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.04)', transition: 'border-color 0.15s,box-shadow 0.15s,background 0.15s',
 };
 const MENU_BAR: React.CSSProperties = {
-  position: 'relative', display: 'flex', alignItems: 'center', height: '34px', padding: '0 14px', background: T.menuBg,
+  position: 'relative', display: 'flex', alignItems: 'center', height: `${MENU_H}px`, padding: '0 14px', background: T.menuBg,
   borderBottom: `1px solid ${T.menuBorder}`,
   boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.85),inset 0 -1px 0 rgba(140,120,100,0.08),inset 1px 0 0 rgba(255,255,255,0.4),'
     + 'inset -1px 0 0 rgba(140,120,100,0.04),0 1px 0 rgba(255,255,255,0.45),0 2px 4px -1px rgba(60,50,40,0.06)',
@@ -915,7 +987,7 @@ const MENU_ITEM: React.CSSProperties = {
 };
 const MENU_SHORTCUT: React.CSSProperties = { fontFamily: MONO_FONT, fontSize: '10px', letterSpacing: '0.03em', color: T.textFaint, fontWeight: 400 };
 const TOOL_ROW: React.CSSProperties = {
-  position: 'relative', display: 'flex', alignItems: 'center', height: '42px', padding: '0 14px', background: T.rowBg,
+  position: 'relative', display: 'flex', alignItems: 'center', height: `${TOOL_H}px`, padding: '0 14px', background: T.rowBg,
   borderBottom: `1px solid ${T.rowBorder}`,
   boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.85),inset 0 -1px 0 rgba(140,120,100,0.06),0 1px 4px rgba(60,50,40,0.04)',
 };
@@ -987,7 +1059,7 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
           <VLine h={20} m="0" o={0.18} />
           <Breadcrumb label="Project" value="Drawing1" color={T.textStrong} />
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', marginBottom: '13px' }}>
               <span style={{ position: 'absolute', left: '10px', pointerEvents: 'none', color: '#b0aaa4', display: 'inline-flex' }}>
                 <Icon name="search" size={15} />
               </span>
@@ -997,8 +1069,8 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
                 })}
                 onBlur={e => paint(e.currentTarget, { borderColor: T.groupBorder, boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.04)', background: '#f7f6f3' })} />
             </div>
-            <VLine m="0 4px" o={0.16} />
-            <BtnGroup>
+            <CapSep m="0 6px" />
+            <CapGroup label="View">
               <ViewBtn onClick={s.cycleViewMode} />
               {/* Seçim kipi Body ↔ Panel ve panel çizgileri — tel görünüş düğmesinin yanında. */}
               <ToggleIconButton active={panelSelectMode} onClick={() => s.setPanelSelectMode(!panelSelectMode)}
@@ -1006,17 +1078,22 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
                 icon={panelSelectMode ? 'select-panel' : 'select-body'} />
               <ToggleIconButton active={s.showOutlines} onClick={() => s.setShowOutlines(!s.showOutlines)}
                 title={s.showOutlines ? 'Panel outlines: on' : 'Panel outlines: off'} icon="outlines" />
-              <GroupSep />
+            </CapGroup>
+            <CapGroup label="Camera">
               {s.cameraType === CameraType.PERSPECTIVE
                 ? <CameraPerspectiveButton onClick={() => s.setCameraType(CameraType.ORTHOGRAPHIC)} />
                 : <CameraOrthographicButton onClick={() => s.setCameraType(CameraType.PERSPECTIVE)} />}
+            </CapGroup>
+            <CapGroup label="Drafting">
               {s.orthoMode === OrthoMode.ON ? <LinearModeOnButton onClick={s.toggleOrthoMode} /> : <LinearModeOffButton onClick={s.toggleOrthoMode} />}
-              <GroupSep />
+            </CapGroup>
+            <CapSep m="0 4px" />
+            <CapGroup label="App">
               <IconButton icon="settings" title="Settings" />
               <IconButton icon="help" title="Help" />
               <GroupSep />
               <IconButton icon="exit" title="Exit" tone="exit" />
-            </BtnGroup>
+            </CapGroup>
           </div>
         </div>
 
@@ -1059,33 +1136,33 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
         </div>
 
         <div style={TOOL_ROW}>
-          <BtnGroup><TBtn icon="file-new" label="New (Ctrl+N)" /><TBtn icon="save" label="Save (Ctrl+S)" /><TBtn icon="save-as" label="Save As" /></BtnGroup>
-          <VLine />
-          <BtnGroup><TBtn icon="undo" label="Undo (Ctrl+Z)" /><TBtn icon="redo" label="Redo (Ctrl+Y)" /></BtnGroup>
-          <VLine />
-          <BtnGroup>
+          <CapGroup label="File"><TBtn icon="file-new" label="New (Ctrl+N)" /><TBtn icon="save" label="Save (Ctrl+S)" /><TBtn icon="save-as" label="Save As" /></CapGroup>
+          <CapSep />
+          <CapGroup label="History"><TBtn icon="undo" label="Undo (Ctrl+Z)" /><TBtn icon="redo" label="Redo (Ctrl+Y)" /></CapGroup>
+          <CapSep />
+          <CapGroup label="Select & transform">
             {toolBtn('select', 'Select (V)', Tool.SELECT)}
             {toolBtn('move', 'Move (M)', Tool.MOVE, noSel)}
             {toolBtn('move-p2p', 'Point to Point', Tool.POINT_TO_POINT_MOVE, noSel)}
             {toolBtn('rotate', 'Rotate (R)', Tool.ROTATE, noSel)}
             {toolBtn('scale', isBoxSelected ? 'Scale — disabled for box' : 'Scale (S)', Tool.SCALE, noSel || isBoxSelected)}
-          </BtnGroup>
-          <VLine />
-          <BtnGroup>
+          </CapGroup>
+          <CapSep />
+          <CapGroup label="Bodies">
             <AddBoxButton onClick={handleAddBox} />
             <SubtractBoxButton onClick={handleSubtract} disabled={noSel || !hasIntersectingShapes} className={hasIntersectingShapes ? 'hover:bg-red-50' : ''} />
             <GroupSep />
             <IconButton icon="catalog" title="Catalog" onClick={onOpenCatalog} />
-          </BtnGroup>
-          <VLine />
+          </CapGroup>
+          <CapSep />
           {/* Ölçülendirme: en gerekli dört araç (ötekiler komut satırından ve Measure menüsünden). Etkin araca yeniden basmak kapatır. */}
-          <BtnGroup>
+          <CapGroup label="Measure">
             {dimBtn('dim-linear', 'Dimension — click an edge, or two points (DIM)', 'DIM')}
             {dimBtn('dim-angular', 'Angle between two edges (DAN)', 'DIMANGULAR')}
             <GroupSep />
             {dimBtn('dim-distance', 'Measure distance — leaves nothing on the model (DI)', 'DIST')}
             {dimBtn('dim-hole', 'Hole — diameter and depth, click its round edge (HL)', 'HOLE')}
-          </BtnGroup>
+          </CapGroup>
         </div>
       </div>
     </>
@@ -1649,7 +1726,7 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyCon
 
   /* Sol kenar tutamağı: kapalı şeridi açar; ayrı pencere kipinde o pencereyi öne getirir. */
   const edgeHandle = (icon: React.ReactNode, label: string, onClick: () => void) => (
-    <div ref={handleRef} className="fixed left-0 z-40" style={{ top: '120px', bottom: '64px', width: '24px', pointerEvents: 'none' }}>
+    <div ref={handleRef} className="fixed left-0 z-40" style={{ top: `${TOOLBAR_STACK_H}px`, bottom: '64px', width: '24px', pointerEvents: 'none' }}>
       <div style={EDGE_LINE} />
       <button type="button" onClick={onClick} {...handleHoverProps} aria-label={label} title={label}
         style={{
@@ -1685,7 +1762,7 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyCon
         <div ref={sidebarRef} data-yago-dock={docked ? '' : undefined}
           className={docked ? 'fixed z-40 flex transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]' : 'fixed z-40 flex'}
           style={docked
-            ? { top: '120px', bottom: '64px', left: 0, width: `${SIDEBAR_WIDTH}px`, transform: isVisible ? 'translateX(0)' : `translateX(-${SIDEBAR_WIDTH}px)` }
+            ? { top: `${TOOLBAR_STACK_H}px`, bottom: '64px', left: 0, width: `${SIDEBAR_WIDTH}px`, transform: isVisible ? 'translateX(0)' : `translateX(-${SIDEBAR_WIDTH}px)` }
             : {
               left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.w}px`, height: `${rect.h}px`, borderRadius: '10px', overflow: 'hidden',
               border: `1px solid ${SB.border}`, boxShadow: FLOAT_SHADOW, background: SB.bg,
