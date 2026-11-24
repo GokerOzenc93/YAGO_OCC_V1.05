@@ -3,11 +3,14 @@ import { create } from 'zustand';
 import { useAppStore, ViewMode, type Shape, type SceneToolStatus } from '../store';
 import { effectiveBodyGeometry, getFacesAndGroups, getShapeMatrix, groupIndexOfFace } from './Geometry';
 import { useDraft, cancelCommand as cancelDraftCommand, fmt, SNAP_LABEL, type CmdView, type Opt, type SnapKind } from './Draft';
+import { panelStepMatrix } from './PanelEngine';
 
 /* 3B ÖLÇÜLENDİRME ÇEKİRDEĞİ — sahnedeki gövde ("referans küp") ve panellerin üzerinde ölçü alma. React'ten bağımsızdır (Node'da denenir).
    Bölümler: 1 kenar / yay çıkarımı · 2 kaynaklar + 3B nesne yakalama · 3 ilişkisel çapa · 4 ölçü modeli + çizimi · 5 sürücü · 6 komutlar.
    Yakalama ayarı uygulama genelidir (store.snapEnabled / snapSettings — 2B çizimle aynı). Ölçüler ilişkiseldir: nokta, ait olduğu şeklin
-   yerel koordinatında + kutu oranında saklanır; şekil yeniden kurulunca aynı türden en yakın özelliğe oturur. */
+   kendi çerçevesinde saklanır — gövdede gövdenin yereli, panelde panelin TAŞINMAMIŞ / DÖNDÜRÜLMEMİŞ hâli (adımları geri alınmış) — + kutu oranı.
+   Şekil taşınır, döner ya da yeniden kurulursa nokta panelin hareketiyle götürülür, sonra şeklin GERÇEK geometrisine oturtulur (köşe → köşe,
+   kenar noktası → kenar, yüzey noktası → yüzey): motor dönen paneli gövdeye sığdırırken büyütüp kırpar, salt adım dönüşümü yetmez. */
 
 type V = THREE.Vector3;
 export type T3 = [number, number, number];
@@ -164,6 +167,8 @@ export interface Cursor { x: number; y: number; ray: THREE.Ray; view: View }
 export interface Src {
   shape: Shape; panel: boolean; geo: THREE.BufferGeometry; m: THREE.Matrix4; inv: THREE.Matrix4; q: THREE.Quaternion;
   mesh: THREE.Mesh; sphere: THREE.Sphere; visible: boolean; _wc?: Curve[];
+  /** Panelin taşıma / döndürme adımlarının dönüşümü (geometri koordinatında, adımsız → şimdiki) ve tersi; adımsız şekilde null. */
+  S: THREE.Matrix4 | null; Si: THREE.Matrix4 | null;
 }
 const RAY_MAT = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
 const meshCache = new WeakMap<THREE.BufferGeometry, THREE.Mesh>();
@@ -176,6 +181,59 @@ export function worldCurves(s: Src): Curve[] {
   return s._wc;
 }
 export interface RCtx { shapes: Shape[]; all: Map<string, Src>; srcs: Src[] }
+const stepCache = new WeakMap<THREE.BufferGeometry, { key: string; S: THREE.Matrix4 | null }>();
+/** Panelin adım dönüşümü — geometri + adımlar başına bir kez (geometri her rebuild'de yenilenir). */
+function stepMatrixOf(shape: Shape, geo: THREE.BufferGeometry): THREE.Matrix4 | null {
+  const key = JSON.stringify([shape.parameters?.transformSteps ?? null, shape.parameters?._refDeltaApplied ?? null]), hit = stepCache.get(geo);
+  if (hit && hit.key === key) return hit.S;
+  let S: THREE.Matrix4 | null = null;
+  try { S = panelStepMatrix(shape); } catch { S = null; }
+  if (S && S.equals(new THREE.Matrix4())) S = null;
+  stepCache.set(geo, { key, S });
+  return S;
+}
+/** Şeklin adımsız çerçevedeki kutusu (panel geometrisi adım dönüşümünün tersiyle); adımsız şekilde geometrinin kendi kutusu. */
+const baseCache = new WeakMap<THREE.BufferGeometry, { Si: THREE.Matrix4 | null; bb: THREE.Box3 }>();
+function baseBox(geo: THREE.BufferGeometry, Si: THREE.Matrix4 | null): THREE.Box3 {
+  const hit = baseCache.get(geo);
+  if (hit && (hit.Si === Si || (hit.Si && Si && hit.Si.equals(Si)))) return hit.bb;
+  let bb: THREE.Box3;
+  if (!Si) bb = geo.boundingBox!.clone();
+  else {
+    bb = new THREE.Box3();
+    const pos = geo.getAttribute('position'), v = V3();
+    for (let i = 0; i < pos.count; i++) bb.expandByPoint(v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(Si));
+  }
+  baseCache.set(geo, { Si, bb });
+  return bb;
+}
+const _seg = new THREE.Line3(), _tri = new THREE.Triangle(), _q = new THREE.Vector3(), _ta = new THREE.Vector3(), _tb = new THREE.Vector3(), _tc = new THREE.Vector3();
+/** Noktayı şeklin gerçek geometrisine oturtur (geometri koordinatı): köşe / kesişim → en yakın köşe · orta → en yakın kenar ortası ·
+ *  merkez → en yakın yay merkezi · kenar üstü (en yakın, dik, teğet, çeyrek) → en yakın kenar noktası · serbest → en yakın yüzey noktası. */
+function seatOnGeo(p: V, k: Anchor['k'], geo: THREE.BufferGeometry): V {
+  const curves = curvesOf(geo);
+  const best = (cands: V[]) => { let m: V | null = null, d = Infinity; for (const c of cands) { const x = c.distanceToSquared(p); if (x < d) { d = x; m = c; } } return m ? m.clone() : p; };
+  if (k === 'endpoint' || k === 'intersection') return best(curves.flatMap(c => (c.t === 'l' || !c.closed ? [c.a, c.b] : [])));
+  if (k === 'midpoint') return best(curves.flatMap(c => (c.t === 'l' ? [c.a.clone().lerp(c.b, 0.5)] : c.closed ? [] : [arcPoint(c, c.sweep / 2)])));
+  if (k === 'center') { const arcs = curves.filter((c): c is ArcC => c.t === 'a'); return arcs.length ? best(arcs.map(c => c.c)) : p; }
+  if (k !== 'free') {
+    let m: V | null = null, d = Infinity;
+    for (const c of curves) for (let i = 0, pts = c.t === 'l' ? [c.a, c.b] : c.pts; i + 1 < pts.length; i++) {
+      _seg.set(pts[i], pts[i + 1]).closestPointToPoint(p, true, _q);
+      const x = _q.distanceToSquared(p);
+      if (x < d) { d = x; m = _q.clone(); }
+    }
+    return m ?? p;
+  }
+  const pos = geo.getAttribute('position'), idx = geo.getIndex(), n = idx ? idx.count : pos.count, at = (i: number) => (idx ? idx.getX(i) : i);
+  let m: V | null = null, d = Infinity;
+  for (let i = 0; i + 2 < n; i += 3) {
+    _tri.set(_ta.fromBufferAttribute(pos, at(i)), _tb.fromBufferAttribute(pos, at(i + 1)), _tc.fromBufferAttribute(pos, at(i + 2))).closestPointToPoint(p, _q);
+    const x = _q.distanceToSquared(p);
+    if (x < d) { d = x; m = _q.clone(); }
+  }
+  return m ?? p;
+}
 let _rctx: RCtx | null = null, _rctxIso: unknown = null;
 /** Çözüm bağlamı: şekil başına matris / geometri (panel geometrisi üst gövdenin yerelindedir → dünyası gövdenin matrisi). */
 export function rctx(shapes: Shape[] = useAppStore.getState().shapes): RCtx {
@@ -193,7 +251,8 @@ export function rctx(shapes: Shape[] = useAppStore.getState().shapes): RCtx {
     if (!mesh) { mesh = new THREE.Mesh(geo, RAY_MAT); mesh.matrixAutoUpdate = false; meshCache.set(geo, mesh); }
     const visible = host.isolated !== false && shape.isolated !== false && (!iso || iso.targetId === shape.id)
       && !(pv && panel && shape.parameters?.parentShapeId === pv.shapeId);
-    const src: Src = { shape, panel, geo, m, inv, q, mesh, sphere: geo.boundingSphere!.clone().applyMatrix4(m), visible };
+    const S = panel ? stepMatrixOf(shape, geo) : null;
+    const src: Src = { shape, panel, geo, m, inv, q, mesh, sphere: geo.boundingSphere!.clone().applyMatrix4(m), visible, S, Si: S ? S.clone().invert() : null };
     all.set(shape.id, src);
     if (visible) srcs.push(src);
   }
@@ -386,46 +445,67 @@ function rayPlane(ray: THREE.Ray, point: V, normal: V): V | null {
 }
 
 // ═════════════════════════════════════════════════ 3. İLİŞKİSEL ÇAPA ══════════════════════════════════════════════════
-/** Ölçülen nokta. sid: ait olduğu şekil · l: o şeklin yerel noktası · f + bb: alındığı andaki kutu ve kutu oranı (şekil değişince yeniden bulunur) ·
- *  w: alındığı andaki dünya noktası (şekil silinirse ölçü orada kalır) · k: yakalama türü. */
-export interface Anchor { sid: string | null; w: T3; l?: T3; f?: T3; bb?: number[]; k: SnapKind | 'free' }
+/** Ölçülen nokta. sid: ait olduğu şekil · w: alındığı andaki dünya noktası (şekil silinirse ölçü orada kalır) · k: yakalama türü.
+ *  l / bb: şeklin geometri koordinatındaki nokta ve kutu (geometri aynı kaldıysa nokta aynen budur).
+ *  u / uf / ub: panelin ADIMSIZ çerçevesindeki nokta, kutu oranı ve kutu (adımsız şekilde l / f / bb ile aynı, yazılmaz) · sk: o anki adım dönüşümünün anahtarı. */
+export interface Anchor { sid: string | null; w: T3; l?: T3; f?: T3; bb?: number[]; k: SnapKind | 'free'; u?: T3; uf?: T3; ub?: number[]; sk?: string }
+const stepKey = (S: THREE.Matrix4 | null) => (S ? S.elements.map(x => x.toFixed(4)).join(',') : '');
+const fracIn = (p: V, bb: THREE.Box3): T3 => {
+  const sz = bb.getSize(V3()), fr = (v: number, mn: number, s: number) => (s < 1e-9 ? 0.5 : (v - mn) / s);
+  return [fr(p.x, bb.min.x, sz.x), fr(p.y, bb.min.y, sz.y), fr(p.z, bb.min.z, sz.z)];
+};
 export function makeAnchor(p: V, src: Src | null, k: Anchor['k']): Anchor {
   if (!src) return { sid: null, w: t3(p), k };
-  const l = p.clone().applyMatrix4(src.inv), bb = src.geo.boundingBox!, sz = bb.getSize(V3());
-  const fr = (v: number, mn: number, s: number) => (s < 1e-9 ? 0.5 : (v - mn) / s);
-  return { sid: src.shape.id, w: t3(p), l: t3(l), f: [fr(l.x, bb.min.x, sz.x), fr(l.y, bb.min.y, sz.y), fr(l.z, bb.min.z, sz.z)], bb: [...t3(bb.min), ...t3(bb.max)], k };
-}
-const localCache = new WeakMap<Anchor, { geo: THREE.BufferGeometry; p: V }>();
-function localOf(a: Anchor, geo: THREE.BufferGeometry): V {
-  const hit = localCache.get(a);
-  if (hit && hit.geo === geo) return hit.p;
-  let p = vt(a.l!);
-  const bb = geo.boundingBox!, b0 = a.bb!;
-  const moved = Math.abs(bb.min.x - b0[0]) + Math.abs(bb.min.y - b0[1]) + Math.abs(bb.min.z - b0[2]) + Math.abs(bb.max.x - b0[3]) + Math.abs(bb.max.y - b0[4]) + Math.abs(bb.max.z - b0[5]);
-  if (moved > 1e-3) {
-    const sz = bb.getSize(V3());
-    p = V3(bb.min.x + a.f![0] * sz.x, bb.min.y + a.f![1] * sz.y, bb.min.z + a.f![2] * sz.z);
-    // Aynı türden en yakın özellik (köşe / orta / merkez): kutu oranı yaklaşık kalan iç özelliklerde tam yerine oturtur.
-    const feats: V[] = [];
-    if (a.k === 'endpoint' || a.k === 'midpoint' || a.k === 'center') for (const c of curvesOf(geo)) {
-      if (a.k === 'center') { if (c.t === 'a') feats.push(c.c); }
-      else if (a.k === 'endpoint') { if (c.t === 'l' || !c.closed) feats.push(c.a, c.b); }
-      else if (c.t === 'l') feats.push(c.a.clone().lerp(c.b, 0.5));
-      else if (!c.closed) feats.push(arcPoint(c, c.sweep / 2));
-    }
-    let bd = moved + 2;
-    for (const q of feats) { const d = q.distanceTo(p); if (d < bd) { bd = d; p = q.clone(); } }
+  const l = p.clone().applyMatrix4(src.inv), bb = src.geo.boundingBox!;
+  const a: Anchor = { sid: src.shape.id, w: t3(p), l: t3(l), f: fracIn(l, bb), bb: [...t3(bb.min), ...t3(bb.max)], k, sk: stepKey(src.S) };
+  if (src.Si) {
+    // Panel taşınmış / dönmüşse nokta adımsız çerçevede de saklanır: sonra taşınır / dönerse oradan güncel dönüşümle götürülür.
+    const u = l.clone().applyMatrix4(src.Si), ub = baseBox(src.geo, src.Si);
+    Object.assign(a, { u: t3(u), uf: fracIn(u, ub), ub: [...t3(ub.min), ...t3(ub.max)] });
   }
-  localCache.set(a, { geo, p });
+  return a;
+}
+const localCache = new WeakMap<Anchor, { geo: THREE.BufferGeometry; S: THREE.Matrix4 | null; p: V }>();
+const boxGap = (bb: THREE.Box3, b0: number[]) =>
+  Math.abs(bb.min.x - b0[0]) + Math.abs(bb.min.y - b0[1]) + Math.abs(bb.min.z - b0[2]) + Math.abs(bb.max.x - b0[3]) + Math.abs(bb.max.y - b0[4]) + Math.abs(bb.max.z - b0[5]);
+/** Çapanın şimdiki yeri, şeklin geometri koordinatında:
+ *  1) geometrinin kutusu aynıysa nokta aynen (motor dönen paneli gövdeye sığdırıp aynı levhayı verdiyse de);
+ *  2) panel o günden beri taşındı / döndüyse nokta adımsız çerçeveden güncel dönüşümle götürülür (motor levhayı yeniden sığdırdıysa
+ *     kutu oranı daha iyi oturuyorsa o);
+ *  3) yalnız ölçüler değiştiyse (gövde büyüdü) adımsız kutudaki oranından bulunur.
+ *  2 ve 3'te nokta sonra gerçek geometriye oturtulur (köşe → köşe, kenar → kenar, yüzey → yüzey). */
+function localOf(a: Anchor, s: Src): V {
+  const geo = s.geo, hit = localCache.get(a);
+  if (hit && hit.geo === geo && hit.S === s.S) return hit.p;
+  let p: V;
+  const inBox = (bb: THREE.Box3, f: T3) => { const sz = bb.getSize(V3()); return V3(bb.min.x + f[0] * sz.x, bb.min.y + f[1] * sz.y, bb.min.z + f[2] * sz.z); };
+  if (boxGap(geo.boundingBox!, a.bb!) <= 1e-3) p = vt(a.l!);
+  else if ((a.sk ?? '') !== stepKey(s.S)) {
+    // Panel taşındı / döndü: (A) nokta panelle götürülür; (B) geometrinin kutusundaki oranı. Motor dönen paneli gövdeye sığdırınca levha
+    // dönmemiş gibi kalabilir — o zaman B tutar. Geometriye daha iyi oturan seçilir (eşitlikte A).
+    const A = vt(a.u ?? a.l!);
+    if (s.S) A.applyMatrix4(s.S);
+    const B = inBox(geo.boundingBox!, a.f!), sA = seatOnGeo(A, a.k, geo), sB = seatOnGeo(B, a.k, geo);
+    p = sB.distanceTo(B) + 0.5 < sA.distanceTo(A) ? sB : sA;
+  } else {
+    const ub = baseBox(geo, s.Si);
+    p = boxGap(ub, a.ub ?? a.bb!) <= 1e-3 ? vt(a.u ?? a.l!) : inBox(ub, a.uf ?? a.f!);
+    if (s.S) p.applyMatrix4(s.S);
+    p = seatOnGeo(p, a.k, geo);
+  }
+  localCache.set(a, { geo, S: s.S, p });
   return p;
 }
 export function anchorPoint(a: Anchor, R: RCtx): V {
   const s = a.sid ? R.all.get(a.sid) : undefined;
   if (!s || !a.l || !a.f || !a.bb) return vt(a.w);
-  return localOf(a, s.geo).clone().applyMatrix4(s.m);
+  return localOf(a, s).clone().applyMatrix4(s.m);
 }
 const IDENT_Q = new THREE.Quaternion();
+/** Gövde ekseni (yerleştirme kuralları, ordinat, yay tabanı). */
 const quatOf = (sid: string | null, R: RCtx) => (sid ? R.all.get(sid)?.q : undefined) ?? IDENT_Q;
+/** Doğrusal ölçünün yönünün saklandığı çerçeve = gövde ekseni: CAD'deki gibi yatay ölçü, ölçülen panel dönse de yatay kalır (uçlar panelle gider). */
+const frameOf = quatOf;
 /** Yaya bağlı ölçülerin kaynağı: merkez çapası + alındığı andaki yarıçap ve (gövde yerelinde) düzlem normali. */
 export interface ArcRef { c: Anchor; r: number; n: T3 }
 export interface ArcRes { c: V; n: V; r: number; a: V; b: V; sweep: number; closed: boolean; u: V; v: V }
@@ -510,7 +590,7 @@ export function drawDim(d: Dim, R: RCtx, wpp: number, st: DimStyle): DimDraw | n
   /** Uzatma çizgisi: ölçülen noktadan (boşluk bırakarak) ölçü çizgisinin biraz ötesine. */
   const ext = (P: V, f: V) => { const v = f.clone().sub(P), l = v.length(); if (l > gap + 1e-6) { v.multiplyScalar(1 / l); lines.push([P.clone().addScaledVector(v, gap), f.clone().addScaledVector(v, over)]); } };
   if (d.t === 'lin') {
-    const A = anchorPoint(d.a, R), B = anchorPoint(d.b, R), q = quatOf(d.a.sid, R);
+    const A = anchorPoint(d.a, R), B = anchorPoint(d.b, R), q = frameOf(d.a.sid, R);
     const dir = d.ax ? vt(d.ax).applyQuaternion(q) : B.clone().sub(A);
     if (dir.lengthSq() < 1e-12) dir.set(1, 0, 0);
     dir.normalize();
@@ -862,7 +942,7 @@ export function useDimIdleStatus(): SceneToolStatus | null {
 /** Verilen ölçünün yerini imleç ışınına göre yeniden hesaplar (oluştururkenki kuralla). */
 function replaced(d: Dim, cur: Cursor, R: RCtx): Dim {
   if (d.t === 'lin') {
-    const A = anchorPoint(d.a, R), B = anchorPoint(d.b, R), q = quatOf(d.a.sid, R), axes = axesOfQ(q), qi = q.clone().invert();
+    const A = anchorPoint(d.a, R), B = anchorPoint(d.b, R), q = frameOf(d.a.sid, R), axes = axesOfQ(quatOf(d.a.sid, R)), qi = q.clone().invert();
     const dir = d.ax ? vt(d.ax).applyQuaternion(q).normalize() : B.clone().sub(A).normalize();
     const { e, n } = offsetFrame(dir, axes, viewDirOf(cur.view)), Q = rayPlane(cur.ray, A, n);
     return Q ? { ...d, e: t3(e.clone().applyQuaternion(qi)), off: Q.sub(A).dot(e) } : d;
@@ -937,8 +1017,8 @@ function* twoPoints(name: string): G<Pts | null> {
   return e2.k === 'pt' ? { a: e1.h.anchor, b: e2.h.anchor } : null;
 }
 function buildLin(p: Pts, cur: Cursor, lock: LinLock, prev: number | null, txt?: string): { dim: NewDim; axis: number | null } {
-  const R = rctx(), A = anchorPoint(p.a, R), B = anchorPoint(p.b, R), q = quatOf(p.a.sid, R), qi = q.clone().invert();
-  const pl = placeLinear(A, B, axesOfQ(q), cur, lock, prev);
+  const R = rctx(), A = anchorPoint(p.a, R), B = anchorPoint(p.b, R), qi = frameOf(p.a.sid, R).clone().invert();
+  const pl = placeLinear(A, B, axesOfQ(quatOf(p.a.sid, R)), cur, lock, prev);
   return { dim: { t: 'lin', a: p.a, b: p.b, ax: lock === 'ali' ? null : t3(pl.d.clone().applyQuaternion(qi)), e: t3(pl.e.clone().applyQuaternion(qi)), off: pl.off, txt }, axis: pl.axis };
 }
 function* placeLin(c: Ctx, name: string, p: Pts, mode: 'lin' | 'ali', s = 2): G<Dim | null> {
@@ -1114,14 +1194,14 @@ type LinDim = Extract<Dim, { t: 'lin' }>;
 const linById = (id: string | null): LinDim | null => { const d = get().dims.find(x => x.id === id); return d?.t === 'lin' ? d : null; };
 /** Doğrusal ölçünün dünya çerçevesi: yön, kaçıklık yönü, iki nokta. */
 function linFrame(d: LinDim, R: RCtx) {
-  const A = anchorPoint(d.a, R), B = anchorPoint(d.b, R), q = quatOf(d.a.sid, R);
+  const A = anchorPoint(d.a, R), B = anchorPoint(d.b, R), q = frameOf(d.a.sid, R);
   const dir = (d.ax ? vt(d.ax).applyQuaternion(q) : B.clone().sub(A)).normalize(), e = vt(d.e).applyQuaternion(q);
   e.addScaledVector(dir, -e.dot(dir)).normalize();
   return { A, B, dir, e };
 }
 /** Bir ölçüyle aynı yönde, verilen iki nokta arasında yeni ölçü; `lineAt` = ölçü çizgisinin geçeceği dünya noktası. */
 function linLike(a: Anchor, b: Anchor, dir: V, e: V, lineAt: V, R: RCtx): NewDim {
-  const qi = quatOf(a.sid, R).clone().invert();
+  const qi = frameOf(a.sid, R).clone().invert();
   return { t: 'lin', a, b, ax: t3(dir.clone().applyQuaternion(qi)), e: t3(e.clone().applyQuaternion(qi)), off: lineAt.clone().sub(anchorPoint(a, R)).dot(e) };
 }
 function* pickLin(name: string, what: string): G<LinDim | null> {
@@ -1383,7 +1463,7 @@ function* spaceCmd(c: Ctx): G {
   ids.forEach((id, i) => {
     const d = linById(id);
     if (!d) return;
-    const g = linFrame(d, R), qi = quatOf(d.a.sid, R).clone().invert();
+    const g = linFrame(d, R), qi = frameOf(d.a.sid, R).clone().invert();
     c.update(id, { ...d, e: t3(f.e.clone().applyQuaternion(qi)), off: line.clone().addScaledVector(f.e, sp * (i + 1)).sub(g.A).dot(f.e) });
   });
   say('Spacing adjusted.');

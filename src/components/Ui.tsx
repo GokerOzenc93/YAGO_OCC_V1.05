@@ -248,6 +248,14 @@ export type IconName =
   | 'snap-midpoint' | 'snap-center' | 'snap-quadrant' | 'snap-intersection' | 'dimension' | 'dim-linear' | 'dim-angular' | 'dim-distance';
 const iconSrc = (name: IconName) => `/icons/${name}.svg`;
 const svgCache: Record<string, string> = {};
+// Ölçü düğmelerinin ikonları koda gömülüdür: public/icons'a dosya kopyalanmasa da görünürler (dosya yoksa sunucu HTML döner, düğme boş kalırdı).
+const SVG_HEAD = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none" stroke="#000000" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">';
+const INLINE_ICONS: Partial<Record<IconName, string>> = {
+  'dim-linear': `${SVG_HEAD}<path d="M76 120v230M436 120v230M76 186h360"/><path d="M146 142 76 186l70 44M366 142l70 44-70 44"/><path d="M60 412h392" stroke-width="34"/></svg>`,
+  'dim-angular': `${SVG_HEAD}<path d="M84 424h356M84 424 296 92"/><path d="M318 424A234 234 0 0 0 210 227"/><path d="M286 366l32 58 34-56M276 236l-66-9 12 66"/></svg>`,
+  'dim-distance': `${SVG_HEAD}<circle cx="98" cy="414" r="38"/><circle cx="414" cy="98" r="38"/><path d="M138 374 374 138" stroke-dasharray="46 40"/></svg>`,
+};
+for (const [k, v] of Object.entries(INLINE_ICONS)) svgCache[iconSrc(k as IconName)] = v!;
 interface IconProps { name: IconName; size?: number; className?: string; style?: React.CSSProperties }
 
 export const Icon: React.FC<IconProps> = ({ name, size = 16, className = '', style }) => {

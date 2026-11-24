@@ -2801,6 +2801,29 @@ function refDeltaOf(p: any): THREE.Vector3 | null {
   const rda = p?.parameters?._refDeltaApplied;
   return Array.isArray(rda) && rda.length === 3 ? new THREE.Vector3(rda[0], rda[1], rda[2]) : null;
 }
+/** Panelin taşıma / döndürme adımlarının bileşik RİJİT dönüşümü, panel geometrisinin koordinatında: adımsız levha → şimdiki levha.
+ *  Damgalamadaki çözümün aynısı (composeFresh + uygulanan REF deltası). Ölçü çapaları (Dim) noktayı panelin adımsız çerçevesinde tutar
+ *  ki panel taşınıp döndürülünce ölçü tıklanan yerde kalsın. Taşıma / döndürme adımı yoksa null. */
+export function panelStepMatrix(p: Shape, vfs: VirtualFace[] = useAppStore.getState().virtualFaces): THREE.Matrix4 | null {
+  const steps = getUnifiedSteps(p);
+  if (!steps.some(s => s.type === 'move' || s.type === 'rotate')) return null;
+  const vf = vfOfPanel(p, vfs);
+  if (!vf) return null;
+  try {
+    const m = new THREE.Matrix4(), t = new THREE.Matrix4(), r = new THREE.Matrix4();
+    for (const o of composeFresh(p, vf).ops) {
+      if (o.kind === 'rotate') {
+        r.makeRotationAxis(o.axis.clone().normalize(), (o.deg * Math.PI) / 180);
+        t.makeTranslation(o.pivot.x, o.pivot.y, o.pivot.z).multiply(r).multiply(new THREE.Matrix4().makeTranslation(-o.pivot.x, -o.pivot.y, -o.pivot.z));
+      } else {
+        const d = o.kind === 'translate' ? o.d : refDeltaOf(p) ?? o.fallback;
+        t.makeTranslation(d.x, d.y, d.z);
+      }
+      m.premultiply(t);
+    }
+    return m;
+  } catch { return null; }
+}
 
 function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace[], allShapes?: any[], panelGroups?: PanelGroup[]): VirtualFace[] {
   const allShapeFaces = virtualFaces.filter(vf => vf.shapeId === shape.id);
