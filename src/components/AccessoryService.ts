@@ -9,8 +9,7 @@ import {
   type AccessoryLayer, type AccessoryModel, type AccessoryUnit, type CavityBox, type Connector, type HoleSpec, type LegModel, type LegModelPart,
   type ConnectorLayoutSet, type LegPartRole, type LegPreset, type PanelHole, type PanelTypeConfig, normalizePanelTypeConfig, useAppStore,
 } from '../store';
-import { type AxisDir, type Vec3, convertReplicadToThreeGeometry, genId, initReplicad, round1 } from './Geometry';
-import { type LegRule, standardLegRules, standardOf } from './LegLayout';
+import { type AxisDir, type Vec3, convertReplicadToThreeGeometry, genId, initReplicad, round1, type LegRule, standardLegRules, standardOf } from './Geometry';
 
 /* ───────────────────────────── Biçimler ───────────────────────────── */
 /** Desteklenen uzantılar (küçük harf, noktasız) → yükleyici anahtarı. */

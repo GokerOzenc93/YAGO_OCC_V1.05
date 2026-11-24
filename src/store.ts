@@ -1,9 +1,8 @@
 import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 import * as THREE from 'three';
-import { type AxisDir, type Vec3, type VertexModification, rebuildBodySolid } from './components/Geometry';
+import { type AxisDir, type Vec3, type VertexModification, rebuildBodySolid, type LegRule } from './components/Geometry';
 import type { PlinthSet, PlinthPick } from './components/PlinthService';
-import type { LegRule } from './components/LegLayout';
 import type { PtBind, Shape2 } from './components/Draft';
 
 export interface SubtractionParameters {
@@ -468,7 +467,7 @@ export type PanelTypeId =
   | 'topFrontRailH' | 'topFrontRailV' | 'topRearRailH' | 'topRearRailV'
   | 'bottomFrontRailH' | 'bottomFrontRailV' | 'bottomRearRailH' | 'bottomRearRailV'
   | 'frontPlinth' | 'rearPlinth' | 'columnSide' | 'columnFront' | 'beamFront' | 'beamHoriz' | 'free';
-/** Panelin yerleştiği yüzey: gövde yüzü rolü, yüzün özel görevi (kolon / kiriş — LegLayout.FaceKind) ya da iç panel aracı (raf / dikme / arkalık). */
+/** Panelin yerleştiği yüzey: gövde yüzü rolü, yüzün özel görevi (kolon / kiriş — Geometry.FaceKind) ya da iç panel aracı (raf / dikme / arkalık). */
 export type PanelSurface = PanelEdgeDir | 'shelf' | 'divider' | 'back' | 'columnSide' | 'columnFront' | 'beamFront' | 'beamHoriz';
 /* BAĞLAYICI SETİ (Accessories › Layout) — bağlayıcıdan ve panel tipinden BAĞIMSIZ kütüphane kaydı: birleşim boyunca hangi bağlayıcının nereye
    geleceği. Set bir GRUBA aittir (sabit · hareketli): panel tipinin kenarı yalnız GRUBU söyler (Accessories › Connector rules), hangi setin kullanılacağı
@@ -713,8 +712,6 @@ export interface AppState {
   plinthPickCandidates: PlinthPick[]; plinthPickIndex: number; setPlinthPick: (c: PlinthPick[], i: number) => void;
   /** Aday hacmin varsayılan yüksekliği (mm). */
   plinthPickHeight: number; setPlinthPickHeight: (h: number) => void;
-  /** Yerleştirmede ÖN yön: null = gövdenin ön yönü (parametre / kapaklar / +Z); şeritten seçilirse o yön (onayda gövdeye yazılır). */
-  plinthPickFacing: AxisDir | null; setPlinthPickFacing: (a: AxisDir | null) => void;
   /** Yerleştirmede kullanılacak ayak seti (LegPreset id; null = yerleşik ayak, varsayılan düzen). */
   plinthPickPresetId: string | null; setPlinthPickPresetId: (id: string | null) => void;
   /** Gövde yüz rolleri: "Show face roles" açıkken liste ve sahnede tıklanabilir rol rozetleri (iki yön de store'dan). */
@@ -853,7 +850,7 @@ const pickModesOff = () => ({
   volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0,
   doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0,
   backPickMode: false, backPickCandidates: [], backPickIndex: 0,
-  plinthPickMode: false, plinthPickCandidates: [], plinthPickIndex: 0, plinthPickFacing: null,
+  plinthPickMode: false, plinthPickCandidates: [], plinthPickIndex: 0,
 });
 /** Kimliğe göre ekle / değiştir (sıra korunur, yeni öğe sona). */
 const upsertById = <T extends { id: string }>(list: T[], item: T): T[] =>
@@ -1066,11 +1063,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     selectedPanelRow: s.selectedPanelRow === `plinth-${id}` ? null : s.selectedPanelRow,
   })),
   plinthPickMode: false,
-  setPlinthPickMode: (b) => set({ ...(b ? pickModesOff() : {}), plinthPickMode: b, plinthPickCandidates: [], plinthPickIndex: 0, plinthPickFacing: null }),
+  setPlinthPickMode: (b) => set({ ...(b ? pickModesOff() : {}), plinthPickMode: b, plinthPickCandidates: [], plinthPickIndex: 0 }),
   plinthPickCandidates: [], plinthPickIndex: 0,
   setPlinthPick: (c, i) => set({ plinthPickCandidates: c, plinthPickIndex: i }),
   plinthPickHeight: 100, setPlinthPickHeight: (h) => set({ plinthPickHeight: Math.max(1, h), plinthPickCandidates: [], plinthPickIndex: 0 }),
-  plinthPickFacing: null, setPlinthPickFacing: (a) => set({ plinthPickFacing: a }),
   plinthPickPresetId: null, setPlinthPickPresetId: (id) => set({ plinthPickPresetId: id }),
   showFaceRoles: false, setShowFaceRoles: (b) => set({ showFaceRoles: b, ...(b ? {} : { faceRoleHover: null }) }),
   faceRoleHover: null, setFaceRoleHover: (h) => set({ faceRoleHover: h }),

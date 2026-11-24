@@ -10,11 +10,10 @@ import { Canvas } from '@react-three/fiber';
 import { PerspectiveCamera, OrbitControls } from '@react-three/drei';
 import { useStoreFields, shapeById, ViewMode, type Shape, Tool, CameraType, OrthoMode, useAppStore, childPanelsOf, requestRebuild, type SceneToolStatus } from '../store';
 import {
-  translatedBboxOf, createReplicadBox, convertReplicadToThreeGeometry, type Vec3, performBooleanCut, getReplicadVertices, evaluateExpression,
-  axisIndexOf, applyShapeChanges, rebuildBodySolid,
+  translatedBboxOf, createReplicadBox, convertReplicadToThreeGeometry, type Vec3, performBooleanCut, getReplicadVertices, evaluateExpression, axisIndexOf,
+  applyShapeChanges, rebuildBodySolid, FACE_KINDS, FACE_KIND_LABEL, FACE_ROLES, FACE_ROLE_LABEL, type FaceKind, type FaceRole, faceRoleText,
 } from './Geometry';
 import { PLINTH_FACINGS, PLINTH_FACING_LABEL, type PlinthFacing, bodyFaces, bodyFrontAxis, setBodyFaceRole, setBodyFrontAxis } from './PlinthService';
-import { FACE_KINDS, FACE_KIND_LABEL, FACE_ROLES, FACE_ROLE_LABEL, type FaceKind, type FaceRole, faceRoleText } from './LegLayout';
 import {
   useDraft, submitText, cancelCommand, commandActive, tabKey, setAids, setTyped, setPlanePick, selectEntity, eraseSelection, undo, redo, isCommandName,
   SNAP_KINDS, SNAP_LABEL,
@@ -244,8 +243,8 @@ export type IconName =
   | 'save' | 'upload' | 'undo-2' | 'redo-2' | 'scissors' | 'copy' | 'clipboard-paste' | 'eraser' | 'mouse-pointer-2' | 'move' | 'navigation'
   | 'refresh-ccw' | 'maximize-2' | 'box' | 'cog' | 'sliders-horizontal' | 'panel-left' | 'folder-open' | 'camera' | 'box-select' | 'scan-eye'
   | 'cuboid' | 'eye' | 'grid-2x2' | 'layers' | 'cylinder' | 'package' | 'square' | 'flip-horizontal' | 'maximize' | 'bar-chart-3' | 'file-text'
-  | 'git-branch' | 'target' | 'rotate-cw' | 'rotate-ccw' | 'zap' | 'inspection-panel' | 'map-pin' | 'ruler' | 'monitor' | 'snap-endpoint'
-  | 'snap-midpoint' | 'snap-center' | 'snap-quadrant' | 'snap-intersection' | 'dimension' | 'dim-angular' | 'dim-distance' | 'dim-hole';
+  | 'git-branch' | 'target' | 'rotate-cw' | 'rotate-ccw' | 'zap' | 'inspection-panel' | 'map-pin' | 'ruler' | 'monitor'
+  | 'dimension' | 'dim-angular' | 'dim-distance' | 'dim-hole';
 const iconSrc = (name: IconName) => `/icons/${name}.svg`;
 const svgCache: Record<string, string> = {};
 // Ölçü düğmelerinin ikonları koda gömülüdür: public/icons'a dosya kopyalanmasa da görünürler (dosya yoksa sunucu HTML döner, düğme boş kalırdı).
@@ -265,10 +264,10 @@ export const Icon: React.FC<IconProps> = ({ name, size = 16, className = '', sty
     if (svgCache[src]) { setMarkup(svgCache[src]); return; }
     let cancelled = false;
     fetch(src).then(r => r.text()).then(txt => {
-      if (cancelled) return;
-      const cleaned = txt.replace(/\swidth="[^"]*"/i, '').replace(/\sheight="[^"]*"/i, '');   // boyutu sarmalayıcı belirler
-      svgCache[src] = cleaned;
-      setMarkup(cleaned);
+      // Dosyası olmayan ikonda sunucu index.html döndürür: yalnız gerçek SVG basılır (boyutu sarmalayıcı belirler).
+      const cleaned = /<svg[\s>]/i.test(txt) && !/<(!doctype html|html[\s>])/i.test(txt) ? txt.replace(/\swidth="[^"]*"/i, '').replace(/\sheight="[^"]*"/i, '') : '';
+      svgCache[src] = cleaned || ' ';   // boş sonuç da saklanır: aynı eksik dosya yeniden istenmez
+      if (!cancelled) setMarkup(cleaned);
     }).catch(() => { if (!cancelled) setMarkup(''); });
     return () => { cancelled = true; };
   }, [src]);

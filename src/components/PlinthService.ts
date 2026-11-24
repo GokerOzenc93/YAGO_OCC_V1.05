@@ -2,20 +2,17 @@
    Model: `PlinthSet.box` = gövde-yerel kapsam kutusu; etkin hacim bölgedir (gövdenin içinde, sırada önce gelen düşey levhaların dışında —
    raf / dikme ile aynı ızgara, freeRegionInBox). Ayağın altı her zaman referans kübün alt yüzünde; `bottomVfId` bağlıysa üstü o panelin altı.
    Yüz rolleri: ön yön gövde parametresi (`faceRoles.frontAxis`, yoksa +Z), her yüz otomatik rol alır (`overrides` üstüne yazar).
-   Ayak düzeni her zaman otomatik köşe düzeni (LegLayout.autoLegPoints); Custom = üstüne ayak başına Δ. Set henüz paneli itmez / kesmez. */
+   Ayak düzeni her zaman otomatik köşe düzeni (Geometry.autoLegPoints); Custom = üstüne ayak başına Δ. Set henüz paneli itmez / kesmez. */
 import {
   type CavityBox, type FaceDescriptor, type Shape, type VirtualFace, useAppStore, shapeById, childPanelsOf, vfOfPanel, panelOfVf, requestRebuild,
 } from '../store';
 import {
-  type AxisDir, type FaceData, type Vec3, axisDirToVec, computeFaceComponentContour, createFaceDescriptor, effectiveBodyGeometry, genId,
-  getFacesAndGroups, localBboxOf, round1,
+  type AxisDir, type FaceData, type Vec3, axisDirToVec, computeFaceComponentContour, createFaceDescriptor, effectiveBodyGeometry, genId, getFacesAndGroups, localBboxOf,
+  round1, type EdgeRole, type FaceKind, type FaceRole, type LegRule, type Pt, isFaceKind, autoLegPoints, clampInsidePoly, cleanPoly, clipPolyToRect, edgeRoles,
+  fromFacing, rectPoly, roleOfNormal, signedArea, toFacing,
 } from './Geometry';
 import { type FreeRegion, freeRegionInBox, legSpots } from './PanelGroupService';
 import { type HoleCutter, legHoleCutters, legModelById, legsFromPreset, resolveLegPreset } from './AccessoryService';
-import {
-  type EdgeRole, type FaceKind, type FaceRole, type LegRule, type Pt, isFaceKind, autoLegPoints, clampInsidePoly, cleanPoly, clipPolyToRect, edgeRoles, fromFacing, rectPoly,
-  roleOfNormal, signedArea, toFacing,
-} from './LegLayout';
 import * as THREE from 'three';
 
 /** Ayak düzeni: her zaman kayıtlı bir set (`presetId`, yoksa ilk set); model ve Ø oradan, yerleşim otomatik.

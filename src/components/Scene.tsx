@@ -12,14 +12,13 @@ import {
   DOOR_GAP, pickRectFor, rayDoorEntry, doorCandidatesAt,
 } from './DoorService';
 import {
-  localBboxOf, type Vec3, edgePointsOf, planeCornerShift, planeNeighbourNormal, planeSpanOf, type FaceData, type CoplanarFaceGroup, createFaceHighlightGeometry, flatGroupOfFace, getShapeMatrix,
-  REF_COLORS, confirmRefFaceExtrude, getFacesAndGroups, computeFaceComponentContour, panelInnerBigFace,
-  panelBehindStackPlane, computeFreeRegionLocal, genId, createFaceDescriptor, getFacePlaneAxes, earClipTriangulate, effectiveBodyGeometry,
-  pointInTriangle3D, findPanelCoveringPoint, groupIndexOfFace, panelHasRotation, createGroupBoundaryEdges, applyFillets, matchCurvedFaceGroup,
-  convertReplicadToThreeGeometry, type AxisLetter, type AxisDir, axisDirToVec, uniqueMeshPoints, resolveBaseVertices, composeVertexTargets,
-  confirmPanelMoveRef, confirmPanelRotateRef, axisIndexOf, getReplicadVertices, round1, swingPoints,
-  footprintGeometry, outlineGeometry, isPostSketchFace, dominantAxisLabel, executeFaceExtrude, mapAxisToVfLocal, angleToTouchPlane, executePanelMove, executePanelMoveFixed,
-  executePanelRotate,
+  localBboxOf, type Vec3, edgePointsOf, planeCornerShift, planeNeighbourNormal, planeSpanOf, type FaceData, type CoplanarFaceGroup, createFaceHighlightGeometry,
+  flatGroupOfFace, getShapeMatrix, REF_COLORS, confirmRefFaceExtrude, getFacesAndGroups, computeFaceComponentContour, panelInnerBigFace, panelBehindStackPlane,
+  computeFreeRegionLocal, genId, createFaceDescriptor, getFacePlaneAxes, earClipTriangulate, effectiveBodyGeometry, pointInTriangle3D, findPanelCoveringPoint,
+  groupIndexOfFace, panelHasRotation, createGroupBoundaryEdges, applyFillets, matchCurvedFaceGroup, convertReplicadToThreeGeometry, type AxisLetter, type AxisDir,
+  axisDirToVec, uniqueMeshPoints, resolveBaseVertices, composeVertexTargets, confirmPanelMoveRef, confirmPanelRotateRef, axisIndexOf, getReplicadVertices, round1,
+  swingPoints, footprintGeometry, outlineGeometry, isPostSketchFace, dominantAxisLabel, executeFaceExtrude, mapAxisToVfLocal, angleToTouchPlane, executePanelMove,
+  executePanelMoveFixed, executePanelRotate, FACE_KINDS, FACE_KIND_LABEL, FACE_ROLES, FACE_ROLE_LABEL, type FaceKind, type FaceRole, faceRoleText,
 } from './Geometry';
 import { connectorPartInstances, placementTypeFor } from './ConnectorService';
 import {
@@ -27,10 +26,9 @@ import {
   plinthRowKey, plinthSetsOf, isPlinthRow, finishPlinthEdit, plinthRegionOf, prismGeometry, bodyFrontAxis, bodyFaces, setBodyFaceRole, bodyFacesByRole,
   plinthLegsOf, applyPlinthFace,
 } from './PlinthService';
-import { FACE_KINDS, FACE_KIND_LABEL, FACE_ROLES, FACE_ROLE_LABEL, type FaceKind, type FaceRole, faceRoleText } from './LegLayout';
 import { LAYER_DEFAULT_COLOR, type LegAssemblyPart, accessoryGeometryNow, legAssembly, onAccessoryGeometry } from './AccessoryService';
 import {
-  executeCavityExtrudeAt, executeCavityExtrudeToReference, groupBoundsPanelPredicate, isInteriorPanel, repickObstacles, collectObstacles,
+  boxCenter, executeCavityExtrudeAt, executeCavityExtrudeToReference, groupBoundsPanelPredicate, isInteriorPanel, repickObstacles, collectObstacles,
   gridForObstacles, boxesSurface, rayCavityCandidates, GROUP_PANEL_THICKNESS, confirmVolumePick,
 } from './PanelGroupService';
 import {
@@ -39,8 +37,7 @@ import {
 } from './BackService';
 import { panelStampsRegions, panelStepRotation } from './PanelEngine';
 import { ErrorBoundary, MONO_FONT } from './Ui';
-import { DraftLayer } from './DraftView';
-import { DimLayer } from './DimView';
+import { DimLayer, DraftLayer } from './DraftView';
 import { useDraft } from './Draft';
 
 // ═════════════════════════════════════════════════ 1. SAHNE NESNELERİ ═════════════════════════════════════════════════
@@ -609,7 +606,9 @@ export function RevealShaderWarmup() {
       mesh.castShadow = true; mesh.receiveShadow = true; mesh.frustumCulled = false; mesh.scale.setScalar(1e-6);
       scene.add(mesh);
       const done = () => { scene.remove(mesh); mesh.geometry.dispose(); mat.dispose(); };
-      try { void gl.compileAsync(scene, camera).then(done, done); } catch { done(); }
+      // Yalnız bu mesh derlenir (ışıklar sahneden): bütün sahne verilirse three, derleme sürerken silinen başka bir malzemede
+      // "reading 'isReady'" hatası fırlatıp hiç bitmiyordu (ısınma mesh'i sahnede kalıyordu).
+      try { void gl.compileAsync(mesh, camera, scene).then(done, done); } catch { done(); }
     };
     const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number };
     const t = setTimeout(() => (w.requestIdleCallback ? w.requestIdleCallback(run, { timeout: 4000 }) : run()), 2500);
@@ -1484,7 +1483,7 @@ const FACING_ARROW_EDGES = new THREE.EdgesGeometry(FACING_ARROW_GEO, 25);
 export const FacingArrow: React.FC<{ box: { min: Vec3; max: Vec3 }; axis: 0 | 1 | 2; facing: 1 | -1; label?: string }> = ({ box, axis, facing, label }) => {
   const ref = useRef<THREE.Group>(null);
   const faceCenter = useMemo<Vec3>(() => {
-    const c = boxCenterOf(box); c[axis] = facing > 0 ? box.min[axis] : box.max[axis]; return c;
+    const c = boxCenter(box); c[axis] = facing > 0 ? box.min[axis] : box.max[axis]; return c;
   }, [box, axis, facing]);
   const t = useMemo(() => ({
     pPos: new THREE.Vector3(), pQuat: new THREE.Quaternion(), pScale: new THREE.Vector3(), pQuatInv: new THREE.Quaternion(),
@@ -1543,12 +1542,11 @@ export const FacingArrow: React.FC<{ box: { min: Vec3; max: Vec3 }; axis: 0 | 1 
   );
 };
 
-const boxCenterOf = (b: { min: Vec3; max: Vec3 }): Vec3 => [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2];
 
 /** Görünmez seçim kutusu: gövde kutusundan her yönde 1 mm büyük (açık yüzlerde de olayları alır). */
 const pickBoxGeometry = (b: { min: Vec3; max: Vec3 }) => {
   const g = new THREE.BoxGeometry(b.max[0] - b.min[0] + 2, b.max[1] - b.min[1] + 2, b.max[2] - b.min[2] + 2);
-  g.translate(...boxCenterOf(b));
+  g.translate(...boxCenter(b));
   return g;
 };
 /** Olay ışını şeklin yerel uzayında. */
@@ -2573,7 +2571,7 @@ const C_FACE_HOV = 'rgba(232,98,42,0.93)';
 const C_EDGE_BG  = 'rgba(210,207,202,0.90)';
 const C_EDGE_HOV = 'rgba(232,98,42,0.88)';
 const C_BODY     = '#dbd8d2';
-const C_OUTLINE  = 'rgba(140,135,128,0.65)';
+const C_OUTLINE  = 'rgb(140,135,128)';
 const C_ACCENT   = '#e8622a';
 
 /** Kare canvas dokusu: `draw` çizer, CanvasTexture döner. */
@@ -4981,7 +4979,7 @@ const Scene: React.FC = () => {
         <PanelGizmos shapes={shapes} />
         {/* 2B çizim katmanı: çizim düzlemi, nesneler, önizleme, yakalama işareti (DraftView). */}
         <DraftLayer />
-        {/* 3B ölçülendirme katmanı: ölçüler, önizleme, yakalama işareti (DimView). */}
+        {/* 3B ölçülendirme katmanı: ölçüler, önizleme, yakalama işareti (DraftView › DimLayer). */}
         <DimLayer />
 
         <mesh position={[0, -1, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>

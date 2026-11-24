@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import {
   type Point2D, type Vec3, panelHasRotation, largestFaceNormal, clipHalfPlane, frontHullOf, clipPolyToConvex, polyArea, genId, round1, localBboxOf,
-  effectiveBodyGeometry, getFacesAndGroups, vertexModsKey, isFlatNormal, matchReferenceFace, getShapeMatrix, dominantAxisLabel, type FaceData,
-  type CoplanarFaceGroup, computeFaceComponentContour, computeFreeRegionLocal, fromPlaneUV, vec3, createFaceDescriptor, createPanelFromVirtualFace,
-  convertReplicadToThreeGeometry, type MoveTransformStep, type ExtrudeStep, axisDirToVec, panelBehindStackPlane, clipRegionToRailStrip, toUV, applyRailExt,
-  initReplicad, rebuildBodySolid, panelFrontHull, isShapedBody, uniqueMeshPoints, projRange,
+  effectiveBodyGeometry, getFacesAndGroups, vertexModsKey, isFlatNormal, matchReferenceFace, getShapeMatrix, dominantAxisLabel, type FaceData, type CoplanarFaceGroup,
+  computeFaceComponentContour, computeFreeRegionLocal, fromPlaneUV, vec3, createFaceDescriptor, createPanelFromVirtualFace, convertReplicadToThreeGeometry,
+  type MoveTransformStep, type ExtrudeStep, axisDirToVec, panelBehindStackPlane, clipRegionToRailStrip, toUV, applyRailExt, initReplicad, rebuildBodySolid,
+  panelFrontHull, isShapedBody, uniqueMeshPoints, projRange, type EdgeRole, type Pt, cleanPoly, edgeRoles, pointInPoly,
 } from './Geometry';
 import {
   type CavityBox, type Shape, type VirtualFace, panelOfVf, type GapSpec, useAppStore, type PanelGroup, type CavityPick, type CavityStep, shapeById,
@@ -12,7 +12,6 @@ import {
   type QuickBodyRails, type RailSpec, type RailBackRel, railsOf, type PanelEdgeDir, PANEL_EDGE_DIRS, panelEdgeOf, type QuickBackRefKey, type BackGroup,
   type RailStripSpec, type RailExt, type RailExtTarget, type PanelTypeId, DEFAULT_QUICK_BODY, DEFAULT_RAILS,
 } from '../store';
-import { type EdgeRole, type Pt, cleanPoly, edgeRoles, pointInPoly } from './LegLayout';
 import {
   backObstacleFor, backMemberCutFor, isBackPanel, backPreviewStamp, backCandidatesAt, BACK_AXIS, BACK_SIDE, createBackGroupFromPick, setBackDefaults,
   deleteBackGroupWithMembers,
@@ -639,7 +638,7 @@ const r1 = round1;
 const cloneBox = (b: CavityBox): CavityBox => ({ min: [...b.min] as Vec3, max: [...b.max] as Vec3 });
 export const boxSpan = (b: CavityBox, a: number) => b.max[a] - b.min[a];
 export const fmtBox = (b: CavityBox) => `${b.min.map(n => n.toFixed(0)).join(',')}..${b.max.map(n => n.toFixed(0)).join(',')}`;
-const boxCenter = (b: CavityBox): Vec3 => [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2];
+export const boxCenter = (b: { min: Vec3; max: Vec3 }): Vec3 => [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2];
 const fracInCavity = (body: CavityBox, p: Vec3, clamp = false): Vec3 => [0, 1, 2].map(a => {
   const s = body.max[a] - body.min[a];
   if (s <= 1e-6) return clamp ? 0.5 : 0;
@@ -2776,7 +2775,7 @@ function vfOnFace(
 }
 
 /* ───────── KAYIT KENARLARI ─────────
-   Üst / alt yüz konturunun kenarları rol alır (LegLayout.edgeRoles). Her ön kenara ön kayıt, her arka kenara arka kayıt.
+   Üst / alt yüz konturunun kenarları rol alır (Geometry.edgeRoles). Her ön kenara ön kayıt, her arka kenara arka kayıt.
    Dışbükey köşede komşu damgasıyla keser; içbükey köşede önce yerleşen kayıt sonra gelenin altına kadar uzar (t×t boşluk kalmaz). */
 interface RailEdge extends EdgeRole {
   /** Kenarın üstüne oturduğu düşey gövde yüzü (eksen-hizalı ise dikey kayıt buraya); yoksa null. */
@@ -2864,7 +2863,6 @@ function extrudeStepFor(geo: THREE.BufferGeometry, n: Vec3, label: string, value
 /** Kesim tanımı: [yüz normali, eksen etiketi, değer, fixed?]. */
 type QuickCut = [Vec3, string, number, boolean?];
 const neg = (n: Vec3): Vec3 => [-n[0], -n[1], -n[2]];
-const labelOf = (n: Vec3) => dominantAxisLabel({ x: n[0], y: n[1], z: n[2] });
 /** Vekil çokgen: kesimlerin VF çokgenine izdüşümü (damga budaması gibi). Kısaltma köşeleri içeri, uzatma dışarı çeker. */
 function clampVerts(vs: Vec3[], cuts: QuickCut[]): Vec3[] {
   const out = vs.map(v => [...v] as Vec3);
@@ -3015,7 +3013,7 @@ async function applyQuickBodyInner(shapeId: string, cfg: QuickBodyConfig): Promi
     // Paneli GEÇEN dikey traverse'in ucunda panel ucu traverse'e devredilir (traverse o kadar içeri gelir, panel onda biter) → atlanır.
     const passEnd = (d: PanelEdgeDir) => (key === 'top' || key === 'bottom') && (d === 'front' || d === 'rear') && railPassesPanel(railsOf(cfg, key), d);
     return PANEL_EDGE_DIRS[key].filter(d => !passEnd(d)).map(d => [d, panelEdgeValue(cfg, key, d)] as const).filter(([, v]) => Math.abs(v) > 0.001)
-      .map(([d, v]) => [nOf[d], labelOf(nOf[d]), v] as QuickCut);
+      .map(([d, v]) => [nOf[d], axisLabelOf(nOf[d]), v] as QuickCut);
   };
   /** Yüzün kayıtları, kenar kenar: `which` üst / alt, `withPanel` yüzde tam panel var; `phase` 'before' = paneli geçen dikey kayıtlar.
    *  İç köşe: hedefe daha kısa yoldan değen kayıt geçer (kendi bandı boyunca ilk dolu banda kadar uzar), öteki ona dayanır.
@@ -3152,7 +3150,7 @@ async function applyQuickBodyInner(shapeId: string, cfg: QuickBodyConfig): Promi
           for (const [nb, dir] of [[e.prev, dirStart], [e.next, dirEnd]] as Array<[EdgeRole, Vec3]>) {
             if (nb.role !== 'left' && nb.role !== 'right') continue;
             const c = `${top ? 't' : 'b'}${nb.role === 'left' ? 'l' : 'r'}` as CornerKey;
-            if (joins[c] === 'horiz') cuts.push([dir, labelOf(dir), -t]);
+            if (joins[c] === 'horiz') cuts.push([dir, axisLabelOf(dir), -t]);
           }
         }
         // İç köşe uzatması: VF bölgesi kenar yönünde uzar (railExt); hedef her regen'de ölçülür, bant ortasından.

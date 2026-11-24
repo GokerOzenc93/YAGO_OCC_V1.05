@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { create } from 'zustand';
 import { useAppStore, ViewMode, type Shape, type SceneToolStatus } from '../store';
 import { effectiveBodyGeometry, getFacesAndGroups, getShapeMatrix, groupIndexOfFace } from './Geometry';
-import { useDraft, cancelCommand as cancelDraftCommand, fmt, SNAP_LABEL, type CmdView, type Opt, type SnapKind } from './Draft';
+import { useDraft, cancelCommand as cancelDraftCommand, fmt, matchOpt, SNAP_LABEL, type CmdView, type Opt, type SnapKind } from './Draft';
 import { panelStepMatrix } from './PanelEngine';
 
 /* 3B ÖLÇÜLENDİRME ÇEKİRDEĞİ — sahnedeki gövde ("referans küp") ve panellerin üzerinde ölçü alma. React'ten bağımsızdır (Node'da denenir).
@@ -927,10 +927,6 @@ export function dimPointerClick(cur: Cursor): boolean {
   return true;
 }
 export function dimEnter() { if (gen) advance({ k: 'enter' }); else if (lastWas === 'dim' && get().lastCmd) startDim(get().lastCmd!); }
-const matchOpt = (opts: Opt[] | undefined, up: string): Opt | undefined => opts?.find(o => {
-  const lab = o.label.toUpperCase().replace(/\s+/g, ''), u = up.replace(/\s+/g, '');
-  return u === o.key || u === lab || (u.length > o.key.length && lab.startsWith(o.key) && lab.startsWith(u));
-});
 /** Komut satırı metni. true: ölçü sürücüsü tüketti (çizim sürücüsüne gitmez). Boşken komut adı; boş metin son ölçü komutunu yineler. */
 export function dimRoute(text: string): boolean {
   const s = text.trim();
@@ -981,7 +977,6 @@ export function selectDim(id: string | null, additive = false) {
   set(s => ({ selection: id === null ? [] : additive ? (s.selection.includes(id) ? s.selection.filter(x => x !== id) : [...s.selection, id]) : [id] }));
 }
 export const setDimStyle = (patch: Partial<DimStyle>) => set(s => ({ style: { ...s.style, ...patch } }));
-export const setDimsVisible = (b: boolean) => set({ visible: b });
 export const setStyleOpen = (b: boolean) => set({ styleOpen: b });
 const gk = (k: string, t: string) => ({ k, t });
 /** Durum çubuğu yönergesi — ETKİN ölçü komutu: adımlar, düz dille sıradaki iş, o adımda geçerli tuşlar. */

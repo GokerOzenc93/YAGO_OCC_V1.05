@@ -25,6 +25,8 @@ export default defineConfig({
     }
   },
   assetsInclude: ['**/*.wasm'],
+  // Kesim işçisi (src/components/CutWorker.ts) ES modülü olarak paketlenir: OCC paketini içe aktarır.
+  worker: { format: 'es' },
   server: {
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',

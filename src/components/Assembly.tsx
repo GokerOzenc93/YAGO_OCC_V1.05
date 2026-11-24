@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
-  Check, X, type LucideIcon, Lock, SlidersHorizontal, Crosshair, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Footprints, Shapes,
+  Check, X, type LucideIcon, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Footprints, Shapes,
   ChevronRight, Minus, Plus, ChevronDown, Pencil, Trash2, Unlink, MoveVertical, Move, RotateCw, GripVertical, ArrowUp, Box, Move3d, Equal,
   RotateCcw, Container, ChevronLeft, PenLine, Ruler,
 } from 'lucide-react';
@@ -32,8 +32,8 @@ import {
   setDoorJointRef, setDoorJointOverlay,
 } from './DoorService';
 import {
-  round1, localBboxOf, effectiveBodyGeometry,   type ExtrudeStep, type TransformStep, updateExtrudeStep, updateTransformStep, deleteExtrudeStep,
-  deleteTransformStep, createPanelFromVirtualFace, convertReplicadToThreeGeometry, genId,
+  round1, localBboxOf, effectiveBodyGeometry, type ExtrudeStep, type TransformStep, updateExtrudeStep, updateTransformStep, deleteExtrudeStep, deleteTransformStep,
+  createPanelFromVirtualFace, convertReplicadToThreeGeometry, genId, type Pt, autoLegPoints, edgeRoles, polyExtent, rectPoly, toFacing,
 } from './Geometry';
 import {
   effectiveJoins, panelOrderFor, baseLiftOf, updateCavityStep, deleteCavityStep, groupName,
@@ -59,7 +59,6 @@ import {
   type PlinthLegs, type LegAdjust,
 } from './PlinthService';
 import { legPresetById, presetLayout, resolveLegPreset } from './AccessoryService';
-import { type Pt, autoLegPoints, edgeRoles, polyExtent, rectPoly, toFacing } from './LegLayout';
 
 /* ASSEMBLY — gövdenin parça listesi / ürün ağacı sekmesi. 1) şerit + satır parçaları · 2) kart blokları (ipucu hücresi, diyagramlar,
    hızlı gövde) · 3) şeritler, adım listeleri, yerleştirme · 4) parça listesi ve kartlar. Şemalar PanelSchematics.tsx'te. */
@@ -81,11 +80,6 @@ export const DOCK_STRIP: React.CSSProperties = {
   ...DOCK_SHELL, marginTop: 0, borderRadius: 0, border: 'none', borderBottom: `1px solid ${INK.line}`, background: '#fcfbf9',
 };
 export const DOCK_ROW: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 4, padding: '5px 6px' };
-const DOCK_INPUT: React.CSSProperties = {
-  flex: 1, minWidth: 0, height: 26, textAlign: 'center',
-  fontFamily: UI_FONT, fontSize: 12.5, fontWeight: 600, fontVariantNumeric: 'tabular-nums',
-  color: INK.text, background: '#ffffff', border: `1px solid ${INK.line}`, borderRadius: 7, outline: 'none',
-};
 /** Şerit başlık etiketi (DOOR · BACK · X …). */
 export const dockAxisTag = (color: string): React.CSSProperties => ({
   flexShrink: 0, fontSize: 10, fontWeight: 700, fontFamily: UI_FONT, letterSpacing: '0.06em', color, height: 22, lineHeight: '22px', padding: '0 7px',
@@ -125,23 +119,6 @@ export const iconBtn = (color: string): React.CSSProperties => ({
   width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 5, border: 'none',
   background: 'transparent', cursor: 'pointer', color, outline: 'none', padding: 0, transition: 'background 0.12s',
 });
-/** Sayısal giriş: yerel metin taslağı (başta -/+ yazılabilsin); geçerli sayı yazıldıkça store güncellenir. */
-export function NumInput({ draft, setDraft, setValue, fallback, onEnter, onEscape, autoFocus, style }: {
-  draft: string; setDraft: (s: string) => void; setValue: (v: number) => void; fallback: number;
-  onEnter?: () => void; onEscape?: () => void; autoFocus?: boolean; style?: React.CSSProperties;
-}) {
-  const onBlur = () => {
-    const p = parseFloat(draft);
-    if (isNaN(p)) { setDraft(String(fallback)); setValue(fallback); } else { setValue(p); setDraft(String(p)); }
-  };
-  return (
-    <input type="text" inputMode="numeric" autoFocus={autoFocus} value={draft}
-      onChange={e => { const v = e.target.value; setDraft(v); const p = parseFloat(v); if (!isNaN(p)) setValue(p); }}
-      onBlur={onBlur}
-      onKeyDown={e => { if (e.key === 'Enter') onEnter?.(); if (e.key === 'Escape') onEscape?.(); }}
-      style={{ ...DOCK_INPUT, ...style }} />
-  );
-}
 
 export type SegItem = { key: string; label: string; Icon?: LucideIcon; title?: string; disabled?: boolean };
 /** `fit`: sütunlar içeriğe göre (uzun adlı düğme kesilmez), artan yer eşit paylaşılır. */
@@ -167,22 +144,6 @@ export function Segmented({ items, active, onPick, height = 26, fit = false }: {
           </button>
         );
       })}
-    </div>
-  );
-}
-type DockMode = { key: string; label: string; sub: string; Icon?: LucideIcon; title?: string };
-const DOCK_MODE_DEFS: Record<string, Omit<DockMode, 'key'>> = {
-  fixed: { label: 'Fixed', sub: 'Constant', Icon: Lock },
-  dyn:   { label: 'Dyn',   sub: 'Dynamic',   Icon: SlidersHorizontal },
-  ref:   { label: 'Ref',   sub: 'Reference', Icon: Crosshair },
-};
-export const dockModes = (keys: string[], overrides: Record<string, Partial<DockMode>> = {}): DockMode[] =>
-  keys.map(k => ({ key: k, ...DOCK_MODE_DEFS[k], ...(overrides[k] || {}) } as DockMode));
-export function DockModeBar({ modes, active, onPick }: { modes: DockMode[]; active: string | null; onPick: (k: string) => void }) {
-  const items = modes.map(m => ({ key: m.key, label: m.label, Icon: m.Icon, title: m.title || `${m.label} — ${m.sub}` }));
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '5px 5px 0' }}>
-      <div style={{ flex: 1, minWidth: 0 }}><Segmented active={active} onPick={onPick} items={items} /></div>
     </div>
   );
 }

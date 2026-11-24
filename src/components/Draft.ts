@@ -676,8 +676,8 @@ const shapeLength = (s: Shape2) => primsOf(s).reduce((l, p) => l + primLen(p), 0
 
 // ── Profil döngüleri — çizim adımı (kes / şekil ver; Geometry.applySketchFeatures) kapalı döngüleri buradan alır ──
 const reversePrim = (p: Prim): Prim => (p.k === 's' ? { k: 's', a: p.b, b: p.a } : { ...p, a0: p.a0 + p.sw, sw: -p.sw });
-const signedArea = (pts: P2[]) => { let a = 0; for (let i = 0; i < pts.length; i++) { const q = pts[(i + 1) % pts.length]; a += pts[i].x * q.y - q.x * pts[i].y; } return a / 2; };
-const pointInPoly = (p: P2, poly: P2[]) => {
+export const signedArea = (pts: P2[]) => { let a = 0; for (let i = 0; i < pts.length; i++) { const q = pts[(i + 1) % pts.length]; a += pts[i].x * q.y - q.x * pts[i].y; } return a / 2; };
+export const pointInPoly = (p: P2, poly: P2[]) => {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
     const a = poly[i], b = poly[j];
@@ -1227,8 +1227,6 @@ export function solveDimsX(shapes: Shape2[], dims: DimList | undefined | null, p
   const crossed = primsCross(out.flatMap((s, si) => (nodeOf[si].some(n => hot.has(find(n))) ? primsOf(s).filter(p => primLen(p) > 1e-4) : [])));
   return { shapes: out, anchors, tilted, crossed, angs: anyAng ? angOut : null };
 }
-export const solveDims = (shapes: Shape2[], dims: DimList | undefined | null, pin: [number, number] | null | undefined, vars: Record<string, number>, origin?: P2,
-  angs?: AngList | null): Shape2[] => solveDimsX(shapes, dims, pin, vars, origin, angs).shapes;
 
 // ═════════════════════════════════════════════════ 5. NESNE YAKALAMA ══════════════════════════════════════════════════
 export type SnapKind = 'endpoint' | 'midpoint' | 'center' | 'quadrant' | 'intersection' | 'perpendicular' | 'tangent' | 'nearest';
@@ -1349,8 +1347,6 @@ export interface DraftState {
   dimCross: boolean;
   /** Etkin yüzün çerçevesi: düzlem koordinatı + (dx, dy) = yüz çerçevesi koordinatı; w / h yüz ölçüsü; vars formül değişkenleri. */
   face: DraftFace | null;
-  /** Parametric önizleme: sanal yüz ölçüsü (null = kapalı) — çizimin o ölçüde alacağı hâl sahnede hayalet olarak çizilir. */
-  pview: { w: number; h: number } | null;
   /** Parametric kip: imlecin altındaki yüz referansı ('xL' | 'xC' | 'xR' | 'yL' | 'yC' | 'yR', köşede ikisi birden: 'xL yR'). */
   phover: string | null;
 }
@@ -1373,7 +1369,7 @@ export const useDraft = create<DraftState>(() => ({
   lastCmd: null, recent: {}, typed: '', panelOpen: false,
   planeCandidate: null, isolate: null, session: null, bodyPreview: null,
   apply: { op: 'cut', through: true, depth: 8, anchor: [0, 0], stretch: [false, false], mode: 'anchor', auto: true },
-  psel: [], pseg: null, dimErr: null, dimTilt: false, dimCross: false, face: null, pview: null, phover: null,
+  psel: [], pseg: null, dimErr: null, dimTilt: false, dimCross: false, face: null, phover: null,
 }));
 const get = useDraft.getState, set = useDraft.setState;
 
@@ -1610,7 +1606,7 @@ function parsePoint(s: string, rel: P2 | null): P2 | null {
   if (p) { const v = polar(rad(parseFloat(p[3])), parseFloat(p[2])); return p[1] === '@' ? add(rel ?? P(0, 0), v) : v; }
   return null;
 }
-const matchOpt = (opts: Opt[] | undefined, up: string): Opt | undefined => opts?.find(o => {
+export const matchOpt = (opts: Opt[] | undefined, up: string): Opt | undefined => opts?.find(o => {
   const lab = o.label.toUpperCase().replace(/\s+/g, ''), u = up.replace(/\s+/g, '');
   return u === o.key || u === lab || (u.length > o.key.length && lab.startsWith(o.key) && lab.startsWith(u));
 });
@@ -1687,7 +1683,7 @@ const near3 = (a: V3, b: V3, tol: number) => Math.abs(a[0] - b[0]) <= tol && Mat
 export function activatePlane(pl: Omit<DraftPlane, 'id'> | 'ground', fresh = false): string {
   cancelCommand();
   const st = get();
-  if (pl === 'ground') { set({ activePlane: GROUND_PLANE.id, planePick: false, planeCandidate: null, selection: [], psel: [], pseg: null, pview: null }); return GROUND_PLANE.id; }
+  if (pl === 'ground') { set({ activePlane: GROUND_PLANE.id, planePick: false, planeCandidate: null, selection: [], psel: [], pseg: null }); return GROUND_PLANE.id; }
   // Aynı yüz = aynı hedef + yön + eş düzlem (orijin şartı yok): yoksa oturum düzlemi ile seçim düzlemi ayrı düşüp çizim kayboluyordu.
   const coplanar = (q: DraftPlane) => Math.abs((q.origin[0] - pl.origin[0]) * pl.n[0] + (q.origin[1] - pl.origin[1]) * pl.n[1] + (q.origin[2] - pl.origin[2]) * pl.n[2]) < 0.05;
   const same = (q: DraftPlane) => q.kind === 'face' && q.id !== st.session?.planeId && q.shapeId === pl.shapeId && near3(q.n, pl.n, 1e-4) && near3(q.u, pl.u, 1e-4) && coplanar(q);
@@ -1696,7 +1692,7 @@ export function activatePlane(pl: Omit<DraftPlane, 'id'> | 'ground', fresh = fal
   const used = new Set(st.entities.map(e => e.plane));
   const plane: DraftPlane = hit ?? { ...pl, id: `pl${Date.now().toString(36)}${(seq++).toString(36)}` };
   set({ planes: [...st.planes.filter(q => q.id === GROUND_PLANE.id || q.id === plane.id || used.has(q.id)).filter(q => q.id !== plane.id), plane],
-    activePlane: plane.id, planePick: false, planeCandidate: null, selection: [], psel: [], pseg: null, pview: null });
+    activePlane: plane.id, planePick: false, planeCandidate: null, selection: [], psel: [], pseg: null });
   return plane.id;
 }
 export const setPlanePick = (on: boolean) => { if (on) cancelCommand(); set({ planePick: on, planeCandidate: null }); };

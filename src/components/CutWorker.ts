@@ -329,8 +329,6 @@ export function cutInWorker(key: string, base: Uint8Array, specs: ToolSpec[], pb
     pump();
   });
 }
-/** İşçide bekleyen + süren iş sayısı. */
-export const cutWorkerLoad = (): number => _queue.length + (_busy ? 1 : 0);
 
 // ───────── İşçi önyüklemesi (yalnız işçi kapsamında) ─────────
 const workerScope = (globalThis as { WorkerGlobalScope?: abstract new () => unknown }).WorkerGlobalScope;

@@ -14,11 +14,10 @@ import {
   type PanelSurfaceRule, type PanelTypeConfig, type PanelTypeId, type PanelTypeRule, type Shape, type VirtualFace, panelOfVf, requestRebuild, shapeById, useAppStore,
   vfOfPanel,
 } from '../store';
-import { type Vec3, effectiveBodyGeometry, genId, localBboxOf, outlineGeometry, panelHasRotation, round1 } from './Geometry';
+import { type Vec3, effectiveBodyGeometry, genId, localBboxOf, outlineGeometry, panelHasRotation, round1, isFaceKind, roleOfNormal } from './Geometry';
 import { type ToolSpec } from './CutWorker';
 import { type HoleCutter, CONNECTOR_LAYOUTS_ID, PANEL_TYPE_CONFIG_ID, holeCutterBox, holeCutterOf, importAccessoryFile, libraryDelete, libraryPut } from './AccessoryService';
 import { isDoorPanel } from './DoorService';
-import { isFaceKind, roleOfNormal } from './LegLayout';
 import { bodyFaces, bodyFrontAxis } from './PlinthService';
 import { geoAxes, panelFrameOf } from './PanelSchematics';
 import { QUICK_PANEL_NAME, QUICK_RAIL_NAME, groupName, renameMemberVfs } from './PanelGroupService';

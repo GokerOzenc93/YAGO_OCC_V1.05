@@ -1,126 +1,59 @@
 # YAGO CAD
 
-Modern 3D CAD application built with OpenCascade.js for BREP-based solid modeling.
+Parametric cabinet / furniture CAD in the browser. Solids are real B-Rep geometry (OpenCascade.js through replicad), drawn with Three.js.
 
-## Project Structure
-
-```
-src/
-├── ui/                  # UI Components
-│   ├── Layout.tsx       # Main layout wrapper
-│   ├── Toolbar.tsx      # Top toolbar with tools
-│   ├── StatusBar.tsx    # Bottom status bar
-│   └── Terminal.tsx     # Console/terminal overlay
-│
-├── App.tsx              # Main application
-├── Scene.tsx            # 3D scene with Three.js/Fiber
-├── store.ts             # Zustand state management
-├── opencascade.ts       # OpenCascade BREP utilities
-├── main.tsx             # Entry point
-└── index.css            # Global styles
-```
-
-## Features
-
-- **BREP Geometry**: All geometry created using OpenCascade.js
-- **3D Viewport**: Real-time 3D rendering with Three.js
-- **Wireframe Display**: Clean edge visualization
-- **Transform Controls**: Interactive translate, rotate, and scale tools
-- **Object Selection**: Click to select objects, visual feedback
-- **Camera Controls**:
-  - Perspective/Orthographic toggle
-  - Orbit controls with damping
-  - Auto-disable during transforms
-- **Keyboard Shortcuts**:
-  - `Delete` - Delete selected object
-  - `Escape` - Deselect object
-- **Gizmo**: Visual axis helper
-- **Grid**: Infinite grid for reference
-- **Terminal**: Built-in console for debugging
-- **Live Status Bar**: Object count, selection info, position tracking
-
-## Tech Stack
-
-- **React 18** - UI framework
-- **Three.js** - 3D rendering
-- **@react-three/fiber** - React renderer for Three.js
-- **@react-three/drei** - Useful helpers (OrbitControls, Grid, Gizmo)
-- **OpenCascade.js** - CAD kernel for BREP geometry
-- **Zustand** - State management
-- **TailwindCSS** - Styling
-- **TypeScript** - Type safety
-- **Vite** - Build tool
-
-## Getting Started
+## Getting started
 
 ```bash
-# Install dependencies
 npm install
-
-# Start development server
-npm run dev
-
-# Build for production
-npm run build
+npm run dev      # development server
+npm run build    # production build (dist/)
+npm run lint
+npx tsc --noEmit -p tsconfig.app.json   # type check (the root tsconfig.json only references the app / node configs)
 ```
 
-## OpenCascade Integration
+Optional: `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in `.env` enable the geometry catalog. Without them the app runs in local mode.
 
-OpenCascade.js is loaded from CDN to avoid WebAssembly bundling issues. The library is loaded dynamically at runtime via script injection. If OpenCascade fails to load, the application falls back to Three.js primitives.
+## Project structure
 
-### Creating Geometry
-
-```typescript
-import { createOCGeometry, convertOCShapeToThreeGeometry } from './opencascade';
-
-const ocShape = createOCGeometry(opencascadeInstance, {
-  type: 'box',
-  width: 600,
-  height: 600,
-  depth: 600
-});
-
-const geometry = convertOCShapeToThreeGeometry(opencascadeInstance, ocShape);
+```
+index.html
+vite.config.ts              # Vite config (cut worker is bundled as an ES module)
+public/
+├── icons/                  # toolbar icons (<name>.svg, see IconName in Ui.tsx)
+├── sidebar-window.html     # shell page of the detached sidebar window
+└── yago_logo.png
+src/
+├── main.tsx                # entry point + app root
+├── store.ts                # Zustand app store (shapes, virtual faces, tools, settings)
+├── index.css               # Tailwind entry
+└── components/
+    ├── Geometry.ts         # geometry core: OCC / replicad helpers, faces, sketch frames, leg layout + polygon helpers
+    ├── CutWorker.ts        # boolean cuts in a Web Worker (also the shared cut / mesh core) — must stay its own file
+    ├── PanelEngine.ts      # panel build engine: fit, cut, joints, decor (holes), rebuild queue
+    ├── PanelGroupService.ts# volumes, cavities, quick body, rails
+    ├── DoorService.ts      # door groups
+    ├── BackService.ts      # back panel groups
+    ├── PlinthService.ts    # plinth sets and legs
+    ├── AccessoryService.ts # accessory models (mesh files and DWG import), layers, leg assemblies
+    ├── ConnectorService.ts # connectors, hole layouts, panel types
+    ├── Draft.ts            # 2D drawing core (commands, snaps, constraints) — no React
+    ├── Dim.ts              # 3D dimension / measure core (commands, anchors) — no React
+    ├── DraftView.tsx       # scene layers of Draft and Dim (DraftLayer, DimLayer) + Drawing panel
+    ├── Scene.tsx           # 3D scene: bodies, panels, gizmos, pick overlays
+    ├── Ui.tsx              # toolbar, menus, command line, status bar, sidebar shell, icons
+    ├── Assembly.tsx        # Assembly sidebar: quick body, panels, doors, backs, plinths
+    ├── Accessories.tsx     # Accessories sidebar: models, connectors, layouts
+    └── PanelSchematics.tsx # 2D schematics of door / back / joint settings
+dwg2stl/                    # Rust source of the DWG → STL converter (npm run build:dwg2stl)
+supabase/                   # database migrations and edge functions
 ```
 
-### Boolean Operations
+## Conventions
 
-```typescript
-import { performOCBoolean } from './opencascade';
-
-const result = performOCBoolean(
-  opencascadeInstance,
-  shape1,
-  shape2,
-  'subtract' // or 'union', 'intersect'
-);
-```
-
-## State Management
-
-Global state is managed with Zustand:
-
-```typescript
-const { shapes, addShape, selectShape, opencascadeInstance } = useAppStore();
-```
-
-## Development Notes
-
-- OpenCascade.js is loaded from CDN (jsDelivr) to avoid Vite WebAssembly issues
-- All geometry is BREP-based for precision
-- Wireframe-only display (opacity: 0 on meshes)
-- TransformControls automatically disable OrbitControls during drag
-- Two-level file structure for simplicity
-- UI components isolated in `/ui` folder
-
-## Usage
-
-1. **Add Geometry**: Click "Add Geometry" in toolbar to create a box
-2. **Select Object**: Click on any object in the 3D view
-3. **Transform**: Use toolbar tools (Move/Rotate/Scale) to transform selected object
-4. **Delete**: Press `Delete` key to remove selected object
-5. **Camera**: Toggle Perspective/Orthographic from toolbar
-6. **Console**: Click terminal icon (bottom-right) for debug output
+- Few large files; no needless sub-folders.
+- UI text in English; code comments and logs in Turkish. Failure logs use the `[YAGO][TAG]` prefix.
+- `tsconfig.app.json` has `noUnusedLocals` / `noUnusedParameters` on: unused code is a compile error.
 
 ## License
 

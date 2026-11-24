@@ -23,3 +23,6 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# dwg2stl (Rust) derleme çıktısı
+dwg2stl/target

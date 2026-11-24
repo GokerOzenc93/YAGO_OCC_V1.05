@@ -14,7 +14,7 @@ import {
   type PanelTypeConfig, type PanelTypeId, type StepEnds, useAppStore, useStoreFields,
 } from '../store';
 import { UI_FONT, useEscapeOwner } from './Ui';
-import { type AxisDir, type Vec3, round1 } from './Geometry';
+import { type AxisDir, type Vec3, round1, standardLegRules } from './Geometry';
 import {
   ACCESSORY_ACCEPT, HOLE_AXES, HOLE_DEFAULTS, LAYER_DEFAULT_COLOR, type LegAssemblyPart, type LegHoleAt, type SnapPoint, accessoryGeometryNow, assemblyFootprint, axisVecOf,
   deleteAccessoryLayer, deleteLegModel, deleteLegPreset, detectPartEmbed, holeAxisOf, holeLegPos, holePosFromLeg, importAccessoryFile, layerUseCount, legAssembly, legContactHeight, legHolesAt,
@@ -32,7 +32,6 @@ import {
   surfaceLabel, surfaceRuleOf, typeEdgeCount, LAYOUT_KINDS, MAX_LAYOUT_POINTS, MAX_LAYOUT_STEPS, cloneLayoutSet, deleteLayoutSet, layoutKindLabel, layoutUseCount, lineApplies,
   linePositions, lineRangeText, lineSummary, newLayoutLine, pointD, pointPos, rearIsMin, frontIsMin, stepEndsOf, isHandList, LIST_EQUAL_COUNT, LIST_EQUAL_GAP, newLayoutSet, saveLayoutSet, holeFaceHint, holeFaceOptions, CONNECTOR_GROUPS, defaultSetOf, groupLabel, newRuleLine, ruleIdOf, setDefaultLayout, setGroupOf, setsOfGroup,
 } from './ConnectorService';
-import { standardLegRules } from './LegLayout';
 import { syncPlinthSetsUsingPreset } from './PlinthService';
 import { fmt1, stop } from './PanelSchematics';
 
