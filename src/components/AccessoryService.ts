@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
   type AccessoryLayer, type AccessoryModel, type AccessoryUnit, type CavityBox, type Connector, type HoleSpec, type LegModel, type LegModelPart,
-  type ConnectorLayoutSet, type LegPartRole, type LegPreset, type PanelHole, type PanelTypeConfig, normalizePanelTypeConfig, useAppStore,
+  type ConnectorLayoutSet, type LegPartRole, type LegPreset, type PanelHole, type PanelTypeConfig, type EdgeBandConfig, normalizeEdgeBandConfig, normalizePanelTypeConfig, useAppStore,
 } from '../store';
 import { type AxisDir, type Vec3, convertReplicadToThreeGeometry, genId, initReplicad, round1, type LegRule, standardLegRules, standardOf } from './Geometry';
 
@@ -238,6 +238,8 @@ export const libraryDelete = (store: 'connectors' | 'settings', id: string): Pro
 export const PANEL_TYPE_CONFIG_ID = 'panelTypes';
 /** `settings` deposundaki bağlayıcı dizilimleri kaydı: `{ id, sets }` (tek kayıt — ayrı depo / sürüm artışı gerekmez). */
 export const CONNECTOR_LAYOUTS_ID = 'connectorLayouts';
+/** `settings` deposundaki kenar bandı kuralları kaydı. */
+export const EDGE_BAND_CONFIG_ID = 'edgeBands';
 
 /** Çözülmüş (hazır) geometriler — eşzamanlı okuma için. */
 const readyGeo = new Map<string, { geo: THREE.BufferGeometry; size: Vec3 }>();
@@ -277,6 +279,8 @@ async function readAccessoryLibrary(): Promise<void> {
   if (cfg) useAppStore.getState().setPanelTypeConfig(normalizePanelTypeConfig(cfg));
   const lay = (settings as unknown as Array<{ id: string; sets?: ConnectorLayoutSet[] }>).find(x => x.id === CONNECTOR_LAYOUTS_ID);
   useAppStore.getState().setConnectorLayouts(Array.isArray(lay?.sets) ? lay!.sets! : []);
+  const bands = (settings as unknown as Array<Partial<EdgeBandConfig> & { id: string }>).find(x => x.id === EDGE_BAND_CONFIG_ID);
+  if (bands) useAppStore.getState().setEdgeBandConfig(normalizeEdgeBandConfig(bands));
 }
 const SEEDED_KEY = 'yago.accessories.layersSeeded';
 function seededFlag(set = false): boolean {

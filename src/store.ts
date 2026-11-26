@@ -120,6 +120,9 @@ export interface VirtualFace {
   /** KENAR ÖZELİNDE (elle): o kenarın seti (kimlik · null = o kenarda bağlayıcı yok) ve / veya delik yüzü. Panel genelindeki seçimi
    *  (connectorSets / connectorFlip) o kenar için ezer; panel genelinde yeni seçim yapılınca ilgili kenar kayıtları silinir. */
   connectorEdges?: Partial<Record<PanelEdgeDir, { set?: string | null; flip?: boolean }>>;
+  /** KENAR BANDI (elle, kenar rolü başına): bant kalınlığı mm · 0 = bu kenarda bant yok. Kayıt varsa tipin kuralını VE birleşim kuralını
+   *  ("iki panelin birleştiği kenara bant atılmaz") ezer; yoksa kenar kuralı izler (ConnectorService.panelBanding). */
+  edgeBands?: Partial<Record<PanelEdgeDir, number>>;
 }
 /** İç köşe uzatmasının hedefi: dış normali `n` olan gövde yüzü; uzatma o düzlemden `depth` önce biter. Her regen'de yeniden ölçülür. */
 export interface RailExtTarget { n: Vec3; depth: number }
@@ -426,7 +429,7 @@ export const PANEL_EDGE_DIRS: Record<QuickBodyPanelKey, PanelEdgeDir[]> = {
 export const panelEdgeOf = (cfg: QuickBodyConfig, key: QuickBodyPanelKey, dir: PanelEdgeDir): number => cfg.ext?.[key]?.[dir] ?? 0;
 /* ───────── AKSESUAR KÜTÜPHANESİ (AccessoryService) ───────── */
 export type AccessoryUnit = 'mm' | 'cm' | 'm' | 'in';
-export type AccessoryCategory = 'legs' | 'rails' | 'hinges' | 'layers' | 'connectors' | 'layouts' | 'panelTypes';
+export type AccessoryCategory = 'legs' | 'rails' | 'hinges' | 'layers' | 'connectors' | 'layouts' | 'panelTypes' | 'edgeBands';
 /** Aksesuar katmanı: kütüphane geneli liste; parça `layerId` ile bağlanır, katman rengi parçayı boyar. */
 export interface AccessoryLayer { id: string; name: string; color: string; createdAt: number }
 /** Delik (genel): aksesuar çerçevesinde silindir. `dir` delme yönü, `pos` ağız merkezi, `diameter` / `depth` mm.
@@ -538,6 +541,45 @@ export function normalizePanelTypeConfig(raw: { rules?: unknown; surfaces?: unkn
     rules[type as PanelTypeId] = { edges };
   }
   return { rules, surfaces: (raw?.surfaces ?? {}) as PanelTypeConfig['surfaces'] };
+}
+/* KENAR BANDI (ConnectorService › 8, arayüz Accessories › Edge banding). Kural = BANT TİPİ (panel tipi + kapak) × KENAR ROLÜ → bant kalınlığı
+   (mm; 0 / yok = bantsız). Kenar rolü panelin o yüzünün baktığı gövde yüzü rolüdür (ön / arka / sol / sağ / üst / alt) — çıkarma ile oluşan
+   yeni kenarlar da baktıkları role göre bant alır. Panel kendi kaydıyla ezebilir (VirtualFace.edgeBands). */
+export type BandTypeId = PanelTypeId | 'door';
+export type EdgeBandRule = Partial<Record<PanelEdgeDir, number>>;
+export interface EdgeBandConfig {
+  rules: Partial<Record<BandTypeId, EdgeBandRule>>;
+  /** Hızlı seçim kalınlıkları (mm) · arayüzde seçili kalınlık ("fırça"). */
+  presets: number[]; brush: number;
+  /** İki panelin BİRLEŞTİĞİ kenara bant atılmaz — kural bant dese de (varsayılan açık). */
+  skipJoints: boolean;
+  /** Kesim ölçüsü = bitmiş ölçü − en dış kenarların bant kalınlıkları. */
+  deduct: boolean;
+}
+const frontBand = (t = 1): EdgeBandRule => ({ front: t });
+export const DEFAULT_EDGE_BANDS: EdgeBandConfig = {
+  rules: {
+    leftSide: frontBand(), rightSide: frontBand(), top: frontBand(), bottom: frontBand(), divider: frontBand(), fixedShelf: frontBand(), adjustableShelf: frontBand(),
+    topFrontRailH: frontBand(), bottomFrontRailH: frontBand(), topFrontRailV: { bottom: 1 }, bottomFrontRailV: { top: 1 },
+    columnSide: frontBand(), beamHoriz: frontBand(), door: { top: 1, bottom: 1, left: 1, right: 1 },
+  },
+  presets: [0.4, 0.8, 1, 2], brush: 1, skipJoints: true, deduct: true,
+};
+const bandMm = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.min(10, Math.round(n * 100) / 100) : 0; };
+/** Kayıttan gelen kenar bandı ayarı → güncel biçim (kayıt yoksa varsayılan; 0 / bozuk değerler düşer). */
+export function normalizeEdgeBandConfig(raw: Partial<EdgeBandConfig> | null | undefined): EdgeBandConfig {
+  if (!raw || typeof raw !== 'object' || !raw.rules) return DEFAULT_EDGE_BANDS;
+  const rules: EdgeBandConfig['rules'] = {};
+  for (const [type, rule] of Object.entries(raw.rules as Record<string, Record<string, unknown> | undefined>)) {
+    const edges: EdgeBandRule = {};
+    for (const [edge, v] of Object.entries(rule ?? {})) { const mm = bandMm(v); if (mm > 0) edges[edge as PanelEdgeDir] = mm; }
+    rules[type as BandTypeId] = edges;
+  }
+  const presets = [...new Set((Array.isArray(raw.presets) ? raw.presets : DEFAULT_EDGE_BANDS.presets).map(bandMm).filter(v => v > 0))].sort((x, y) => x - y).slice(0, 8);
+  return {
+    rules, presets: presets.length ? presets : DEFAULT_EDGE_BANDS.presets, brush: bandMm(raw.brush) || presets[0] || DEFAULT_EDGE_BANDS.brush,
+    skipJoints: raw.skipJoints !== false, deduct: raw.deduct !== false,
+  };
 }
 /** Temsili birleşim: B paneli UCUYLA A panelinin yüzüne dayanır. bFace = B'nin geniş yüzü · bEdge = B'nin ucu (kalınlığı) · aFace = A'nın temas yüzü. */
 export type ConnSurface = 'bFace' | 'bEdge' | 'aFace';
@@ -730,6 +772,8 @@ export interface AppState {
   connectors: Connector[]; upsertConnector: (c: Connector) => void; removeConnector: (id: string) => void; setConnectors: (list: Connector[]) => void;
   connectorLayouts: ConnectorLayoutSet[]; setConnectorLayouts: (list: ConnectorLayoutSet[]) => void;
   panelTypeConfig: PanelTypeConfig; setPanelTypeConfig: (c: PanelTypeConfig) => void;
+  /** KENAR BANDI kuralları (kütüphane kaydı; ConnectorService › 8). */
+  edgeBandConfig: EdgeBandConfig; setEdgeBandConfig: (c: EdgeBandConfig) => void;
   /** Yerleştirme şeridinde seçilen panel tipi (null = otomatik / yüzey varsayılanı); her mod açılışında sıfırlanır. */
   placementPanelType: PanelTypeId | null; setPlacementPanelType: (t: PanelTypeId | null) => void;
   /** Arkalık seçmede tip: 'outer' = arkadan çakma, 'inner' = kanallı. */
@@ -1089,6 +1133,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   removeConnector: (id) => set((s) => ({ connectors: s.connectors.filter(x => x.id !== id) })), setConnectors: (list) => set({ connectors: list }),
   connectorLayouts: [], setConnectorLayouts: (list) => set({ connectorLayouts: list }),
   panelTypeConfig: { rules: {}, surfaces: {} }, setPanelTypeConfig: (c) => set({ panelTypeConfig: c }),
+  edgeBandConfig: DEFAULT_EDGE_BANDS, setEdgeBandConfig: (c) => set({ edgeBandConfig: c }),
   placementPanelType: null, setPlacementPanelType: (t) => set({ placementPanelType: t }),
 
   filletMode: false, setFilletMode: (e) => set({ filletMode: e, selectedFilletFaces: [], selectedFilletFaceData: [] }),

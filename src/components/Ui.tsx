@@ -230,6 +230,7 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
     { key: 'acc-connectors', label: 'Connector', icon: 'connector', title: 'the connector itself: holes, drawn operations and a 3D model on a two-panel joint', active: s.accessoryCategory === 'connectors', onClick: () => s.setAccessoryCategory('connectors') },
     { key: 'acc-layouts', group: 'Rules', label: 'Connector\nlayout', icon: 'connector-layout', title: 'where connectors sit along a joint — four rules, per joint-length range, several connectors in one layout', active: s.accessoryCategory === 'layouts', onClick: () => s.setAccessoryCategory('layouts') },
     { key: 'acc-types', label: 'Connector\nrules', icon: 'connector-rules', title: 'per panel type, which edges get a connector (fixed / movable / none), and the default type per face', active: s.accessoryCategory === 'panelTypes', onClick: () => s.setAccessoryCategory('panelTypes') },
+    { key: 'acc-bands', label: 'Edge\nbanding', icon: 'edge-band', title: 'per panel type, which edges get an edge band and how thick — joints stay raw; the cut size and band totals follow', active: s.accessoryCategory === 'edgeBands', onClick: () => s.setAccessoryCategory('edgeBands') },
     { key: 'acc-layers', group: 'Library', label: 'Layers', icon: 'layers', title: 'Accessory layers — shared by every accessory part (name + colour)', active: s.accessoryCategory === 'layers', onClick: () => s.setAccessoryCategory('layers') },
   ];
   // Yalnız ETKİN sekmenin araçları çizilir (pasif / soluk grup yok).
@@ -263,7 +264,7 @@ export type IconName =
   | 'draw-ellipse-axis' | 'draw-erase' | 'draw-explode' | 'draw-extend' | 'draw-face' | 'draw-fillet' | 'draw-join' | 'draw-line' | 'draw-mirror'
   | 'draw-modea' | 'draw-modep' | 'draw-move' | 'draw-offset' | 'draw-pline' | 'draw-poly' | 'draw-poly-c' | 'draw-poly-e' | 'draw-rect'
   | 'draw-rect-cen' | 'draw-rect-rot' | 'draw-rotate' | 'draw-scale' | 'draw-shape' | 'draw-solo' | 'draw-stretch' | 'draw-stretchx'
-  | 'draw-stretchy' | 'draw-trim' | 'exit' | 'export' | 'eye' | 'file-new' | 'fillet' | 'float' | 'fullscreen' | 'grid' | 'grip' | 'help' | 'import'
+  | 'draw-stretchy' | 'draw-trim' | 'edge-band' | 'exit' | 'export' | 'eye' | 'file-new' | 'fillet' | 'float' | 'fullscreen' | 'grid' | 'grip' | 'help' | 'import'
   | 'layers' | 'layout' | 'legs' | 'light' | 'material' | 'monitor' | 'move' | 'move-p2p' | 'open' | 'ortho' | 'ortho-off' | 'outlines' | 'panel'
   | 'param-add' | 'params' | 'paste' | 'pin' | 'plinth' | 'polar' | 'redo' | 'report' | 'rotate' | 'ruler' | 'save' | 'save-as' | 'scale' | 'search'
   | 'select' | 'select-body' | 'select-panel' | 'settings' | 'shelf' | 'snap' | 'snap-center' | 'snap-endpoint' | 'snap-intersection'

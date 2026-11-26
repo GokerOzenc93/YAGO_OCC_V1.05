@@ -1,4 +1,4 @@
-/* AKSESUAR SEKMESİ — kategori soldaki raydan (Legs · Connector · Layout · Rules · Layers); Assembly / Parameters ile aynı parçalar.
+/* AKSESUAR SEKMESİ — kategori soldaki raydan (Legs · Connector · Layout · Rules · Edge banding · Layers); Assembly / Parameters ile aynı parçalar.
    Panel tipleri (temsili dolap · üstten görünüş · kenar dizilimi) ve bağlayıcılar dosyanın ikinci yarısında (çekirdek: ConnectorService).
    Ayak modeli: 3 yuva (Top · Middle · Bottom), her parça nihai ölçü + taşıma + Stretch + katman; delikler önizlemede parça yüzüne
    tıklanarak eklenir (yön = yüz normali, parçaya bağlı). Ayak seti ("kaset") = model + köşe düzeni + mesafeler + yükseklik; yerleşim
@@ -11,7 +11,7 @@ import { Plus, Trash2, Upload, Pencil, RotateCcw, Drill, Check, ChevronDown, Cop
 import {
   type AccessoryLayer, type AccessoryUnit, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector, type ConnectorGroup, type ConnectorLayoutSet,
   type HoleSpec, type LayoutKind, type LayoutLine, type LegModel, type LegModelPart, type LegPartRole, type LegPreset, type PanelEdgeDir, type PanelSurface,
-  type PanelTypeConfig, type PanelTypeId, type StepEnds, useAppStore, useStoreFields,
+  type PanelTypeConfig, type PanelTypeId, type StepEnds, type BandTypeId, type EdgeBandConfig, useAppStore, useStoreFields,
 } from '../store';
 import { UI_FONT, useEscapeOwner } from './Ui';
 import { type AxisDir, type Vec3, round1, standardLegRules } from './Geometry';
@@ -24,6 +24,7 @@ import {
 import {
   ApplyBtn, CARD_BODY, CARD_BODY_STYLE, CardAction, ExitBtn, FIELD_INPUT, LegLayoutCells, LegLayoutDiagram, QB_CELL_ROW, QbNum, QbSection, QbSelect,
   FieldBox, QbSwitch, ROW_SEL_BAR, ROW_SEL_HEAD, ReadCell, ReadValue, RowCells, RowChevron, SECTION_LABEL, type SegItem, Segmented, SelectBox, rectLegPoints, rowCardClass,
+  BandPicker, BandSwatch, unitTxt,
 } from './Assembly';
 import {
   CONN_REP, CONN_SURFACES, EDGE_ENDS, EDGE_LABEL, PANEL_SURFACES, PANEL_TYPES, PANEL_TYPE_GROUPS, PLANE_EDGES, PLANE_LABEL, type PanelPlane, candidateTypesFor, cloneConnector,
@@ -31,6 +32,7 @@ import {
   edgeRulesOf, newConnHole, newConnOp, newConnPart, newConnector, panelTypeDef, panelTypeLabel, panelTypeShort, saveConnector, setEdgeGroup, setSurfaceRule,
   surfaceLabel, surfaceRuleOf, typeEdgeCount, LAYOUT_KINDS, MAX_LAYOUT_POINTS, MAX_LAYOUT_STEPS, cloneLayoutSet, deleteLayoutSet, layoutKindLabel, layoutUseCount, lineApplies,
   linePositions, lineRangeText, lineSummary, newLayoutLine, pointD, pointPos, rearIsMin, frontIsMin, stepEndsOf, isHandList, LIST_EQUAL_COUNT, LIST_EQUAL_GAP, newLayoutSet, saveLayoutSet, holeFaceHint, holeFaceOptions, CONNECTOR_GROUPS, defaultSetOf, groupLabel, newRuleLine, ruleIdOf, setDefaultLayout, setGroupOf, setsOfGroup,
+  BAND_COLORS, BAND_TYPES, BAND_TYPE_GROUPS, bandEdgeCount, bandMm, bandRuleOf, bandTypeDef, bodyBandTotals, fmtBand, patchEdgeBandConfig, setBandRule,
 } from './ConnectorService';
 import { syncPlinthSetsUsingPreset } from './PlinthService';
 import { fmt1, stop } from './PanelSchematics';
@@ -791,23 +793,40 @@ function edgeSegments(geo: THREE.BufferGeometry): Vec3[] {
 }
 const CAB_TONE = { wood: '#efe0c6', pale: '#f8f2e6', hover: '#e0c79c', sel: '#f4a261', edge: '#4d453c', selEdge: '#b93c08', concrete: '#c4bfb7', concreteEdge: '#8d8780' } as const;
 /** Dolap parçası: ahşap tonunda katı + koyu kenar çizgisi. Seçili parça turuncu ve öteki panellerin ARKASINDAN da görünür (röntgen). */
-function CabinetPartMesh({ part, state, onOver, onOut, onPick }: { part: CabPart; state: 'sel' | 'hover' | 'idle'; onOver: () => void; onOut: () => void; onPick: () => void }) {
-  const gl = useThree(s => s.gl);
+/** Örnek dolabın eksen yönü → kenar rolü (x sol → sağ · y yukarı · z arka → ön). */
+const CAB_ROLE: Array<[PanelEdgeDir, PanelEdgeDir]> = [['left', 'right'], ['bottom', 'top'], ['rear', 'front']];
+type CabBand = { of: (type: PanelTypeId, role: PanelEdgeDir) => number; sig: string };
+/** Kenar bandı kipinde parçanın köşe renkleri: geniş yüzler + bantlı kenarlar ahşap tonu, bantsız kenarlar ham levha rengi. */
+function cabBandColors(geo: THREE.BufferGeometry, part: CabPart, band: CabBand): THREE.BufferAttribute {
+  const pos = geo.getAttribute('position'), nrm = geo.getAttribute('normal'), col = new Float32Array(pos.count * 3);
+  const size = part.box ? [0, 1, 2].map(a => part.box![1][a] - part.box![0][a]) : null, thin = part.ex ? part.ex.ax : size!.indexOf(Math.min(...size!));
+  const tone = new THREE.Color(part.pale ? CAB_TONE.pale : CAB_TONE.wood), raw = new THREE.Color(BAND_COLORS.raw);
+  for (let i = 0; i < pos.count; i++) {
+    const n = [nrm.getX(i), nrm.getY(i), nrm.getZ(i)], a = [0, 1, 2].reduce((m, k) => (Math.abs(n[k]) > Math.abs(n[m]) ? k : m), 0);
+    const c = a === thin || band.of(part.type, CAB_ROLE[a][n[a] > 0 ? 1 : 0]) > 0 ? tone : raw;
+    col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+  }
+  return new THREE.BufferAttribute(col, 3);
+}
+function CabinetPartMesh({ part, state, band, onOver, onOut, onPick }: { part: CabPart; state: 'sel' | 'hover' | 'idle'; band?: CabBand; onOver: () => void; onOut: () => void; onPick: () => void }) {
+  const gl = useThree(s => s.gl), invalidate = useThree(s => s.invalidate);
   const geo = useMemo(() => cabGeometry(part), [part]);
   const lines = useMemo(() => edgeSegments(geo), [geo]);
   useEffect(() => () => geo.dispose(), [geo]);
+  // Kenar bandı kipi: renk köşelerde (malzeme beyaz); seçili parça yalnız turuncu çerçeve + ince örtüyle belirtilir (bantlar görünür kalsın).
+  useMemo(() => { if (band) { geo.setAttribute('color', cabBandColors(geo, part, band)); invalidate(); } }, [geo, part, band?.sig]);   // eslint-disable-line react-hooks/exhaustive-deps
   const sel = state === 'sel';
   return (
     <group>
       <mesh geometry={geo} onClick={e => { e.stopPropagation(); if (e.delta < 5) onPick(); }}
         onPointerOver={e => { e.stopPropagation(); onOver(); gl.domElement.style.cursor = 'pointer'; }} onPointerOut={() => { onOut(); gl.domElement.style.cursor = ''; }}>
-        <meshStandardMaterial color={sel ? CAB_TONE.sel : state === 'hover' ? CAB_TONE.hover : part.pale ? CAB_TONE.pale : CAB_TONE.wood} roughness={0.92}
-          polygonOffset polygonOffsetFactor={1} polygonOffsetUnits={1} />
+        <meshStandardMaterial key={band ? 'band' : 'plain'} vertexColors={!!band} roughness={0.92} polygonOffset polygonOffsetFactor={1} polygonOffsetUnits={1}
+          color={band ? (state === 'hover' ? '#ecdfca' : '#ffffff') : sel ? CAB_TONE.sel : state === 'hover' ? CAB_TONE.hover : part.pale ? CAB_TONE.pale : CAB_TONE.wood} />
       </mesh>
       <Line points={lines} segments color={sel ? CAB_TONE.selEdge : CAB_TONE.edge} lineWidth={sel ? 1.8 : 1.25} raycast={NO_RAY} />
       {sel && (
         <>
-          <mesh geometry={geo} raycast={NO_RAY} renderOrder={20}><meshBasicMaterial color={SEL} transparent opacity={0.14} depthTest={false} depthWrite={false} /></mesh>
+          <mesh geometry={geo} raycast={NO_RAY} renderOrder={20}><meshBasicMaterial color={SEL} transparent opacity={band ? 0.06 : 0.14} depthTest={false} depthWrite={false} /></mesh>
           <Line points={lines} segments color={SEL} lineWidth={1.6} transparent opacity={0.9} depthTest={false} renderOrder={21} raycast={NO_RAY} />
         </>
       )}
@@ -839,7 +858,7 @@ const CAB_VIEW_H = 270;
 const CAB_TARGET: Vec3 = [CAB.W / 2 - 70, CAB.H / 2 - 4, CAB.D / 2];
 const CAB_CAMERA = { position: [CAB_TARGET[0] + 2680 * 0.44, CAB_TARGET[1] + 2680 * 0.25, CAB_TARGET[2] + 2680 * 0.86] as Vec3, fov: 25, near: 10, far: 14000 };
 /** TEMSİLİ DOLAP: parçaya tık → tipi seçilir. Sol sürükle döndürür. Seçili tip turuncu; üzerine gelinen tipin adı altta yazar. */
-function CabinetView({ sel, onSel, build, onBuild }: { sel: PanelTypeId; onSel: (t: PanelTypeId) => void; build: CabBuild; onBuild: (b: CabBuild) => void }) {
+function CabinetView({ sel, onSel, build, onBuild, band }: { sel: PanelTypeId | 'door'; onSel: (t: PanelTypeId) => void; build: CabBuild; onBuild: (b: CabBuild) => void; /** kenar bandı kipi: kenarlar kurala göre boyanır */ band?: CabBand }) {
   const [hover, setHover] = useState<PanelTypeId | null>(null);
   const parts = useMemo(() => cabinetParts(build, sel === 'rearPanel'), [build, sel === 'rearPanel']);   // eslint-disable-line react-hooks/exhaustive-deps
   const { W, H, cw, cd, bh, bd } = CAB;
@@ -854,7 +873,7 @@ function CabinetView({ sel, onSel, build, onBuild }: { sel: PanelTypeId; onSel: 
         <CabinetGhost label="COLUMN" min={[-34, 0, -34]} max={[cw, H - bh, cd]} labelAt={[cw / 2 - 14, H * 0.3, cd + 2]} />
         <CabinetGhost label="BEAM" min={[-34, H - bh, -34]} max={[W + 34, H + 44, bd]} labelAt={[W * 0.72, H + 18, bd + 2]} />
         {parts.map(p => (
-          <CabinetPartMesh key={p.type} part={p} state={p.type === sel ? 'sel' : p.type === hover ? 'hover' : 'idle'}
+          <CabinetPartMesh key={p.type} part={p} band={band} state={p.type === sel ? 'sel' : p.type === hover ? 'hover' : 'idle'}
             onOver={() => setHover(p.type)} onOut={() => setHover(h => (h === p.type ? null : h))} onPick={() => onSel(p.type)} />
         ))}
         <OrbitControls target={CAB_TARGET} enableZoom={false} enablePan={false} rotateSpeed={0.7} minPolarAngle={0.5} maxPolarAngle={Math.PI / 2 + 0.2} />
@@ -867,8 +886,8 @@ function CabinetView({ sel, onSel, build, onBuild }: { sel: PanelTypeId; onSel: 
       <div className="absolute right-2.5 top-2.5" style={HUD}>drag to turn</div>
       <div className="absolute left-2.5 right-2.5 bottom-2 flex items-center gap-1.5" style={{ ...HUD, fontSize: 11.5 }}>
         <span className="shrink-0 w-[8px] h-[8px] rounded-full" style={{ background: SEL }} />
-        <span className="shrink-0 font-semibold text-stone-800">{panelTypeLabel(sel)}</span>
-        {!shown && <span className="truncate">{sel === 'free' ? '· not a fixed part of the cabinet' : '· switch the top-left option to see it'}</span>}
+        <span className="shrink-0 font-semibold text-stone-800">{bandTypeDef(sel)?.label ?? 'Panel'}</span>
+        {!shown && <span className="truncate">{sel === 'free' || sel === 'door' ? '· not a fixed part of the sample cabinet' : '· switch the top-left option to see it'}</span>}
         <span className="flex-1" />
         {hover && hover !== sel && <span className="shrink-0 h-[20px] px-2 rounded-full bg-[#292524] text-white text-[10.5px] font-semibold flex items-center">{panelTypeLabel(hover)}</span>}
       </div>
@@ -1976,6 +1995,199 @@ function PanelTypesPanel({ onEditLayout }: { /** dizilimi Layout bölümünde d�
   );
 }
 
+/* ═════════════════════════════════ KENAR BANDI ═════════════════════════════════
+   Kural = bant tipi (panel tipi + kapak) × kenar rolü → bant kalınlığı (çekirdek: ConnectorService › 8).
+   1) TEMSİLİ DOLAP: kenarlar kurala göre boyalı — ham levha (kahverengi) = bantsız · ahşap tonu = bantlı. Parçaya tık → o tip seçilir.
+   2) Seçili tipin PANELİ: dört kenarı kalın şerit — şeride tık → seçili kalınlıkla bantlanır / bant kalkar; altındaki kutucuklara kalınlık yazılır.
+   3) BÜTÜN TİPLER küçük kartlarda (hangi kenarı bantlı tek bakışta) · seçenekler (birleşim kuralı, kesim ölçüsü, hazır kalınlıklar) · seçili
+      gövdenin bant toplamı. Her değişiklik anında kaydedilir; sahnedeki paneller yeniden boyanır (motor çalışmaz). */
+const BAND_INK = '#292524';
+const bandPlaneOf = (id: BandTypeId, free: Exclude<PanelPlane, 'any'>): Exclude<PanelPlane, 'any'> => { const p = bandTypeDef(id)?.plane ?? 'any'; return p === 'any' ? free : p; };
+const bandSampleSize = (id: BandTypeId, plane: Exclude<PanelPlane, 'any'>): [number, number] => (id === 'door' ? [430, 640] : sampleSizeOf(id, plane));
+/** Tipin PANELİ (geniş yüzüne dik bakış): dört kenarı gönyeli kalın şerit. Ham = kahverengi benekli · bantlı = beyaz + koyu çerçeve + kalınlık. */
+function BandFaceView({ type, plane, cfg, onEdge }: { type: BandTypeId; plane: Exclude<PanelPlane, 'any'>; cfg: EdgeBandConfig; onEdge: (e: PanelEdgeDir) => void }) {
+  const [hover, setHover] = useState<PanelEdgeDir | null>(null);
+  const VW = 480, VH = 252, S = 13, [mw, mh] = bandSampleSize(type, plane);
+  const k = Math.min(280 / mw, 132 / mh), w = Math.max(mw * k, 46), h = Math.max(mh * k, 30), x0 = (VW - w) / 2, y0 = (VH - h) / 2 + 5, x1 = x0 + w, y1 = y0 + h;
+  const [eTop, eBottom, eLeft, eRight] = PLANE_EDGES[plane];
+  const strips: Array<{ role: PanelEdgeDir; pts: string; lx: number; ly: number; anchor: 'middle' | 'start' | 'end' }> = [
+    { role: eTop, pts: `${x0},${y0} ${x1},${y0} ${x1 + S},${y0 - S} ${x0 - S},${y0 - S}`, lx: VW / 2, ly: y0 - S - 15, anchor: 'middle' },
+    { role: eBottom, pts: `${x0},${y1} ${x1},${y1} ${x1 + S},${y1 + S} ${x0 - S},${y1 + S}`, lx: VW / 2, ly: y1 + S + 15, anchor: 'middle' },
+    { role: eLeft, pts: `${x0},${y0} ${x0},${y1} ${x0 - S},${y1 + S} ${x0 - S},${y0 - S}`, lx: x0 - S - 9, ly: (y0 + y1) / 2, anchor: 'end' },
+    { role: eRight, pts: `${x1},${y0} ${x1},${y1} ${x1 + S},${y1 + S} ${x1 + S},${y0 - S}`, lx: x1 + S + 9, ly: (y0 + y1) / 2, anchor: 'start' },
+  ];
+  const brush = cfg.brush;
+  return (
+    <svg viewBox={`0 0 ${VW} ${VH}`} className="block w-full select-none" style={{ fontFamily: UI_FONT }}>
+      <defs>
+        <pattern id="yago-band-raw" width="5" height="5" patternUnits="userSpaceOnUse">
+          <rect width="5" height="5" fill={BAND_COLORS.raw} />
+          <circle cx="1.2" cy="1.3" r="0.55" fill={BAND_COLORS.rawEdge} opacity="0.55" /><circle cx="3.7" cy="3.6" r="0.5" fill="#e6cfae" opacity="0.7" />
+        </pattern>
+      </defs>
+      <text x={8} y={14} fontSize={8} fontWeight={600} fill={PT.mute} style={{ letterSpacing: '0.09em' }}>{PLANE_LABEL[plane].toUpperCase()} OF THE PANEL</text>
+      <rect x={x0} y={y0} width={w} height={h} fill="#fbf8f3" stroke="#cfc7bc" strokeWidth={0.8} />
+      {w > 120 && h > 44 && (
+        <>
+          <text x={VW / 2} y={y0 + h / 2 + 1} textAnchor="middle" fontSize={12} fontWeight={600} fill={PT.ink}>{bandTypeDef(type)?.short}</text>
+          <text x={VW / 2} y={y0 + h / 2 + 14} textAnchor="middle" fontSize={9} fontWeight={500} fill={PT.mute}>click an edge · {fmtBand(brush)} mm</text>
+        </>
+      )}
+      {strips.map(st => {
+        const t = cfg.rules[type]?.[st.role] ?? 0, on = t > 0, hv = hover === st.role;
+        const label = EDGE_LABEL[st.role].toUpperCase(), txt = on ? `${fmtBand(t)} mm` : 'raw', lw = label.length * 6.9 + txt.length * 5.4 + 40;
+        const px = st.anchor === 'middle' ? st.lx - lw / 2 : st.anchor === 'end' ? st.lx - lw : st.lx;
+        return (
+          <g key={st.role} data-band-edge={st.role} data-band={t} onClick={ev => { stop(ev); onEdge(st.role); }} onMouseEnter={() => setHover(st.role)} onMouseLeave={() => setHover(null)} style={{ cursor: 'pointer' }}>
+            <title>{`${EDGE_LABEL[st.role]} edge — ${on ? `${fmtBand(t)} mm band · click to ${t === brush ? 'remove it' : `make it ${fmtBand(brush)} mm`}` : `raw (no band) · click to band it with ${fmtBand(brush)} mm`}`}</title>
+            <polygon points={st.pts} fill="transparent" stroke="transparent" strokeWidth={14} strokeLinejoin="round" />
+            <polygon points={st.pts} data-band-strip fill={on ? '#ffffff' : 'url(#yago-band-raw)'} stroke={hv ? PT.sel : on ? BAND_INK : BAND_COLORS.rawEdge} strokeWidth={hv ? 2 : on ? 1.7 : 0.8} strokeLinejoin="round"
+              style={{ transition: 'stroke 0.12s' }} />
+            <rect x={px} y={st.ly - 9} width={lw} height={18} rx={9} fill={on ? BAND_INK : hv ? '#f1ede6' : '#fff'} stroke={on ? BAND_INK : '#d6cfc3'} strokeWidth={0.9} />
+            <rect x={px + 7} y={st.ly - 3.5} width={11} height={7} rx={1.5} fill={on ? '#fff' : BAND_COLORS.raw} stroke={on ? '#fff' : BAND_COLORS.rawEdge} strokeWidth={0.8} />
+            <text x={px + 23} y={st.ly + 3.1} fontSize={8.6} fontWeight={700} fill={on ? '#fff' : PT.ink} style={{ letterSpacing: '0.07em' }}>{label}</text>
+            <text x={px + lw - 8} y={st.ly + 3.1} textAnchor="end" fontSize={9} fontWeight={600} fill={on ? '#d6d3d1' : PT.mute} style={{ fontVariantNumeric: 'tabular-nums' }}>{txt}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+/** Tip kartı: küçük panel (bantlı kenar koyu kalın çizgi, ham kenar ince kahverengi) + ad. */
+function BandTypeCard({ id, plane, cfg, on, onPick }: { id: BandTypeId; plane: Exclude<PanelPlane, 'any'>; cfg: EdgeBandConfig; on: boolean; onPick: () => void }) {
+  const def = bandTypeDef(id)!, [mw, mh] = bandSampleSize(id, plane), k = Math.min(30 / mw, 20 / mh), w = Math.max(mw * k, 9), h = Math.max(mh * k, 6);
+  const x0 = 20 - w / 2, y0 = 14 - h / 2, [eT, eB, eL, eR] = PLANE_EDGES[plane], n = bandEdgeCount(id, cfg);
+  const ln = (role: PanelEdgeDir, x1: number, y1: number, x2: number, y2: number) => {
+    const t = cfg.rules[id]?.[role] ?? 0;
+    return <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={t > 0 ? BAND_INK : BAND_COLORS.raw} strokeWidth={t > 0 ? 2.6 : 1.3} strokeLinecap={t > 0 ? 'square' : 'butt'} />;
+  };
+  return (
+    <button type="button" data-band-type={id} onClick={e => { stop(e); onPick(); }}
+      title={`${def.label} — ${n ? `band on ${(Object.keys(cfg.rules[id] ?? {}) as PanelEdgeDir[]).filter(e => (cfg.rules[id]?.[e] ?? 0) > 0).map(e => `${EDGE_LABEL[e].toLowerCase()} ${fmtBand(cfg.rules[id]![e]!)}`).join(', ')} mm` : 'no edge band'}`}
+      className={`min-w-0 h-[34px] pl-1 pr-1.5 rounded-[8px] flex items-center gap-1 text-left transition-[box-shadow,background-color] duration-150
+        ${on ? 'bg-[#fff4ec] ring-[1.5px] ring-orange-400' : 'bg-white ring-1 ring-[#e3ddd4] hover:ring-[#bfb7ab] hover:bg-[#faf8f5]'}`}>
+      <svg width={40} height={28} viewBox="0 0 40 28" className="shrink-0">
+        <rect x={x0} y={y0} width={w} height={h} fill="#fbf8f3" />
+        {ln(eT, x0, y0, x0 + w, y0)}{ln(eB, x0, y0 + h, x0 + w, y0 + h)}{ln(eL, x0, y0, x0, y0 + h)}{ln(eR, x0 + w, y0, x0 + w, y0 + h)}
+      </svg>
+      <span className={`flex-1 min-w-0 truncate text-[10.5px] font-semibold ${on ? 'text-[#9a3412]' : n ? 'text-stone-700' : 'text-stone-400'}`}>{def.short}</span>
+    </button>
+  );
+}
+function EdgeBandPanel() {
+  const { edgeBandConfig: cfg, selectedShapeId } = useStoreFields('edgeBandConfig', 'selectedShapeId', 'shapes', 'virtualFaces', 'panelTypeConfig', 'panelGroups');
+  const [sel, setSel] = useState<BandTypeId>('bottom');
+  const [build, setBuild] = useState<CabBuild>('panels');
+  const [freePlane, setFreePlane] = useState<Exclude<PanelPlane, 'any'>>('side');
+  const def = bandTypeDef(sel)!, plane = bandPlaneOf(sel, freePlane), roles = PLANE_EDGES[plane];
+  const pick = (t: BandTypeId) => { setSel(t); const b = t === 'door' ? null : buildOfType(t); if (b) setBuild(b); };
+  const rule = cfg.rules[sel] ?? {}, n = roles.filter(e => (rule[e] ?? 0) > 0).length;
+  // Şeride tık: ham → seçili kalınlık · aynı kalınlık → kalkar · başka kalınlık → seçili kalınlığa döner.
+  const onEdge = (e: PanelEdgeDir) => void setBandRule(sel, e, (rule[e] ?? 0) === cfg.brush ? 0 : cfg.brush);
+  const band = useMemo<CabBand>(() => ({ of: (t, role) => bandRuleOf(t, role, cfg), sig: JSON.stringify(cfg.rules) }), [cfg]);
+  const totals = selectedShapeId ? bodyBandTotals(selectedShapeId) : null;
+  const sum = totals?.rows.reduce((m, r) => m + r.length, 0) ?? 0;
+  return (
+    <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" style={{ fontFamily: UI_FONT }} data-band-panel>
+      <QbSection title="Edge banding" sub="per panel type — brown = raw board edge, surface colour = banded">
+        <div className="flex flex-col gap-1.5" onClick={stop}>
+          <CabinetView sel={sel} onSel={pick} build={build} onBuild={setBuild} band={band} />
+        </div>
+      </QbSection>
+      <QbSection title={def.label} sub={n ? `band on ${n} of 4 edges` : 'no band yet — click an edge'}
+        trailing={<div className="flex items-center gap-1">
+          <CardAction compact icon={BoxSelect} label="All" title={`Band all four edges with ${fmtBand(cfg.brush)} mm`} onClick={() => void setBandRule(sel, [...roles], cfg.brush)} className="!h-[24px]" />
+          <CardAction compact icon={Minus} label="None" title="Remove the band from every edge of this panel type" onClick={() => void setBandRule(sel, [...roles], 0)} className="!h-[24px]" />
+        </div>}>
+        <div className="flex flex-col gap-1.5" onClick={stop}>
+          {def.plane === 'any' && <Segmented items={PLANE_SEG} active={freePlane} onPick={k => setFreePlane(k as Exclude<PanelPlane, 'any'>)} height={24} />}
+          <div className="flex items-center gap-1.5 pl-1" data-band-brush>
+            <span className="yago-label shrink-0" title="The thickness a click on an edge applies">Band thickness</span>
+            <BandPicker noNone value={cfg.brush} presets={cfg.presets} onChange={mm => { if (mm && mm > 0) void patchEdgeBandConfig({ brush: mm }); }} />
+          </div>
+          <div className="rounded-[9px] ring-1 ring-[#e3ddd4]" style={{ background: '#faf8f5' }}>
+            <BandFaceView type={sel} plane={plane} cfg={cfg} onEdge={onEdge} />
+          </div>
+          <div className="grid grid-cols-4 gap-1">
+            {roles.map(e => (
+              <FieldBox key={e} label={EDGE_LABEL[e]} accent={(rule[e] ?? 0) > 0} title={`Band thickness on the ${EDGE_LABEL[e].toLowerCase()} edge (mm) — 0 = no band`}>
+                <QbNum fine value={rule[e] ?? 0} w={30} min={0} max={10} onCommit={v => void setBandRule(sel, e, v)} />{unitTxt('mm')}
+              </FieldBox>
+            ))}
+          </div>
+          <div className="yago-hint px-1">Edges are named by the body face they look at, so a panel finds its own front, rear, left and right wherever it stands — cut-outs made later take the band of the side they face. A single panel can be changed on its preview under Assembly.</div>
+        </div>
+      </QbSection>
+      <QbSection title="All panel types" sub="thick dark edge = banded">
+        <div className="flex flex-col gap-1.5" onClick={stop}>
+          {BAND_TYPE_GROUPS.map(g => {
+            const list = BAND_TYPES.filter(t => t.group === g.key); if (!list.length) return null;
+            return (
+              <div key={g.key} className="flex flex-col gap-1">
+                <span className="yago-label pl-1">{g.label}</span>
+                <div className="grid grid-cols-3 gap-1">
+                  {list.map(t => <BandTypeCard key={t.id} id={t.id} plane={bandPlaneOf(t.id, freePlane)} cfg={cfg} on={t.id === sel} onPick={() => pick(t.id)} />)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </QbSection>
+      <QbSection title="Options">
+        <div className="flex flex-col gap-1" onClick={stop}>
+          <div className="yago-cell min-h-[30px] py-1 pl-2 pr-2 flex items-center gap-2" data-band-opt="joints"
+            title="An edge that butts against another panel (its whole length touches the panel, lies against its end, or sits in its groove) gets no band — even when the rule bands that edge. A panel can still be banded by hand under Assembly.">
+            <BandSwatch state="joint" />
+            <span className="flex-1 min-w-0 text-[11.5px] font-semibold text-stone-700">No band where two panels join <span className="font-normal text-stone-400">— overrides the rule</span></span>
+            <QbSwitch on={cfg.skipJoints} onToggle={() => void patchEdgeBandConfig({ skipJoints: !cfg.skipJoints })} />
+          </div>
+          <div className="yago-cell min-h-[30px] py-1 pl-2 pr-2 flex items-center gap-2" data-band-opt="deduct"
+            title="Cut size of a panel = finished size minus the band thickness on its outer edges (shown as CUT on the panel preview)">
+            <span className="flex-1 min-w-0 text-[11.5px] font-semibold text-stone-700">Cut size = finished size − band <span className="font-normal text-stone-400">— the board is cut smaller by the band</span></span>
+            <QbSwitch on={cfg.deduct} onToggle={() => void patchEdgeBandConfig({ deduct: !cfg.deduct })} />
+          </div>
+          <div className="yago-cell min-h-[30px] py-1 pl-2 pr-1 flex items-center gap-1.5 flex-wrap" data-band-opt="presets" title="Thicknesses offered as quick picks (here and on the panel preview)">
+            <span className="yago-label shrink-0 pr-1">Quick thicknesses</span>
+            {cfg.presets.map(t => (
+              <span key={t} className="shrink-0 h-[20px] pl-2 pr-0.5 rounded-full bg-[#f1ede6] text-[10.5px] font-semibold tabular-nums text-stone-700 flex items-center gap-0.5">
+                {fmtBand(t)}
+                <button type="button" title={`Remove ${fmtBand(t)} mm from the quick picks`} disabled={cfg.presets.length < 2}
+                  onClick={() => void patchEdgeBandConfig({ presets: cfg.presets.filter(x => x !== t), ...(cfg.brush === t ? { brush: cfg.presets.find(x => x !== t)! } : {}) })}
+                  className="w-[16px] h-[16px] rounded-full flex items-center justify-center text-stone-400 hover:text-red-600 hover:bg-white disabled:opacity-30"><Minus size={9} strokeWidth={2.6} /></button>
+              </span>
+            ))}
+            <span className="flex-1" />
+            <div className="shrink-0 flex items-center gap-0.5 text-stone-400" title="Type a thickness and press Enter to add it to the quick picks">
+              <Plus size={11} strokeWidth={2.4} />
+              <QbNum fine value={0} w={30} min={0} max={10} onCommit={v => { const t = bandMm(v); if (t > 0 && !cfg.presets.includes(t) && cfg.presets.length < 8) void patchEdgeBandConfig({ presets: [...cfg.presets, t].sort((x, y) => x - y) }); }} />{unitTxt('mm')}
+            </div>
+          </div>
+        </div>
+      </QbSection>
+      {totals && (totals.rows.length > 0 || totals.joints > 0) && (
+        <QbSection title="Selected body" sub={`${(sum / 1000).toFixed(2)} m of edge band`}>
+          <div className="flex flex-col gap-[3px]" data-band-totals>
+            {totals.rows.map(r => (
+              <div key={`${r.band}x${r.width}`} className="yago-cell is-passive h-[26px] pl-2 pr-2 flex items-center gap-2">
+                <BandSwatch state="band" />
+                <span className="shrink-0 text-[11.5px] font-semibold tabular-nums text-stone-700">{fmtBand(r.band)} mm</span>
+                <span className={`flex-1 min-w-0 truncate ${MUTED}`}>on {fmt1(r.width)} mm board · {r.edges} edge{r.edges === 1 ? '' : 's'}</span>
+                <span className="shrink-0 text-[11.5px] font-semibold tabular-nums text-stone-800">{(r.length / 1000).toFixed(2)} m</span>
+              </div>
+            ))}
+            {(totals.joints > 0 || totals.manual > 0) && (
+              <div className="yago-hint px-1 pt-0.5">
+                {totals.joints > 0 && <>{totals.joints} edge{totals.joints === 1 ? '' : 's'} left raw by the joint rule. </>}
+                {totals.manual > 0 && <>{totals.manual} edge{totals.manual === 1 ? '' : 's'} set by hand on a panel.</>}
+              </div>
+            )}
+          </div>
+        </QbSection>
+      )}
+    </div>
+  );
+}
+
 /* ═════════════════════════════════ BAĞLAYICILAR ═════════════════════════════════
    Bağlayıcı = delikler + çizilmiş operasyonlar (pocket / line) + modeller; hepsi TEMSİLİ BİRLEŞİMDE tanımlanır: B paneli ucuyla A panelinin
    yüzüne dayanır. Üç yüzey: B'nin geniş yüzü · B'nin ucu (kalınlığı) · A'nın temas yüzü. Etkin yüzey üstten seçilir (kamera ona döner,
@@ -2829,6 +3041,7 @@ export function AccessoriesPanel() {
   if (accessoryCategory === 'connectors') return <ConnectorsPanel draft={connDraft} setDraft={setConnDraft} keepModels={legKeep} />;
   if (accessoryCategory === 'layouts') return <ConnectorLayoutsPanel draft={layoutDraft} setDraft={setLayoutDraft} />;
   if (accessoryCategory === 'panelTypes') return <PanelTypesPanel onEditLayout={l => { setLayoutDraft(editableLayoutSet(l)); setCategory('layouts'); }} />;
+  if (accessoryCategory === 'edgeBands') return <EdgeBandPanel />;
   if (accessoryCategory !== 'legs') return null;
   return (
     <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" style={{ fontFamily: UI_FONT }}>

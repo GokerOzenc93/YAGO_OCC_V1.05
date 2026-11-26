@@ -516,16 +516,20 @@ function fatLines(geometry: THREE.BufferGeometry, color: number, linewidth: numb
 /** Önizlemede bir çapanın ekran yeri (px) + panelin ortasından dışarı doğru birim yön. */
 export interface PreviewAnchor { x: number; y: number; ox: number; oy: number }
 /** `anchors`: panelin kendi çerçevesinde yönler (ör. kenarın dış yönü) → o yöndeki kenar ortasının ekran yeri hesaplanır ve `overlay`'e verilir
- *  (önizlemenin üstünde etkileşimli katman: kenar etiketleri vb. — katman işaretçiyi kendisi durdurur, yoksa sürükleme döndürür). */
-export function PanelPreview2D({ shape, arrowRotated, anchors, overlay }: {
-  shape: Shape; arrowRotated?: boolean; anchors?: Record<string, [number, number, number]>;
-  /** `view` = panelin kendi çerçevesinde, bakılan geniş yüzün dış yönü (hangi yüze bakıldığını yazmak için). */
-  overlay?: (pts: Record<string, PreviewAnchor>, size: { w: number; h: number }, view: [number, number, number]) => React.ReactNode;
+ *  (önizlemenin üstünde etkileşimli katman: kenar etiketleri vb. — katman işaretçiyi kendisi durdurur, yoksa sürükleme döndürür).
+ *  `marks`: panelin kendi çerçevesinde NOKTALAR (kenar uçları, bağlayıcı yerleri) → ekran yerleri aynı kayıtla `overlay`'e verilir.
+ *  `paintKey`: panel ağının köşe rengi (kenar bandı) değişince önizleme yeniden çizilir; ağda `color` varsa önizleme de onunla boyanır. */
+export function PanelPreview2D({ shape, arrowRotated, anchors, marks, paintKey, overlay }: {
+  shape: Shape; arrowRotated?: boolean; anchors?: Record<string, [number, number, number]>; marks?: Record<string, [number, number, number]>; paintKey?: string;
+  /** `view` = panelin kendi çerçevesinde, bakılan geniş yüzün dış yönü (hangi yüze bakıldığını yazmak için) · `dims` = ölçü kutucuklarının
+   *  ekran kutuları (katman etiketlerini onların üstüne koymasın). */
+  overlay?: (pts: Record<string, PreviewAnchor>, size: { w: number; h: number }, view: [number, number, number], dims: Array<{ x: number; y: number; hw: number; hh: number }>) => React.ReactNode;
 }) {
   const [anchorPts, setAnchorPts] = useState<Record<string, PreviewAnchor>>({});
   const [viewDir, setViewDir] = useState<[number, number, number]>([0, 0, 1]);
   const anchorsRef = useRef(anchors); anchorsRef.current = anchors;
-  const anchorKey = anchors ? JSON.stringify(anchors) : '';
+  const marksRef = useRef(marks); marksRef.current = marks;
+  const anchorKey = `${anchors ? JSON.stringify(anchors) : ''}|${marks ? JSON.stringify(marks) : ''}|${paintKey ?? ''}`;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [ground, setGround] = useState<GroundRender[]>([]);
@@ -569,6 +573,9 @@ export function PanelPreview2D({ shape, arrowRotated, anchors, overlay }: {
     const material = new THREE.MeshStandardMaterial({ color: PREVIEW_PANEL_COLOR, roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide });
     // Klon: paylaşılan renderer GPU tamponlarını tutar; klon çizimden sonra dispose edilir, sahne geometrisine dokunulmaz.
     const previewGeo = frameGeo.clone();
+    // Kenar bandı renkleri (ConnectorService.paintPanelBands sahne ağına yazar): önizleme ağı aynı köşe sırasını taşır.
+    const bandCol = shape.geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+    if (bandCol && bandCol.count === previewGeo.getAttribute('position').count) { previewGeo.setAttribute('color', bandCol.clone()); material.vertexColors = true; }
     disposables.push(material, previewGeo);
     scene.add(new THREE.Mesh(previewGeo, material));
     scene.add(fatLines(frameGeo, PREVIEW_EDGE_COLOR, 0.9, w, h, disposables));
@@ -665,6 +672,7 @@ export function PanelPreview2D({ shape, arrowRotated, anchors, overlay }: {
       const p = proj(center.clone().addScaledVector(dir, half)), l = Math.hypot(p.x - c0.x, p.y - c0.y) || 1;
       anc[key] = { x: p.x, y: p.y, ox: (p.x - c0.x) / l, oy: (p.y - c0.y) / l };
     }
+    for (const [key, m] of Object.entries(marksRef.current ?? {})) { const q = proj(new THREE.Vector3(m[0], m[1], m[2])); anc[key] = { x: q.x, y: q.y, ox: 0, oy: 0 }; }
     setAnchorPts(anc);
     setViewDir([Math.round(nDir.x), Math.round(nDir.y), Math.round(nDir.z)]);
     const items = allDimsW.map(d => {
@@ -709,7 +717,9 @@ export function PanelPreview2D({ shape, arrowRotated, anchors, overlay }: {
           </g>
         ))}
       </svg>
-      {overlay && canvasSize.w > 0 && <div style={{ ...fill, pointerEvents: 'none', cursor: 'default' }}>{overlay(anchorPts, canvasSize, viewDir)}</div>}
+      {overlay && canvasSize.w > 0 && <div style={{ ...fill, pointerEvents: 'none', cursor: 'default' }}>
+        {overlay(anchorPts, canvasSize, viewDir, ground.map(d => { const { pw, ph } = pillSize(String(d.value), fsG); return { x: d.cx, y: d.cy, hw: pw / 2, hh: ph / 2 }; }))}
+      </div>}
     </div>
   );
 }

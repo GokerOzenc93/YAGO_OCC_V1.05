@@ -20,7 +20,7 @@ import {
   swingPoints, footprintGeometry, outlineGeometry, isPostSketchFace, dominantAxisLabel, executeFaceExtrude, mapAxisToVfLocal, angleToTouchPlane, executePanelMove,
   executePanelMoveFixed, executePanelRotate, FACE_KINDS, FACE_KIND_LABEL, FACE_ROLES, FACE_ROLE_LABEL, type FaceKind, type FaceRole, faceRoleText,
 } from './Geometry';
-import { connectorPartInstances, placementTypeFor } from './ConnectorService';
+import { connectorPartInstances, paintPanelBands, panelBandKey, panelBanding, placementTypeFor } from './ConnectorService';
 import {
   type PlinthPick, type PlinthRegion, type PlinthSet, confirmPlinthPick, plinthBoxOf, plinthBoxesOf, plinthCandidates, plinthLegSpots, plinthPickBox,
   plinthRowKey, plinthSetsOf, isPlinthRow, finishPlinthEdit, plinthRegionOf, prismGeometry, bodyFrontAxis, bodyFaces, setBodyFaceRole, bodyFacesByRole,
@@ -599,7 +599,7 @@ export function RevealShaderWarmup() {
     let cancelled = false;
     const run = () => {
       if (cancelled) return;
-      const mat = new THREE.MeshLambertMaterial({ color: '#f0ebe3', side: THREE.DoubleSide });
+      const mat = new THREE.MeshLambertMaterial({ color: '#f0ebe3', side: THREE.DoubleSide, vertexColors: true });
       const fx = { shaderId: 1, len: 1, cell: 1, band: 0.05, seed: 0, axis: new THREE.Vector3(0, 1, 0), origin: new THREE.Vector3(), glow: new THREE.Color('#fff'), u: new THREE.Vector3(1, 0, 0) };
       installRevealShader(mat, fx as unknown as RevealFx);
       const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
@@ -657,6 +657,9 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const isDoorPickGhost = isParentSelected && ((doorPicking && isDoorPanel(shape)) || (backPicking && isBackPanel(shape)));
 
   const edgePoints = useMemo(() => safeEdgePoints(shape.geometry, EDGE_ANGLE_THRESHOLD), [shape.geometry]);
+  // KENAR BANDI: bantsız kenar ham levha renginde, bantlı kenar yüzey renginde (köşe rengi). İmza komşu panel değişince de değişir (birleşim).
+  const bandKey = useAppStore(st => panelBandKey(shape.id, st));
+  useMemo(() => paintPanelBands(shape.geometry, panelBanding(shape.id), shape.color || '#ffffff'), [shape.geometry, bandKey, shape.color]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Ok modunda yüz seçilmez (oklar en dış yüzü büyütür) → yüz yakalama / vurgu kapalı, panel normal çizilir.
   const isFaceExtrudeTarget = S.faceExtrudeMode && shape.id === S.faceExtrudeTargetPanelId;
@@ -773,7 +776,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
       <group ref={animRef}>
         {!isWireframe && (
           <mesh ref={meshRef} geometry={shape.geometry} castShadow receiveShadow {...meshEvents}>
-            <meshLambertMaterial color={panelColor} emissive={emissive} emissiveIntensity={emissiveIntensity} side={THREE.DoubleSide}
+            <meshLambertMaterial color={panelColor} vertexColors emissive={emissive} emissiveIntensity={emissiveIntensity} side={THREE.DoubleSide}
               transparent={isXray || isGhost || moveRefHighlight} opacity={opacity} depthWrite={!isXray && !isGhost && !isMoveRefTargetPanel}
               polygonOffset polygonOffsetFactor={MESH_OFFSET} polygonOffsetUnits={MESH_OFFSET} />
           </mesh>

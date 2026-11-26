@@ -49,6 +49,7 @@ import {
   surfaceRuleOf, defaultSetOf, groupLabel, setGroupConnectorSet, setVfConnectorSet, setsOfGroup, typeGroupsOf,
   type PanelPlane, holeFaceHint, holeFaceOptions, panelTypeDef, setGroupConnectorFlip, setVfConnectorFlip, typeFlipOf,
   EDGE_LABEL as EDGE_NAME, edgeRulesOf, panelEdgeFlip, panelEdgeSetOf, panelFlipPick, panelSetOf, setVfEdgeConnector,
+  BAND_COLORS, type BandRoleSummary, bandRoles, bandTypeDef, clearVfEdgeBands, fmtBand, panelBandKey, panelBanding, setVfEdgeBand,
 } from './ConnectorService';
 import { useDraft as useSketch } from './Draft';
 import { beginFacePick, deleteSketch, editSketch, exitFace, sketchFeaturesOf } from './DraftView';
@@ -597,20 +598,22 @@ const qbField = (w: number, passive?: boolean): React.CSSProperties =>
   ({ ...FIELD_INPUT, width: w, flexShrink: 0, textAlign: 'right', ...(passive ? PASSIVE_INPUT : {}) });
 
 /** Taslaklı sayı girişi: Enter / blur onaylar, Esc geri alır. */
-export function QbNum({ value, onCommit, passive, w = 34, min = 0, max, autoFocus }: {
+export function QbNum({ value, onCommit, passive, w = 34, min = 0, max, autoFocus, fine }: {
   value: number; onCommit: (v: number) => void; passive?: boolean; w?: number; min?: number; max?: number;
   /** açılınca odaklan (tıkla → yaz → Enter akışı) */ autoFocus?: boolean;
+  /** iki ondalık (bant kalınlığı: 0,45 mm) — varsayılan bir ondalık */ fine?: boolean;
 }) {
   const [draft, setDraft] = useDraft(value);
+  const rnd = (v: number) => (fine ? Math.round(v * 100) / 100 : round1(v));
   const commit = () => {
     if (draft == null) return;
     const v = parseNum(draft); setDraft(null);
     if (!Number.isFinite(v)) return;
     const c = Math.min(max ?? Infinity, Math.max(min, v));
-    if (Math.abs(c - value) > 1e-6) onCommit(round1(c));
+    if (Math.abs(c - value) > 1e-6) onCommit(rnd(c));
   };
   return (
-    <input type="text" inputMode="decimal" value={passive ? '—' : draft ?? fmt1(value)} disabled={passive} autoFocus={autoFocus && !passive}
+    <input type="text" inputMode="decimal" value={passive ? '—' : draft ?? (fine ? String(rnd(value)) : fmt1(value))} disabled={passive} autoFocus={autoFocus && !passive}
       onChange={e => setDraft(e.target.value)} onBlur={commit} onFocus={e => e.target.select()}
       onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setDraft(null); }} onClick={stop}
       className="yago-field" style={qbField(w, passive)} />
@@ -2086,103 +2089,256 @@ export function HoleFaceSelect({ type, plane, pick, onChange, scope = 'this pane
   );
 }
 const clampPx = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(Math.max(lo, hi), v));
-/** PANEL ÖNİZLEMESİ + BAĞLAYICI AYARI (önizlemenin üstünde):
- *  · sol altta "All edges · holes on": panelin BÜTÜN bağlayıcılarının delik yüzü — öteki yüze tek tık hepsini çevirir;
- *  · bağlayıcılı her kenarın ortasında bir etiket (kenar · delik yüzü · varsa kenara özel set); etikete tık → o KENARIN küçük kartı:
- *    delik yüzü + set (yalnız o kenarın grubunun setleri) + "panelle aynı". Kenara özel seçim turuncu görünür.
- *  Tipin kenarında bağlayıcı yoksa düz önizleme. Seçimler anında gerçek panele işlenir (delikler önizlemede de yer değiştirir). */
-function PanelConnectorPreview({ vf, panel, arrowRotated }: { vf: VirtualFace; panel: Shape; arrowRotated: boolean }) {
-  useStoreFields('panelTypeConfig', 'connectors', 'connectorLayouts', 'panelGroups');
+/* ───────── KENAR BANDI (ConnectorService › 8) ───────── */
+const BAND_INK = '#292524', CONN_DOT = '#0f766e';
+/** Bant işareti (küçük dikdörtgen): bantlı = beyaz + koyu çerçeve · ham = kahverengi · birleşim = kesikli kahverengi çerçeve. */
+export function BandSwatch({ state, w = 12, h = 7 }: { state: 'band' | 'raw' | 'joint' | 'mixed'; w?: number; h?: number }) {
+  const style: React.CSSProperties = state === 'band' ? { background: '#fff', border: `1.5px solid ${BAND_INK}` }
+    : state === 'joint' ? { background: BAND_COLORS.rawSoft, border: `1px dashed ${BAND_COLORS.rawEdge}` }
+    : state === 'mixed' ? { background: `linear-gradient(90deg, #fff 50%, ${BAND_COLORS.raw} 50%)`, border: `1.5px solid ${BAND_INK}` }
+    : { background: BAND_COLORS.raw, border: `1px solid ${BAND_COLORS.rawEdge}` };
+  return <span className="shrink-0 inline-block rounded-[2px]" style={{ width: w, height: h, boxSizing: 'border-box', ...style }} />;
+}
+const roleBandState = (r: Pick<BandRoleSummary, 'band' | 'joint'>): 'band' | 'raw' | 'joint' | 'mixed' =>
+  (r.band === null ? 'mixed' : r.band > 0 ? 'band' : r.joint === 'all' ? 'joint' : 'raw');
+const roleBandText = (r: Pick<BandRoleSummary, 'band' | 'joint'>): string =>
+  (r.band === null ? 'mixed' : r.band > 0 ? `${fmtBand(r.band)} mm` : r.joint === 'all' ? 'joint' : 'raw');
+/** Bant kalınlığı seçimi: "kural" (varsa) · bantsız · hazır kalınlıklar · elle değer. `value` undefined = kuralı izle. */
+export function BandPicker({ value, presets, ruleText, noNone, onChange }: {
+  value: number | undefined; presets: number[]; /** verilirse başta "kuralı izle" çipi çıkar */ ruleText?: string;
+  /** "None" çipi çıkmaz (kalınlık seçimi: bantsız anlamsız) */ noNone?: boolean; onChange: (mm: number | undefined) => void;
+}) {
+  const custom = value !== undefined && value > 0 && !presets.includes(value);
+  const chip = (on: boolean) => `shrink-0 h-[22px] px-1.5 rounded-[6px] text-[10.5px] font-semibold tabular-nums whitespace-nowrap flex items-center gap-1 transition-colors duration-150
+    ${on ? 'bg-[#292524] text-white' : 'bg-white text-stone-600 ring-1 ring-[#e3ddd4] hover:ring-[#bfb7ab] hover:text-stone-900'}`;
+  return (
+    <div className="flex flex-wrap items-center gap-1" onClick={stop}>
+      {ruleText !== undefined && (
+        <button type="button" data-band-pick="rule" className={chip(value === undefined)} onClick={() => onChange(undefined)}
+          title="Follow the rule of the panel type (Accessories › Edge banding) and the joint rule">{ruleText}</button>
+      )}
+      {!noNone && (
+        <button type="button" data-band-pick="0" className={chip(value === 0)} onClick={() => onChange(0)} title="No band on this edge — raw board edge">
+          <BandSwatch state="raw" w={9} h={6} />None
+        </button>
+      )}
+      {presets.map(t => (
+        <button key={t} type="button" data-band-pick={t} className={chip(value === t)} onClick={() => onChange(t)} title={`${fmtBand(t)} mm edge band`}>{fmtBand(t)}</button>
+      ))}
+      <div className={`yago-cell shrink-0 h-[22px] pl-1.5 pr-1 flex items-center gap-0.5 ${custom ? 'is-accent' : ''}`} title="Type any band thickness (mm)">
+        <QbNum fine value={custom ? value! : 0} w={30} min={0} max={10} onCommit={v => onChange(v > 0 ? v : 0)} />{unitTxt('mm')}
+      </div>
+    </div>
+  );
+}
+/** PANEL ÖNİZLEMESİ + KENAR BANDI + BAĞLAYICI (önizlemenin üstünde):
+ *  · her kalınlık yüzü boyunca BANT ŞERİDİ: bantlı = beyaz şerit + koyu çerçeve · ham = kahverengi · birleşim (başka panele dayanan) = kesikli;
+ *    3B panel de aynı dille boyanır (bantsız kenar ham levha rengi). Bağlayıcı noktaları petrol nokta (bu panelin ucunda) / halka (yüzünde).
+ *  · her kenar ROLÜNÜN ortasında bir etiket (rol · bant · bağlayıcı adedi); etikete tık → o KENARIN kartı: bant (kural / yok / kalınlık) +
+ *    bağlayıcı delik yüzü ve seti. Elle seçim turuncu görünür.
+ *  · sol altta "All edges · holes on": panelin BÜTÜN bağlayıcılarının delik yüzü. Sağ üstte gösterge + kesim ölçüsü.
+ *  Seçimler anında gerçek panele işlenir. */
+function PanelEdgePreview({ vf, panel, arrowRotated }: { vf: VirtualFace; panel: Shape; arrowRotated: boolean }) {
+  useStoreFields('panelTypeConfig', 'connectors', 'connectorLayouts', 'panelGroups', 'edgeBandConfig');
+  const bandKey = useAppStore(s => panelBandKey(panel.id, s));
   const [openEdge, setOpenEdge] = useState<PanelEdgeDir | null>(null);
   const st = useAppStore.getState(), type = panelTypeChoice(vf)?.current ?? null, o = panelOrientation(panel), fr = panelFrameOf(panel);
-  const edges = type && o && fr ? o.edges.flatMap(e => {
+  const banding = panelBanding(panel.id, st), roles = bandRoles(banding), cfg = st.edgeBandConfig;
+  const toFrame = (p: [number, number, number]): [number, number, number] => { const q = new Vector3(p[0], p[1], p[2]).applyQuaternion(fr!.inv); return [q.x, q.y, q.z]; };
+  // Bağlayıcılı kenarlar (tipin kuralından).
+  const conns = type && o && fr ? o.edges.flatMap(e => {
     const rule = edgeRulesOf(type, e.role)[0]; if (!rule?.group) return [];
-    const d = new Vector3(e.dir[0], e.dir[1], e.dir[2]).applyQuaternion(fr.inv);
     return [{
-      role: e.role, group: rule.group, dir: [Math.round(d.x), Math.round(d.y), Math.round(d.z)] as [number, number, number], own: vf.connectorEdges?.[e.role] ?? {},
+      role: e.role, group: rule.group, own: vf.connectorEdges?.[e.role] ?? {},
       flip: panelEdgeFlip(vf, e.role, !!rule.flipFace, st), panelFlip: panelFlipPick(vf, st) ?? !!rule.flipFace,
       set: panelEdgeSetOf(vf, e.role, rule.group, st), panelSet: panelSetOf(vf, rule.group, st),
     }];
   }) : [];
-  if (!type || !o || !edges.length) return <PanelPreview2D shape={panel} arrowRotated={arrowRotated} />;
-  const faces = holeFaceOptions(type, o.plane), faceName = (flip: boolean) => faces.find(f => f.flip === flip)!.label;
-  const faceItems = faces.map(f => ({ key: f.flip ? 'flip' : 'def', label: f.label }));
-  const allFlip = edges.every(e => e.flip === edges[0].flip) ? edges[0].flip : null;
-  const manual = vf.connectorFlip !== undefined || edges.some(e => e.own.flip !== undefined);
-  const cur = edges.find(e => e.role === openEdge);
-  const anchors = Object.fromEntries(edges.map(e => [e.role, e.dir]));
+  if (!fr || (!roles.length && !conns.length)) return <PanelPreview2D shape={panel} arrowRotated={arrowRotated} />;
+  const faces = type && o ? holeFaceOptions(type, o.plane) : null, faceName = (flip: boolean) => faces?.find(f => f.flip === flip)?.label ?? '';
+  const faceItems = (faces ?? []).map(f => ({ key: f.flip ? 'flip' : 'def', label: f.label }));
+  const allFlip = conns.length && conns.every(e => e.flip === conns[0].flip) ? conns[0].flip : null;
+  const manualFlip = vf.connectorFlip !== undefined || conns.some(e => e.own.flip !== undefined);
+  const joints = bodyJoints(vf.shapeId, st), mine = joints.filter(j => j.bId === panel.id), onFace = joints.filter(j => j.aId === panel.id);
+  const placed = (role: PanelEdgeDir) => mine.filter(j => j.key.split('|')[1] === role).reduce((n, j) => n + j.positions.length, 0);
+  // Etiketler: bantlı / bağlayıcılı her rol; çapası o role bakan yüzlerin ortak dış yönü (panelin kendi çerçevesinde).
+  const chipRoles = [...new Set([...roles.map(r => r.role), ...conns.map(c => c.role)])];
+  const anchors: Record<string, [number, number, number]> = {};
+  for (const role of chipRoles) {
+    const r = roles.find(x => x.role === role), d = new Vector3();
+    if (r) for (const e of r.edges) d.add(new Vector3(e.out[0], e.out[1], e.out[2]));
+    else { const oe = o?.edges.find(e => e.role === role); if (oe) d.set(oe.dir[0], oe.dir[1], oe.dir[2]); }
+    if (d.lengthSq() < 1e-6) continue;
+    d.normalize().applyQuaternion(fr.inv);
+    anchors[role] = [Math.abs(d.x) > 0.999 ? Math.sign(d.x) : d.x, Math.abs(d.y) > 0.999 ? Math.sign(d.y) : d.y, Math.abs(d.z) > 0.999 ? Math.sign(d.z) : d.z];
+  }
+  // İşaretler: kenar şeridinin uçları + dış yönü, bağlayıcı noktaları.
+  const marks: Record<string, [number, number, number]> = {};
+  const strips = (banding?.edges ?? []).filter(e => !e.curved && e.length > 0.5);
+  for (const e of strips) {
+    marks[`${e.key}|a`] = toFrame(e.a); marks[`${e.key}|b`] = toFrame(e.b);
+    marks[`${e.key}|o`] = toFrame([(e.a[0] + e.b[0]) / 2 + e.out[0] * 40, (e.a[1] + e.b[1]) / 2 + e.out[1] * 40, (e.a[2] + e.b[2]) / 2 + e.out[2] * 40]);
+  }
+  const dots: Array<{ key: string; onEdge: boolean }> = [];
+  [...mine.map(j => [j, true] as const), ...onFace.map(j => [j, false] as const)].forEach(([j, onEdge], ji) => j.positions.forEach((s, k) => {
+    const key = `c${ji}|${k}`;
+    marks[key] = toFrame([j.o[0] + j.along[0] * s, j.o[1] + j.along[1] * s, j.o[2] + j.along[2] * s]);
+    dots.push({ key, onEdge });
+  }));
   // Bakılan yüzün adı: bir birleşimin işlenen yüzü (`t`) ile o kenarın yüz seçiminden okunur (bağlayıcı atılmamışsa yazılmaz).
-  const joint = bodyJoints(vf.shapeId, st).find(j => j.bId === panel.id), jointEdge = joint ? edges.find(e => e.role === joint.key.split('|')[1]) : undefined;
+  const joint = mine[0], jointEdge = joint ? conns.find(e => e.role === joint.key.split('|')[1]) : undefined;
   const seen = (view: [number, number, number]): string | null => {
     if (!joint || !jointEdge) return null;
-    const v = new Vector3(view[0], view[1], view[2]).applyQuaternion(fr!.inv.clone().invert());
+    const v = new Vector3(view[0], view[1], view[2]).applyQuaternion(fr.inv.clone().invert());
     return faceName(v.x * joint.t[0] + v.y * joint.t[1] + v.z * joint.t[2] > 0 ? jointEdge.flip : !jointEdge.flip);
   };
+  const cur = openEdge && chipRoles.includes(openEdge) ? openEdge : null;
+  const curBand = roles.find(r => r.role === cur), curConn = conns.find(c => c.role === cur);
+  const hasOwnBand = !!vf.edgeBands && Object.keys(vf.edgeBands).length > 0;
+  const dimsTxt = (d: [number, number]) => (arrowRotated ? `${fmt1(d[1])} × ${fmt1(d[0])}` : `${fmt1(d[0])} × ${fmt1(d[1])}`);
+  const cutDiffers = !!banding?.cut && !!banding.size && (banding.cut[0] !== banding.size[0] || banding.cut[1] !== banding.size[1]);
   return (
-    <PanelPreview2D shape={panel} arrowRotated={arrowRotated} anchors={anchors} overlay={(pts, size, view) => {
-      // Etiket kenar ortasının biraz dışında; yazısı uzunsa da önizlemenin içinde kalır (yarı genişlik yazıdan kestirilir).
-      const chipText = (e: typeof edges[number]) => `${e.set ? faceName(e.flip) : 'none'}${e.own.set !== undefined && e.set ? ` · ${e.set.name}` : ''}`;
-      const at = (role: PanelEdgeDir) => {
-        const p = pts[role], e = edges.find(x => x.role === role); if (!p || !e) return null;
-        const hw = ((EDGE_NAME[role].length + chipText(e).length) * 5.7 + 26) / 2;
-        return { x: clampPx(p.x + p.ox * 30, hw + 6, size.w - hw - 6), y: clampPx(p.y + p.oy * 20, 14, size.h - 52) };
-      };
-      const cp = cur ? at(cur.role) : null, POP_W = 272, looking = seen(view);
+    <PanelPreview2D shape={panel} arrowRotated={arrowRotated} anchors={anchors} marks={marks} paintKey={bandKey} overlay={(pts, size, view, dims) => {
+      const chipText = (role: PanelEdgeDir) => { const r = roles.find(x => x.role === role); return r ? roleBandText(r) : ''; };
+      // Etiket yeri: o rolün en uzun şeridi boyunca, şeridin DIŞINDA; ölçü kutucuklarına ve önceki etiketlere çarpmayan ilk aday (orta, sonra uçlara doğru).
+      const taken = dims.map(d => ({ ...d })), spots: Partial<Record<PanelEdgeDir, { x: number; y: number }>> = {};
+      for (const role of chipRoles) {
+        const hw = ((EDGE_NAME[role].length + chipText(role).length) * 5.7 + (conns.some(c => c.role === role) ? 62 : 40)) / 2, hh = 10;
+        const fit = (x: number, y: number) => ({ x: clampPx(x, hw + 6, size.w - hw - 6), y: clampPx(y, 46, size.h - 48) });
+        const e = roles.find(x => x.role === role)?.edges.filter(x => !x.curved).sort((x, y) => y.length - x.length)[0];
+        const a = e ? pts[`${e.key}|a`] : undefined, b = e ? pts[`${e.key}|b`] : undefined, q = e ? pts[`${e.key}|o`] : undefined;
+        let cands: Array<{ x: number; y: number }> = [];
+        if (a && b && q) {
+          const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, ol = Math.hypot(q.x - mx, q.y - my) || 1, ox = (q.x - mx) / ol, oy = (q.y - my) / ol;
+          const off = Math.abs(ox) * hw + Math.abs(oy) * hh + 13;
+          // Kısa kenarda boy boyunca kaçacak yer yoktur: ikinci halka (daha dışarıda) denenir.
+          cands = [0, 26].flatMap(more => [0.5, 0.3, 0.7, 0.16, 0.84].map(t => fit(a.x + (b.x - a.x) * t + ox * (off + more), a.y + (b.y - a.y) * t + oy * (off + more))));
+        } else { const p = pts[role]; if (p) cands = [fit(p.x + p.ox * 34, p.y + p.oy * 24)]; }
+        if (!cands.length) continue;
+        const free = cands.find(c => !taken.some(t => Math.abs(t.x - c.x) < t.hw + hw + 3 && Math.abs(t.y - c.y) < t.hh + hh + 3)) ?? cands[0];
+        spots[role] = free; taken.push({ x: free.x, y: free.y, hw, hh });
+      }
+      const at = (role: PanelEdgeDir) => spots[role] ?? null;
+      const cp = cur ? at(cur) : null, POP_W = 332, looking = seen(view);
       return (
         <>
+          {/* Bant şeritleri + bağlayıcı noktaları */}
+          <svg className="absolute inset-0 w-full h-full" viewBox={`0 0 ${size.w} ${size.h}`} style={{ pointerEvents: 'none', overflow: 'visible' }}>
+            {strips.map(e => {
+              const a = pts[`${e.key}|a`], b = pts[`${e.key}|b`], q = pts[`${e.key}|o`]; if (!a || !b || !q) return null;
+              const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, ol = Math.hypot(q.x - mx, q.y - my) || 1, ox = (q.x - mx) / ol, oy = (q.y - my) / ol;
+              if (Math.hypot(b.x - a.x, b.y - a.y) < 3) return null;
+              const on = e.band > 0, off = on ? 6 : 4.5, sel = e.role === cur;
+              const L = { x1: a.x + ox * off, y1: a.y + oy * off, x2: b.x + ox * off, y2: b.y + oy * off };
+              return (
+                <g key={e.key} data-band-strip={e.key} data-band={e.band} data-band-source={e.source}>
+                  {sel && <line {...L} stroke="#ea580c" strokeOpacity={0.28} strokeWidth={13} strokeLinecap="round" />}
+                  {on ? <><line {...L} stroke={BAND_INK} strokeWidth={7} /><line {...L} stroke="#fff" strokeWidth={4} /></>
+                    : <line {...L} stroke={BAND_COLORS.raw} strokeWidth={e.joint ? 3 : 3.5} strokeDasharray={e.joint ? '3 3' : undefined} />}
+                </g>
+              );
+            })}
+            {dots.map(d => { const p = pts[d.key]; return p ? <circle key={d.key} cx={p.x} cy={p.y} r={d.onEdge ? 3 : 3.2} fill={d.onEdge ? CONN_DOT : '#fff'} stroke={d.onEdge ? '#fff' : CONN_DOT} strokeWidth={d.onEdge ? 1 : 1.6} /> : null; })}
+          </svg>
           {looking && <span data-view-face className="absolute left-2.5 top-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-stone-400"
             title="The wide face of the panel this preview shows — face holes drilled into the other face are not visible here">Viewing · {looking}</span>}
-          {edges.map(e => {
-            const p = at(e.role); if (!p) return null;
-            const on = e.role === openEdge, own = e.own.flip !== undefined || e.own.set !== undefined;
+          {/* Sağ üst: gösterge + kesim ölçüsü */}
+          <div className="absolute right-2 top-1.5 flex flex-col items-end gap-[3px]" style={{ fontFamily: UI_FONT }}>
+            <div className="flex items-center gap-2 text-[9px] font-semibold uppercase tracking-[0.07em] text-stone-500"
+              title="Edge banding — banded edges are drawn (and painted in 3D) in the surface colour, edges without a band show the raw board; an edge that butts against another panel gets no band">
+              <span className="flex items-center gap-1"><BandSwatch state="band" />Band</span>
+              <span className="flex items-center gap-1"><BandSwatch state="raw" />Raw</span>
+              <span className="flex items-center gap-1"><BandSwatch state="joint" />Joint</span>
+              {dots.length > 0 && <span className="flex items-center gap-1"><span className="inline-block w-[7px] h-[7px] rounded-full" style={{ background: CONN_DOT }} />Connector</span>}
+            </div>
+            {banding?.cut && (
+              <span data-band-cut className={`text-[9.5px] font-semibold tabular-nums ${cutDiffers ? 'text-stone-700' : 'text-stone-400'}`}
+                title={cutDiffers ? `Cut size = finished size ${dimsTxt(banding.size!)} minus the band thickness on the outer edges (Accessories › Edge banding › Cut size)` : 'Cut size equals the finished size (no band is deducted)'}>
+                CUT {dimsTxt(banding.cut)}</span>
+            )}
+          </div>
+          {chipRoles.map(role => {
+            const p = at(role); if (!p) return null;
+            const r = roles.find(x => x.role === role), c = conns.find(x => x.role === role);
+            const on = role === cur, own = (r?.own !== undefined) || c?.own.flip !== undefined || c?.own.set !== undefined, n = c ? placed(role) : 0;
             return (
-              <button key={e.role} type="button" data-edge-chip={e.role} onPointerDown={stop} onClick={ev => { stop(ev); setOpenEdge(x => (x === e.role ? null : e.role)); }}
-                title={`${EDGE_NAME[e.role]} edge — ${e.set ? `${e.set.name} · holes on the ${faceName(e.flip).toLowerCase()}` : 'no connectors on this edge'}${own ? ' · set by hand for this edge' : ''}. Click to change this edge only.`}
-                className={`absolute h-[20px] px-2 rounded-full text-[9.5px] font-bold whitespace-nowrap flex items-center gap-1 transition-colors duration-150 shadow-[0_1px_3px_rgba(40,30,20,0.14)]
+              <button key={role} type="button" data-edge-chip={role} onPointerDown={stop} onClick={ev => { stop(ev); setOpenEdge(x => (x === role ? null : role)); }}
+                title={`${EDGE_NAME[role]} edge — ${r ? (r.band === null ? 'partly banded' : r.band > 0 ? `${fmtBand(r.band)} mm band` : r.joint === 'all' ? `joined to ${r.jointWith.join(' + ') || 'another panel'}: no band` : 'no band (raw edge)') : 'no edge face'}${c ? ` · ${c.set ? `${n} connector${n === 1 ? '' : 's'}, holes on the ${faceName(c.flip).toLowerCase()}` : 'no connectors'}` : ''}${own ? ' · set by hand' : ''}. Click to change this edge.`}
+                className={`absolute h-[20px] pl-1.5 pr-2 rounded-full text-[9.5px] font-bold whitespace-nowrap flex items-center gap-1 transition-colors duration-150 shadow-[0_1px_3px_rgba(40,30,20,0.14)]
                   ${on ? 'bg-[#292524] text-white' : own ? 'bg-[#fff4ec] text-[#c2410c] ring-1 ring-[#f3c7a5] hover:bg-white' : 'bg-white text-stone-700 ring-1 ring-[#cfc7bc] hover:ring-[#a89f92]'}`}
                 style={{ left: p.x, top: p.y, transform: 'translate(-50%, -50%)', pointerEvents: 'auto', fontFamily: UI_FONT }}>
-                <span className="tracking-[0.07em]">{EDGE_NAME[e.role].toUpperCase()}</span>
-                <span className={`font-semibold ${on ? 'text-stone-300' : own ? '' : 'text-stone-500'}`}>{chipText(e)}</span>
+                {r && <BandSwatch state={roleBandState(r)} />}
+                <span className="tracking-[0.07em]">{EDGE_NAME[role].toUpperCase()}</span>
+                {r && <span className={`font-semibold tabular-nums ${on ? 'text-stone-300' : own ? '' : 'text-stone-500'}`}>{roleBandText(r)}</span>}
+                {c && <span className={`flex items-center gap-[3px] font-semibold tabular-nums ${on ? 'text-stone-300' : own ? '' : 'text-stone-500'}`}>
+                  <span className="inline-block w-[6px] h-[6px] rounded-full" style={{ background: c.set ? CONN_DOT : '#c9c2b7' }} />{c.set ? n : '–'}</span>}
               </button>
             );
           })}
-          <div data-all-face className={`absolute left-2 bottom-2 yago-cell h-[28px] pl-2 pr-1 flex items-center gap-1.5 ${manual ? 'is-accent' : ''}`} style={{ pointerEvents: 'auto', background: '#fff' }}
-            onPointerDown={stop} onClick={stop}
-            title={`Which wide face of this panel gets the connectors' face holes (e.g. the cam housing) — on ALL its edges. Click the other face to turn them all over. ${holeFaceHint(type, o.plane)}`}>
-            <span className={`shrink-0 ${CELL_LABEL}`}>All edges · holes on</span>
-            <div className="w-[176px]">
-              <Segmented items={faceItems} active={allFlip == null ? null : allFlip ? 'flip' : 'def'} height={20}
-                onPick={k => { const flip = k === 'flip'; setVfConnectorFlip(vf.id, flip === typeFlipOf(type) ? undefined : flip); }} />
+          {conns.length > 0 && type && o && (
+            <div data-all-face className={`absolute left-2 bottom-2 yago-cell h-[28px] pl-2 pr-1 flex items-center gap-1.5 ${manualFlip ? 'is-accent' : ''}`} style={{ pointerEvents: 'auto', background: '#fff' }}
+              onPointerDown={stop} onClick={stop}
+              title={`Which wide face of this panel gets the connectors' face holes (e.g. the cam housing) — on ALL its edges. Click the other face to turn them all over. ${holeFaceHint(type, o.plane)}`}>
+              <span className={`shrink-0 ${CELL_LABEL}`}>All edges · holes on</span>
+              <div className="w-[176px]">
+                <Segmented items={faceItems} active={allFlip == null ? null : allFlip ? 'flip' : 'def'} height={20}
+                  onPick={k => { const flip = k === 'flip'; setVfConnectorFlip(vf.id, flip === typeFlipOf(type) ? undefined : flip); }} />
+              </div>
+              {manualFlip && <ClearBtn title="Back to the panel type's setting on every edge" label="Reset hole faces" onClick={() => setVfConnectorFlip(vf.id, undefined)} />}
             </div>
-            {manual && <ClearBtn title="Back to the panel type's setting on every edge" label="Reset hole faces" onClick={() => setVfConnectorFlip(vf.id, undefined)} />}
-          </div>
+          )}
+          {hasOwnBand && (
+            <button type="button" data-band-reset onPointerDown={stop} onClick={ev => { stop(ev); clearVfEdgeBands(vf.id); }}
+              title="Remove this panel's own edge-band choices — every edge follows the panel type's rule and the joint rule again"
+              className="absolute right-2 bottom-2 h-[24px] px-2 rounded-[7px] bg-[#fff4ec] text-[#c2410c] ring-1 ring-[#f3c7a5] hover:bg-white text-[10.5px] font-semibold flex items-center gap-1"
+              style={{ pointerEvents: 'auto', fontFamily: UI_FONT }}><RotateCcw size={11} strokeWidth={2.2} />Bands as rule</button>
+          )}
           {cur && cp && (
-            <div data-edge-pop={cur.role} onPointerDown={stop} onClick={stop} className="absolute rounded-[10px] bg-white ring-1 ring-[#d6cfc3] p-1.5 flex flex-col gap-1 shadow-[0_10px_28px_-10px_rgba(40,30,20,0.4)]"
+            <div data-edge-pop={cur} onPointerDown={stop} onClick={stop} className="absolute rounded-[10px] bg-white ring-1 ring-[#d6cfc3] p-1.5 flex flex-col gap-1 shadow-[0_10px_28px_-10px_rgba(40,30,20,0.4)]"
               style={{ left: clampPx(cp.x - POP_W / 2, 6, size.w - POP_W - 6), width: POP_W, pointerEvents: 'auto', fontFamily: UI_FONT, ...(cp.y < size.h * 0.5 ? { top: cp.y + 15 } : { bottom: size.h - cp.y + 15 }) }}>
               <div className="flex items-center gap-1.5 h-[20px] pl-1">
-                <span className="shrink-0 whitespace-nowrap text-[9.5px] font-bold tracking-[0.07em] text-stone-800">{EDGE_NAME[cur.role].toUpperCase()} EDGE</span>
-                <span className="yago-hint truncate">this edge only</span>
+                <span className="shrink-0 whitespace-nowrap text-[9.5px] font-bold tracking-[0.07em] text-stone-800">{EDGE_NAME[cur].toUpperCase()} EDGE</span>
+                <span className="yago-hint truncate">{curBand ? `${fmt1(curBand.length)} mm · ` : ''}this panel only</span>
                 <span className="flex-1 min-w-0" />
                 <ClearBtn title="Close" label="Close edge settings" onClick={() => setOpenEdge(null)} />
               </div>
-              <div className={`yago-cell h-[28px] pl-2 pr-1 flex items-center gap-1.5 ${cur.own.flip !== undefined ? 'is-accent' : ''}`}
-                title={`Which wide face gets the face holes of the ${EDGE_NAME[cur.role].toLowerCase()} edge. The rest of the panel: ${faceName(cur.panelFlip).toLowerCase()}.`}>
-                <span className={`shrink-0 ${CELL_LABEL}`}>Holes on</span>
-                <div className="flex-1 min-w-0">
-                  <Segmented items={faceItems} active={cur.flip ? 'flip' : 'def'} height={20}
-                    onPick={k => { const flip = k === 'flip'; setVfEdgeConnector(vf.id, cur.role, { flip: flip === cur.panelFlip ? undefined : flip }); }} />
-                </div>
-              </div>
-              <div className="flex">
-                <SelectBox label="Set" className={cur.own.set !== undefined ? 'is-accent' : ''}
-                  value={cur.own.set === null ? SET_NONE : cur.own.set && cur.set?.id === cur.own.set ? cur.own.set : SET_DEFAULT}
-                  options={[[SET_DEFAULT, `Same as panel · ${cur.panelSet?.name ?? 'none'}`], ...setsOfGroup(cur.group, st.connectorLayouts).map(x => [x.id, x.name] as [string, string]), [SET_NONE, 'None on this edge']]}
-                  onChange={v => setVfEdgeConnector(vf.id, cur.role, { set: v === SET_NONE ? null : v === SET_DEFAULT ? undefined : v })}
-                  title={`Connector set (layout) of the ${EDGE_NAME[cur.role].toLowerCase()} edge only — ${groupLabel(cur.group).toLowerCase()} sets. “Same as panel” follows the panel’s ${groupLabel(cur.group)} set.`} />
-              </div>
-              {(cur.own.flip !== undefined || cur.own.set !== undefined) && (
-                <button type="button" onClick={() => setVfEdgeConnector(vf.id, cur.role, { flip: undefined, set: undefined })}
-                  className="self-end h-[20px] px-2 rounded-full text-[10px] font-semibold text-stone-500 hover:text-stone-900 hover:bg-[#f1ede6] transition-colors">Same as the rest of the panel</button>
+              {curBand && (
+                <>
+                  <div className="pl-0.5" title="Edge band of this edge on this panel: follow the rule, no band, or a thickness">
+                    <BandPicker value={curBand.own} presets={cfg.presets} ruleText={`Rule · ${curBand.rule > 0 ? `${fmtBand(curBand.rule)} mm` : 'none'}`}
+                      onChange={mm => setVfEdgeBand(vf.id, cur, mm)} />
+                  </div>
+                  <div className="yago-hint pl-1" data-band-why>
+                    {curBand.own !== undefined ? <>Set by hand for this panel — the rule{curBand.joint !== 'none' ? ' and the joint rule are' : ' is'} ignored on this edge.</>
+                      : curBand.joint === 'all' ? <>Joined to <b className="font-semibold text-stone-700">{curBand.jointWith.join(' + ') || 'another panel'}</b> — no band here: a joint overrides the rule{curBand.rule > 0 ? ` (${fmtBand(curBand.rule)} mm)` : ''}. Pick a thickness to band it anyway.</>
+                      : curBand.joint === 'some' ? <>Part of this edge is joined to <b className="font-semibold text-stone-700">{curBand.jointWith.join(' + ') || 'another panel'}</b> and gets no band; the rest follows the rule.</>
+                      : curBand.rule > 0 ? <>From the rule of <b className="font-semibold text-stone-700">{bandTypeDef(banding?.type)?.label ?? 'this panel type'}</b> › {EDGE_NAME[cur]} edge.</>
+                      : <>The rule of <b className="font-semibold text-stone-700">{bandTypeDef(banding?.type)?.label ?? 'this panel type'}</b> puts no band on this edge.</>}
+                  </div>
+                </>
+              )}
+              {curConn && (
+                <>
+                  <div className={`yago-cell h-[28px] pl-2 pr-1 flex items-center gap-1.5 ${curConn.own.flip !== undefined ? 'is-accent' : ''}`}
+                    title={`Which wide face gets the face holes of the ${EDGE_NAME[cur].toLowerCase()} edge. The rest of the panel: ${faceName(curConn.panelFlip).toLowerCase()}.`}>
+                    <span className={`shrink-0 ${CELL_LABEL}`}>Holes on</span>
+                    <div className="flex-1 min-w-0">
+                      <Segmented items={faceItems} active={curConn.flip ? 'flip' : 'def'} height={20}
+                        onPick={k => { const flip = k === 'flip'; setVfEdgeConnector(vf.id, cur, { flip: flip === curConn.panelFlip ? undefined : flip }); }} />
+                    </div>
+                  </div>
+                  <div className="flex">
+                    <SelectBox label="Set" className={curConn.own.set !== undefined ? 'is-accent' : ''}
+                      value={curConn.own.set === null ? SET_NONE : curConn.own.set && curConn.set?.id === curConn.own.set ? curConn.own.set : SET_DEFAULT}
+                      options={[[SET_DEFAULT, `Same as panel · ${curConn.panelSet?.name ?? 'none'}`], ...setsOfGroup(curConn.group, st.connectorLayouts).map(x => [x.id, x.name] as [string, string]), [SET_NONE, 'None on this edge']]}
+                      onChange={v => setVfEdgeConnector(vf.id, cur, { set: v === SET_NONE ? null : v === SET_DEFAULT ? undefined : v })}
+                      title={`Connector set (layout) of the ${EDGE_NAME[cur].toLowerCase()} edge only — ${groupLabel(curConn.group).toLowerCase()} sets. “Same as panel” follows the panel’s ${groupLabel(curConn.group)} set.`} />
+                  </div>
+                  {(curConn.own.flip !== undefined || curConn.own.set !== undefined) && (
+                    <button type="button" onClick={() => setVfEdgeConnector(vf.id, cur, { flip: undefined, set: undefined })}
+                      className="self-end h-[20px] px-2 rounded-full text-[10px] font-semibold text-stone-500 hover:text-stone-900 hover:bg-[#f1ede6] transition-colors">Connectors same as the rest of the panel</button>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -2192,13 +2348,14 @@ function PanelConnectorPreview({ vf, panel, arrowRotated }: { vf: VirtualFace; p
   );
 }
 /** Açık panel satırında: tip seçimi (yalnız o yüzeyde sunulan tipler) + panelin kenar rolleri (bağlayıcılı kenar turuncu, adetle) + panelin
- *  bağlayıcı seti (grup başına, bütün kenarları). Delik yüzü ve kenar-özel seçimler önizlemenin üstünde (PanelConnectorPreview). */
+ *  bağlayıcı seti (grup başına, bütün kenarları). Kenar bandı, delik yüzü ve kenar-özel seçimler önizlemenin üstünde (PanelEdgePreview). */
 function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefined }) {
   // Kural / dizilim / bağlayıcı değişince satır yenilensin.
   useStoreFields('panelTypeConfig', 'connectors', 'connectorLayouts');
+  useAppStore(s => panelBandKey(panel?.id, s));
   const c = panelTypeChoice(vf);
   if (!c) return null;
-  const o = panelOrientation(panel);
+  const o = panelOrientation(panel), bands = bandRoles(panelBanding(panel?.id));
   // Kenara GERÇEKTEN atılan bağlayıcı sayısı: bu panelin o kenarıyla dayandığı birleşimlerden.
   const joints = panel ? bodyJoints(vf.shapeId).filter(j => j.bId === panel.id) : [];
   const placed = (role: PanelEdgeDir) => joints.filter(j => j.key.split('|')[1] === role).reduce((n, j) => n + j.positions.length, 0);
@@ -2213,18 +2370,20 @@ function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefin
         title={`Panel type — only the types offered on this face (Accessories › Connector rules). ${c.manual ? `Set by hand; automatic would be ${panelTypeLabel(c.auto)}.` : 'Automatic: follows the panel\'s position.'}`} />
       {o && (
         <div className="yago-cell is-passive shrink-0 h-[28px] pl-2 pr-1 flex items-center gap-1.5"
-          title="Edges of this panel named by the body's face roles — connectors (and later edge banding) are applied by these names">
+          title="Edges of this panel named by the body's face roles — connectors and edge banding are applied by these names. The mark shows the edge band (white = banded, brown = raw board, dashed = joined to another panel); the number is the connectors placed on that edge">
           <span className="yago-label shrink-0">Edges</span>
           <div className="flex items-center gap-[3px]">
             {edges.map((e, i) => {
               // Kenarın bağlayıcıları (atanmış dizilimin satırlarından): adlar + gerçekten atılan toplam adet.
               const names = edgeConnectorNames(vf, c.current, e.role);
               const has = names.length > 0, n = has ? placed(e.role) : 0, list = names.join(' + ');
+              const br = bands.find(x => x.role === e.role);
+              const bandTip = br ? (br.band === null ? ' · partly banded' : br.band > 0 ? ` · ${fmtBand(br.band)} mm band` : br.joint === 'all' ? ' · joint: no band' : ' · no band') : '';
               return (
-                <span key={i} title={`${EDGE_LABEL[e.role]} edge · ${fmt1(e.length)} mm${has ? (n ? ` · ${n} × ${list}` : ` · ${list} — nothing placed: this edge does not butt against a panel face`) : ' · no connector'}`}
+                <span key={i} data-edge-band={e.role} title={`${EDGE_LABEL[e.role]} edge · ${fmt1(e.length)} mm${bandTip}${has ? (n ? ` · ${n} × ${list}` : ` · ${list} — nothing placed: this edge does not butt against a panel face`) : ' · no connector'}`}
                   className={`h-[18px] px-[5px] rounded-[5px] text-[9.5px] font-semibold flex items-center gap-[3px] ring-1
                     ${has ? 'bg-[#fff4ec] text-[#c2410c] ring-[#f3c7a5]' : 'bg-white text-stone-500 ring-[#e3ddd4]'}`}>
-                  {EDGE_LABEL[e.role]}{has && <span className="tabular-nums font-bold">{n}</span>}
+                  {br && <BandSwatch state={roleBandState(br)} w={9} h={6} />}{EDGE_LABEL[e.role]}{has && <span className="tabular-nums font-bold">{n}</span>}
                 </span>
               );
             })}
@@ -2805,7 +2964,7 @@ export function AssemblyPanel() {
         <PanelTypeStrip vf={vf} panel={vp} />
         <div className={`${PREVIEW_FRAME} mt-1.5`} style={{ height: PREVIEW_HEIGHT, background: PREVIEW_BG }}>
           {activeDims && activePanel
-            ? <PanelConnectorPreview key={activePanel.id} vf={vf} panel={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated} />
+            ? <PanelEdgePreview key={activePanel.id} vf={vf} panel={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated} />
             : <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs text-stone-400">No panel</span></div>}
         </div>
         <PanelSteps panel={activePanel} edit={stepEdit} setEdit={setStepEdit} />

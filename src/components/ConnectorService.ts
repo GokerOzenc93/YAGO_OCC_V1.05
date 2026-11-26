@@ -6,19 +6,21 @@
       yüzüne dayanır). 5) Birleşimler: kurallar gerçek panellere işlenir. Kayıt AccessoryService veritabanında (IndexedDB).
    KİM NEYİ SÖYLER: panel tipinin kenarı → bağlayıcı GRUBU (sabit · hareketli) + DELİK YÜZÜ (yüz deliklerinin panelin hangi geniş yüzüne
    delineceği) · panel → o grubun hangi SETİ (seçilmezse varsayılan) + istenirse delik yüzünü kendisi için değiştirir · set → hangi
-   bağlayıcı, hangi ölçüyle. */
+   bağlayıcı, hangi ölçüyle.
+   8) KENAR BANDI: bant tipi (panel tipi + kapak) × kenar rolü → bant kalınlığı; panelin her kalınlık yüzü baktığı role göre bant alır, iki
+      panelin birleştiği kenara bant atılmaz, panel kendi kenarını elle değiştirebilir (dosyanın sonu). */
 import * as THREE from 'three';
 import {
   type CavityBox, type ConnHole, type ConnOp, type ConnOpType, type ConnPart, type ConnShape, type ConnSurface, type Connector, type ConnectorGroup, type ConnectorLayoutSet,
   type EdgeConnectorRule, type LayoutKind, type LayoutLine, type LegacyEdgeRule, type LegacyLayout, type PanelEdgeDir, type PanelGroup, type PanelSurface,
   type PanelSurfaceRule, type PanelTypeConfig, type PanelTypeId, type PanelTypeRule, type Shape, type VirtualFace, panelOfVf, requestRebuild, shapeById, useAppStore,
-  vfOfPanel,
+  vfOfPanel, type BandTypeId, type EdgeBandConfig, type EdgeBandRule,
 } from '../store';
-import { type Vec3, effectiveBodyGeometry, genId, localBboxOf, outlineGeometry, panelHasRotation, round1, isFaceKind, roleOfNormal } from './Geometry';
+import { type Vec3, effectiveBodyGeometry, genId, getFacesAndGroups, largestFaceNormal, localBboxOf, outlineGeometry, panelHasRotation, round1, isFaceKind, roleOfNormal } from './Geometry';
 import { type ToolSpec } from './CutWorker';
-import { type HoleCutter, CONNECTOR_LAYOUTS_ID, PANEL_TYPE_CONFIG_ID, holeCutterBox, holeCutterOf, importAccessoryFile, libraryDelete, libraryPut } from './AccessoryService';
+import { type HoleCutter, CONNECTOR_LAYOUTS_ID, EDGE_BAND_CONFIG_ID, PANEL_TYPE_CONFIG_ID, holeCutterBox, holeCutterOf, importAccessoryFile, libraryDelete, libraryPut } from './AccessoryService';
 import { isDoorPanel } from './DoorService';
-import { bodyFaces, bodyFrontAxis } from './PlinthService';
+import { bodyFaceRolesOf, bodyFaces, bodyFrontAxis } from './PlinthService';
 import { geoAxes, panelFrameOf } from './PanelSchematics';
 import { QUICK_PANEL_NAME, QUICK_RAIL_NAME, groupName, renameMemberVfs } from './PanelGroupService';
 
@@ -1081,4 +1083,326 @@ export async function seedConnectorSample(): Promise<void> {
       if (useAppStore.getState().connectorLayouts.length) localStorage.setItem(LAYOUT_SEEDED_KEY, '1');
     }
   } catch (err) { console.warn('[YAGO][BAĞLAYICI] örnek bağlayıcı / dizilim eklenemedi:', err); }
+}
+
+// ═════════════════════════════════════════════════ 8. KENAR BANDI ═════════════════════════════════════════════════
+/* KİM NEYİ SÖYLER: bant tipi (panel tipi · kapak) × KENAR ROLÜ → bant kalınlığı (Accessories › Edge banding) · panel → kendi kenarını elle
+   değiştirir (VirtualFace.edgeBands; kuralı da birleşim kuralını da ezer) · BİRLEŞİM → o kenarın boyu başka bir panele dayanıyorsa bant atılmaz
+   (kural bant dese de).
+   KENAR = panelin biçim ağındaki (Geometry.outlineGeometry: çizim uygulanmış, kanal / delik kesilmemiş) her KALINLIK YÜZÜ. Rolü, yüzün
+   baktığı yöndeki gövde yüzünün rolüdür (roleOfDir) — panele sonradan çıkarma / çentik / çizim uygulanınca oluşan yeni yüzler de baktıkları
+   role göre kendiliğinden bant alır; kenar sayısı dört değildir. Dönmüş / eğik / gönyeli panelde de aynı hesap (hepsi gövde-yerel 3B).
+   BİRLEŞİM ALGISI: kenar yüzü boyunca örnek noktalar yüzün dışına `BAND_REACH` mm itilir; nokta başka bir panelin (kapak hariç) hacmine
+   düşüyorsa orası örtülüdür (yüzüne dayanma · uç uca dayanma · kanala girme hepsi). Örtülü boy oranı `BAND_JOINT_COVER`'ı aşarsa birleşimdir.
+   GÖRÜNÜM: bantsız kenar ham levha renginde (kahverengi), bantlı kenar yüzey renginde — paintPanelBands panel ağına köşe rengi yazar. */
+/** `raw` = arayüzde ham levha rengi · `rawPaint` = 3B sahnede köşe rengi (sahne ışığı parlak; aynı ton için daha koyu yazılır). */
+export const BAND_COLORS = { raw: '#b0855a', rawEdge: '#7f5b36', rawSoft: '#d9bf9f', rawPaint: '#6f4f31' } as const;
+/** Kenar boyunun bu oranı başka panele dayanıyorsa kenar BİRLEŞİMDİR (bant atılmaz). */
+export const BAND_JOINT_COVER = 0.9;
+/** Temas payı (mm): kenarla komşu panel arasındaki bu kadar boşluk dayanma sayılır (arkalık boşluğu 0,5 dahil). */
+const BAND_REACH = 0.75;
+export interface BandTypeDef { id: BandTypeId; label: string; short: string; group: PanelTypeGroup | 'door'; plane: PanelPlane }
+export const BAND_TYPES: BandTypeDef[] = [...PANEL_TYPES.map(({ id, label, short, group, plane }) => ({ id, label, short, group, plane })),
+  { id: 'door', label: 'Door', short: 'Door', group: 'door', plane: 'frontal' }];
+export const BAND_TYPE_GROUPS: Array<{ key: BandTypeDef['group']; label: string }> = [...PANEL_TYPE_GROUPS.filter(g => g.key !== 'free'), { key: 'door', label: 'Doors' }, { key: 'free', label: 'Other' }];
+export const bandTypeDef = (id: BandTypeId | null | undefined): BandTypeDef | undefined => BAND_TYPES.find(t => t.id === id);
+/** Panelin bant tipi: kapak → 'door' · baza seti → yok · ötekiler panel tipi. */
+export function bandTypeOf(vf: VirtualFace | undefined | null, st: St = useAppStore.getState()): BandTypeId | null {
+  if (!vf || vf.plinthId) return null;
+  return vf.doorGroupId ? 'door' : panelTypeOf(vf, st);
+}
+/** Kuralın o kenar rolündeki bant kalınlığı (0 = bantsız). Yan yüze konmuş kapakta ön / arka kenar, kapağın sağ / sol kuralını okur. */
+export function bandRuleOf(type: BandTypeId | null | undefined, role: PanelEdgeDir, cfg: EdgeBandConfig = useAppStore.getState().edgeBandConfig): number {
+  const r = type ? cfg.rules[type] : undefined; if (!r) return 0;
+  if (r[role]) return r[role]!;
+  return type === 'door' && (role === 'front' || role === 'rear') ? r[role === 'front' ? 'right' : 'left'] ?? 0 : 0;
+}
+export const bandMm = (v: number): number => (Number.isFinite(v) && v > 0 ? Math.min(10, Math.round(v * 100) / 100) : 0);
+/** Bant kalınlığı yazısı (iki ondalığa kadar: 0.45 · 1 · 2). */
+export const fmtBand = (mm: number): string => String(Math.round(mm * 100) / 100);
+export function saveEdgeBandConfig(cfg: EdgeBandConfig): Promise<void> {
+  useAppStore.getState().setEdgeBandConfig(cfg);
+  return libraryPut('settings', { id: EDGE_BAND_CONFIG_ID, ...cfg });
+}
+/** Tipin kenar(lar)ına bant kalınlığı (0 → bantsız). */
+export function setBandRule(type: BandTypeId, roles: PanelEdgeDir | PanelEdgeDir[], mm: number): Promise<void> {
+  const cfg = useAppStore.getState().edgeBandConfig, edges: EdgeBandRule = { ...(cfg.rules[type] ?? {}) }, t = bandMm(mm);
+  for (const role of Array.isArray(roles) ? roles : [roles]) { if (t > 0) edges[role] = t; else delete edges[role]; }
+  return saveEdgeBandConfig({ ...cfg, rules: { ...cfg.rules, [type]: edges } });
+}
+export const patchEdgeBandConfig = (p: Partial<EdgeBandConfig>): Promise<void> => saveEdgeBandConfig({ ...useAppStore.getState().edgeBandConfig, ...p });
+/** Tipin bantlı kenar sayısı (liste rozeti). */
+export const bandEdgeCount = (type: BandTypeId, cfg: EdgeBandConfig = useAppStore.getState().edgeBandConfig): number => Object.values(cfg.rules[type] ?? {}).filter(v => (v ?? 0) > 0).length;
+/** PANELİN kenarı (elle): mm · 0 = bu kenarda bant yok · undefined = kayıt silinir (kural + birleşim izlenir). */
+export function setVfEdgeBand(vfId: string, role: PanelEdgeDir, mm: number | undefined): void {
+  const st = useAppStore.getState(), vf = st.virtualFaces.find(f => f.id === vfId); if (!vf) return;
+  const next = { ...(vf.edgeBands ?? {}) };
+  if (mm === undefined) delete next[role]; else next[role] = bandMm(mm);
+  st.updateVirtualFace(vfId, { edgeBands: Object.keys(next).length ? next : undefined });
+}
+export const clearVfEdgeBands = (vfId: string): void => useAppStore.getState().updateVirtualFace(vfId, { edgeBands: undefined });
+
+/** Panelin bir kenarı (kalınlık yüzü). Konumlar gövde-yerel. */
+export interface BandEdge {
+  /** `rol#sıra` (aynı role bakan yüzler dıştan içe sıralı). */
+  key: string; role: PanelEdgeDir; curved: boolean;
+  /** Yüzün dış normali (panel düzlemindeki bileşeni) · orta çizgisinin uçları · boyu · eni (panel kalınlığı). */
+  out: Vec3; a: Vec3; b: Vec3; length: number; width: number;
+  /** Kuralın değeri · panelin elle kaydı (varsa) · başka panele dayanan boy oranı · birleşim mi · dayandığı panellerin adları. */
+  rule: number; own?: number; cover: number; joint: boolean; jointWith: string[];
+  /** SONUÇ bant kalınlığı (0 = bantsız) ve nereden geldiği. */
+  band: number; source: 'manual' | 'joint' | 'rule' | 'none';
+}
+interface BandPaintEdge { n: THREE.Vector3; d: number; L: THREE.Vector3; l0: number; l1: number; on: boolean; cents: Array<{ c: THREE.Vector3; n: THREE.Vector3; r: number }> | null }
+export interface PanelBanding {
+  /** İçerik imzası: değişince görünüm (3B renkler, önizleme) yenilenir. */
+  key: string; panelId: string; vfId: string; type: BandTypeId | null; edges: BandEdge[];
+  /** Bitmiş ölçü ve KESİM ölçüsü (bant düşülmüş) — panelin kendi çerçevesinde [küçük eksen, büyük eksen] sırasıyla (önizlemenin en / boy sırası). */
+  size: [number, number] | null; cut: [number, number] | null;
+  /** Boyama verisi (paintPanelBands). */
+  thin: THREE.Vector3 | null; tRange: [number, number]; paint: BandPaintEdge[];
+}
+/** Örten panel: kalınlık yönü + kalınlık aralığı + geniş yüz üçgenleri (kalınlık yönüne dik düzlemde). */
+interface BandSlab { id: string; name: string; thin: THREE.Vector3; t0: number; t1: number; u: THREE.Vector3; v: THREE.Vector3; box: THREE.Box3; tris: number[] }
+const v3 = (a: THREE.Vector3): Vec3 => [round1(a.x), round1(a.y), round1(a.z)];
+/** Panelin kalınlık yönü (gövde-yerel): VF normalinin ekseni panelin kendi çerçevesinde (dönmüş panelde geri döndürülür); eğri panelde yok. */
+function bandThinDir(panel: Shape, vf: VirtualFace | undefined, geo: THREE.BufferGeometry): THREE.Vector3 | null {
+  if (panel.parameters?.curved) return null;
+  const fr = panelFrameOf(panel);
+  if (fr && vf) {
+    const na = vf.normal.map(Math.abs), i = na.indexOf(Math.max(...na));
+    if (na[i] > 0.9) return new THREE.Vector3().setComponent(i, 1).applyQuaternion(fr.inv.clone().invert()).normalize();
+  }
+  return largestFaceNormal(geo)?.normalize() ?? null;
+}
+const perpTo = (n: THREE.Vector3): THREE.Vector3 => {
+  const a = Math.abs(n.x) < 0.8 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+  return a.addScaledVector(n, -a.dot(n)).normalize();
+};
+/** Nokta (x, y) üçgen listesinin (6'şar sayı) içinde mi. */
+function inTris(tris: number[], x: number, y: number, eps = 0.02): boolean {
+  for (let i = 0; i < tris.length; i += 6) {
+    const ax = tris[i], ay = tris[i + 1], bx = tris[i + 2], by = tris[i + 3], cx = tris[i + 4], cy = tris[i + 5];
+    const d1 = (x - bx) * (ay - by) - (ax - bx) * (y - by), d2 = (x - cx) * (by - cy) - (bx - cx) * (y - cy), d3 = (x - ax) * (cy - ay) - (cx - ax) * (y - ay);
+    if (!((d1 < -eps || d2 < -eps || d3 < -eps) && (d1 > eps || d2 > eps || d3 > eps))) return true;
+  }
+  return false;
+}
+interface BandSource { panel: Shape; vf: VirtualFace; geo: THREE.BufferGeometry; type: BandTypeId | null; thin: THREE.Vector3 | null; door: boolean }
+function bandSlabOf(s: BandSource, st: St): BandSlab | null {
+  if (!s.thin || s.door) return null;
+  const { faces } = getFacesAndGroups(s.geo), u = perpTo(s.thin), v = new THREE.Vector3().crossVectors(s.thin, u), tris: number[] = [];
+  let t0 = Infinity, t1 = -Infinity;
+  const box = new THREE.Box3();
+  for (const f of faces) {
+    for (const p of f.vertices) { const t = p.dot(s.thin); if (t < t0) t0 = t; if (t > t1) t1 = t; box.expandByPoint(p); }
+    if (Math.abs(f.normal.dot(s.thin)) > 0.95) for (const p of f.vertices) tris.push(p.dot(u), p.dot(v));
+  }
+  return tris.length ? { id: s.panel.id, name: panelNameOf(s.vf, st), thin: s.thin, t0, t1, u, v, box: box.expandByScalar(1), tris } : null;
+}
+/** Kenar yüzünün başka panellere dayanan boy oranı + dayandığı paneller. `cols` = boy boyunca örnek sütunları (her biri yüz üstünde noktalar). */
+function bandCoverOf(cols: THREE.Vector3[][], weights: number[] | null, slabs: BandSlab[], selfId: string): { cover: number; by: string[] } {
+  const hits = new Map<string, number>();
+  let total = 0, covered = 0;
+  cols.forEach((col, ci) => {
+    const w = weights?.[ci] ?? 1; total += w;
+    for (const p of col) {
+      let hit: BandSlab | null = null;
+      for (const s of slabs) {
+        if (s.id === selfId || !s.box.containsPoint(p)) continue;
+        const t = p.dot(s.thin); if (t < s.t0 - 0.05 || t > s.t1 + 0.05) continue;
+        if (inTris(s.tris, p.dot(s.u), p.dot(s.v))) { hit = s; break; }
+      }
+      if (hit) { covered += w; hits.set(hit.name, (hits.get(hit.name) ?? 0) + w); return; }
+    }
+  });
+  return { cover: total > 0 ? covered / total : 0, by: [...hits].filter(([, w]) => w >= total * 0.15).sort((x, y) => y[1] - x[1]).map(([n]) => n) };
+}
+function panelBandingOf(s: BandSource, body: Shape, slabs: BandSlab[], cfg: EdgeBandConfig, st: St): PanelBanding {
+  const { faces, groups } = getFacesAndGroups(s.geo), T = s.thin;
+  let t0 = Infinity, t1 = -Infinity;
+  if (T) for (const f of faces) for (const p of f.vertices) { const t = p.dot(T); if (t < t0) t0 = t; if (t > t1) t1 = t; }
+  const thick = T ? t1 - t0 : Number(s.panel.parameters?.panelThickness) || 18;
+  const raws: Array<{ e: Omit<BandEdge, 'key'>; paint: BandPaintEdge }> = [];
+  for (const g of groups) {
+    const n = g.normal.clone().normalize();
+    // Geniş yüz: düz panelde kalınlık yönüne bakan düz yüzler; eğri panelde eğri yüzler.
+    if (T ? !g.isCurved && Math.abs(n.dot(T)) > 0.95 : !!g.isCurved) continue;
+    const nIn = T ? n.clone().addScaledVector(T, -n.dot(T)) : n.clone();
+    if (nIn.lengthSq() < 1e-6) continue;
+    nIn.normalize();
+    const role = roleOfDir(body, [nIn.x, nIn.y, nIn.z], st), tris = g.faceIndices.map(fi => faces[fi]);
+    const own = s.vf.edgeBands?.[role], rule = bandRuleOf(s.type, role, cfg);
+    let cols: THREE.Vector3[][] = [], weights: number[] | null = null, length = 0, a = g.center.clone(), b = g.center.clone();
+    const paint: BandPaintEdge = { n, d: 0, L: new THREE.Vector3(), l0: 0, l1: 0, on: false, cents: null };
+    const byCentroid = () => { cols = tris.map(f => [f.center.clone().addScaledVector(f.normal, BAND_REACH)]); weights = tris.map(f => f.area); };
+    if (g.isCurved) {
+      // Eğri kenar (radüslü köşe): boy = alan ÷ kalınlık; örnekler üçgen merkezleri.
+      length = thick > 0 ? g.totalArea / thick : 0;
+      byCentroid();
+      paint.cents = tris.map(f => ({ c: f.center, n: f.normal, r: Math.max(...f.vertices.map(p => p.distanceTo(f.center))) }));
+    } else {
+      // Düz kenar: yüz düzleminde (L = boy yönü, W = en yönü) kutusu; orta çizgi boyunca üç sıra örnek, yüzün dışına düşen örnek sayılmaz.
+      const L = (T ? new THREE.Vector3().crossVectors(T, nIn) : perpTo(n)).normalize(), W = new THREE.Vector3().crossVectors(n, L).normalize();
+      let l0 = Infinity, l1 = -Infinity, w0 = Infinity, w1 = -Infinity;
+      const d = n.dot(tris[0].vertices[0]), flat: number[] = [];
+      for (const f of tris) for (const p of f.vertices) {
+        const l = p.dot(L), w = p.dot(W); flat.push(l, w);
+        if (l < l0) l0 = l; if (l > l1) l1 = l; if (w < w0) w0 = w; if (w > w1) w1 = w;
+      }
+      // Eğri panelin uç yüzü yay biçimli şerittir: kutusu dolu değil → boy = alan ÷ kalınlık, örnekler üçgen merkezleri.
+      const boxy = g.totalArea > (l1 - l0) * (w1 - w0) * 0.7;
+      length = boxy ? l1 - l0 : thick > 0 ? g.totalArea / thick : l1 - l0;
+      const at = (l: number, w: number) => new THREE.Vector3().addScaledVector(L, l).addScaledVector(W, w).addScaledVector(n, d);
+      a = at(l0, (w0 + w1) / 2); b = at(l1, (w0 + w1) / 2);
+      if (boxy) {
+        const nCol = Math.max(6, Math.min(120, Math.ceil((l1 - l0) / 6)));
+        for (let i = 0; i < nCol; i++) {
+          const l = l0 + ((i + 0.5) / nCol) * (l1 - l0), col: THREE.Vector3[] = [];
+          for (const k of [0.5, 0.25, 0.75]) { const w = w0 + k * (w1 - w0); if (inTris(flat, l, w)) col.push(at(l, w).addScaledVector(n, BAND_REACH)); }
+          if (col.length) cols.push(col);
+        }
+      }
+      if (cols.length < 3) byCentroid();
+      Object.assign(paint, { d, L, l0, l1 });
+    }
+    // Kapak hiçbir panele dayanmaz (boşlukla çalışır): birleşim aranmaz.
+    const cv = s.door ? { cover: 0, by: [] as string[] } : bandCoverOf(cols, weights, slabs, s.panel.id);
+    const joint = cfg.skipJoints && cv.cover >= BAND_JOINT_COVER;
+    const band = own !== undefined ? own : joint ? 0 : rule;
+    paint.on = band > 0;
+    raws.push({ paint, e: {
+      role, curved: !!g.isCurved, out: [nIn.x, nIn.y, nIn.z], a: v3(a), b: v3(b), length: round1(length), width: round1(thick), rule, ...(own !== undefined ? { own } : {}),
+      cover: Math.round(cv.cover * 100) / 100, joint, jointWith: cv.by, band, source: own !== undefined ? 'manual' : joint ? 'joint' : rule > 0 ? 'rule' : 'none',
+    } });
+  }
+  // Sıra: rol, sonra dıştan içe (aynı role bakan çentik yüzleri panelin dış kenarından sonra gelir), sonra konum.
+  raws.sort(({ e: x, paint: px }, { e: y, paint: py }) => x.role.localeCompare(y.role) || py.d - px.d || x.a[0] - y.a[0] || x.a[1] - y.a[1] || x.a[2] - y.a[2]);
+  const count: Partial<Record<PanelEdgeDir, number>> = {};
+  const edges: BandEdge[] = raws.map(({ e }) => ({ ...e, key: `${e.role}#${(count[e.role] = (count[e.role] ?? 0) + 1)}` }));
+  // Bitmiş / kesim ölçüsü: panelin kendi çerçevesinde düzlem eksenleri; en dıştaki düz kenarların bantları düşülür.
+  let size: PanelBanding['size'] = null, cut: PanelBanding['cut'] = null;
+  const fr = T ? panelFrameOf(s.panel) : null;
+  if (T && fr) {
+    const toBody = fr.inv.clone().invert(), ax = [0, 1, 2].map(i => new THREE.Vector3().setComponent(i, 1).applyQuaternion(toBody));
+    const thinI = ax.map(v => Math.abs(v.dot(T))), ti = thinI.indexOf(Math.max(...thinI)), planar = [0, 1, 2].filter(i => i !== ti);
+    const dims = planar.map(i => {
+      const U = ax[i]; let lo = Infinity, hi = -Infinity;
+      for (const f of faces) for (const p of f.vertices) { const c = p.dot(U); if (c < lo) lo = c; if (c > hi) hi = c; }
+      let dLo = 0, dHi = 0;
+      for (const { e: r } of raws) {
+        if (r.curved || !(r.band > 0)) continue;
+        const o = r.out[0] * U.x + r.out[1] * U.y + r.out[2] * U.z, c = ((r.a[0] + r.b[0]) * U.x + (r.a[1] + r.b[1]) * U.y + (r.a[2] + r.b[2]) * U.z) / 2;
+        if (o > 0.95 && Math.abs(c - hi) < 0.6) dHi = Math.max(dHi, r.band); else if (o < -0.95 && Math.abs(c - lo) < 0.6) dLo = Math.max(dLo, r.band);
+      }
+      return [hi - lo, hi - lo - dLo - dHi];
+    });
+    size = [round1(dims[0][0]), round1(dims[1][0])];
+    cut = cfg.deduct ? [Math.round(dims[0][1] * 100) / 100, Math.round(dims[1][1] * 100) / 100] : size;
+  }
+  const key = `${s.geo.uuid}|${edges.map(e => `${e.key}:${e.band}:${e.source[0]}:${e.cover}:${e.length}`).join(',')}|${cut?.join('x') ?? ''}`;
+  return { key, panelId: s.panel.id, vfId: s.vf.id, type: s.type, edges, size, cut, thin: T, tRange: [t0, t1], paint: raws.map(r => r.paint) };
+}
+const _bandBody = new Map<string, { sig: string; list: PanelBanding[] }>();
+/** Gövdenin bütün panellerinin kenar bandı durumu. Sonuç panel geometrileri / tipler / kurallar / elle kayıtlar değişene kadar saklanır. */
+export function bodyBanding(bodyId: string, st: St = useAppStore.getState()): PanelBanding[] {
+  const body = shapeById(bodyId, st.shapes); if (!body) return [];
+  const cfg = st.edgeBandConfig;
+  const srcs: BandSource[] = [];
+  for (const p of st.shapes) {
+    if (p.type !== 'panel' || p.parameters?.parentShapeId !== bodyId) continue;
+    const vf = vfOfPanel(p, st.virtualFaces), geo = outlineGeometry(p); if (!vf || !geo?.getAttribute('position')) continue;
+    srcs.push({ panel: p, vf, geo, type: bandTypeOf(vf, st), thin: bandThinDir(p, vf, geo), door: isDoorPanel(p) });
+  }
+  const sig = `${srcs.map(s => `${s.panel.id}:${s.geo.uuid}:${s.type}:${s.vf.edgeBands ? JSON.stringify(s.vf.edgeBands) : ''}`).join('|')}#${JSON.stringify(cfg.rules)}#${cfg.skipJoints}${cfg.deduct}#${bodyFrontAxis(body, st).facing}#${effectiveBodyGeometry(body).uuid}#${JSON.stringify(bodyFaceRolesOf(body))}`;
+  const hit = _bandBody.get(bodyId);
+  if (hit && hit.sig === sig) return hit.list;
+  // Panel başına korumalı: beklenmedik bir ağ yalnız o paneli bantsız (boyasız) bırakır, gövdenin kalanı etkilenmez.
+  const guard = <T,>(s: BandSource, fn: () => T): T | null => { try { return fn(); } catch (err) { console.warn(`[YAGO][KENAR BANDI] ${s.vf.description || s.panel.id} hesaplanamadı:`, err); return null; } };
+  const slabs = srcs.map(s => guard(s, () => bandSlabOf(s, st))).filter((x): x is BandSlab => !!x);
+  const list = srcs.map(s => guard(s, () => panelBandingOf(s, body, slabs, cfg, st))).filter((x): x is PanelBanding => !!x);
+  if (_bandBody.size > 40) _bandBody.clear();
+  _bandBody.set(bodyId, { sig, list });
+  return list;
+}
+let _bandAll: { shapes: unknown; vfs: unknown; cfg: unknown; ptc: unknown; groups: unknown; map: Map<string, PanelBanding> } | null = null;
+/** Bütün paneller (panel kimliği → durum): depo dilimleri değişmedikçe aynı nesne (seçici olarak her depo değişiminde çağrılır). */
+function allBanding(st: St): Map<string, PanelBanding> {
+  const m = _bandAll;
+  if (m && m.shapes === st.shapes && m.vfs === st.virtualFaces && m.cfg === st.edgeBandConfig && m.ptc === st.panelTypeConfig && m.groups === st.panelGroups) return m.map;
+  const map = new Map<string, PanelBanding>(), bodies = new Set<string>();
+  for (const p of st.shapes) if (p.type === 'panel' && p.parameters?.parentShapeId) bodies.add(p.parameters.parentShapeId as string);
+  for (const id of bodies) for (const b of bodyBanding(id, st)) map.set(b.panelId, b);
+  _bandAll = { shapes: st.shapes, vfs: st.virtualFaces, cfg: st.edgeBandConfig, ptc: st.panelTypeConfig, groups: st.panelGroups, map };
+  return map;
+}
+export const panelBanding = (panelId: string | undefined, st: St = useAppStore.getState()): PanelBanding | null => (panelId ? allBanding(st).get(panelId) ?? null : null);
+/** Panelin bant imzası (zustand seçicisi: komşu panel değişip birleşim oluşunca da değişir). */
+export const panelBandKey = (panelId: string | undefined, st: St = useAppStore.getState()): string => panelBanding(panelId, st)?.key ?? '';
+
+/** Kenar rolü başına özet (önizleme etiketi, satır çipi): o role bakan bütün yüzler. `band` = ortak kalınlık, karışıksa null. */
+export interface BandRoleSummary { role: PanelEdgeDir; edges: BandEdge[]; band: number | null; rule: number; own?: number; joint: 'all' | 'some' | 'none'; jointWith: string[]; length: number; banded: number }
+export function bandRoles(b: PanelBanding | null): BandRoleSummary[] {
+  const out: BandRoleSummary[] = [];
+  for (const e of b?.edges ?? []) {
+    let r = out.find(x => x.role === e.role);
+    if (!r) { r = { role: e.role, edges: [], band: e.band, rule: e.rule, ...(e.own !== undefined ? { own: e.own } : {}), joint: 'none', jointWith: [], length: 0, banded: 0 }; out.push(r); }
+    r.edges.push(e); r.length = round1(r.length + e.length);
+    if (e.band > 0) r.banded = round1(r.banded + e.length);
+    if (r.band !== e.band) r.band = null;
+    for (const n of e.jointWith) if (e.joint && !r.jointWith.includes(n)) r.jointWith.push(n);
+  }
+  for (const r of out) { const j = r.edges.filter(e => e.joint).length; r.joint = !j ? 'none' : j === r.edges.length ? 'all' : 'some'; }
+  return out;
+}
+/** Gövdenin bant toplamı: bant kalınlığı × kenar eni (panel kalınlığı) başına toplam boy (mm) ve kenar sayısı — kalın bant önce. */
+export interface BandTotal { band: number; width: number; length: number; edges: number }
+export function bodyBandTotals(bodyId: string, st: St = useAppStore.getState()): { rows: BandTotal[]; joints: number; manual: number } {
+  const rows: BandTotal[] = [];
+  let joints = 0, manual = 0;
+  for (const b of bodyBanding(bodyId, st)) for (const e of b.edges) {
+    if (e.source === 'joint' && e.rule > 0) joints++;
+    if (e.source === 'manual') manual++;
+    if (!(e.band > 0)) continue;
+    let r = rows.find(x => x.band === e.band && x.width === e.width);
+    if (!r) { r = { band: e.band, width: e.width, length: 0, edges: 0 }; rows.push(r); }
+    r.length = round1(r.length + e.length); r.edges++;
+  }
+  return { rows: rows.sort((x, y) => y.band - x.band || y.width - x.width), joints, manual };
+}
+
+/* ───────── 3B görünüm: köşe renkleri ───────── */
+const _bandPainted = new WeakMap<THREE.BufferGeometry, string>();
+/** Panel ağına köşe rengi yazar (malzeme rengiyle ÇARPILIR): geniş yüzler ve BANTLI kenarlar 1 (yüzey rengi) · bantsız kenarlar, kanal / delik /
+ *  cep yüzleri ham levha rengi. Köşeler B-Rep yüzü başınadır (yüzler köşe paylaşmaz) → renk yüzden yüze taşmaz. Aynı imzayla yeniden boyanmaz. */
+export function paintPanelBands(geo: THREE.BufferGeometry | undefined | null, b: PanelBanding | null, base = '#ffffff'): void {
+  const pos = geo?.getAttribute('position') as THREE.BufferAttribute | undefined; if (!geo || !pos) return;
+  const sig = `${b?.key ?? '-'}|${base}|${pos.count}`;
+  if (_bandPainted.get(geo) === sig && geo.getAttribute('color')) return;
+  _bandPainted.set(geo, sig);
+  if (!geo.getAttribute('normal')) geo.computeVertexNormals();
+  const nrm = geo.getAttribute('normal') as THREE.BufferAttribute, col = new Float32Array(pos.count * 3).fill(1);
+  if (b) {
+    // Ham renk, panel rengine ORANLA (malzeme rengi çarpınca ham renk çıksın); doğrusal renk uzayında.
+    const raw = new THREE.Color(BAND_COLORS.rawPaint), bc = new THREE.Color(base);
+    const rr = Math.min(1, raw.r / Math.max(bc.r, 1e-3)), rg = Math.min(1, raw.g / Math.max(bc.g, 1e-3)), rb = Math.min(1, raw.b / Math.max(bc.b, 1e-3));
+    const p = new THREE.Vector3(), n = new THREE.Vector3(), T = b.thin, [t0, t1] = b.tRange;
+    for (let i = 0; i < pos.count; i++) {
+      p.fromBufferAttribute(pos, i); n.fromBufferAttribute(nrm, i);
+      let on: boolean;
+      if (T && Math.abs(n.dot(T)) > 0.95) { const t = p.dot(T); on = Math.abs(t - t0) < 0.3 || Math.abs(t - t1) < 0.3; }   // geniş yüz; cep tabanı ham
+      else {
+        let hit: BandPaintEdge | null = null;
+        for (const e of b.paint) {
+          if (e.cents) { if (e.cents.some(c => Math.abs((p.x - c.c.x) * c.n.x + (p.y - c.c.y) * c.n.y + (p.z - c.c.z) * c.n.z) < 0.8 && p.distanceTo(c.c) < c.r + 1)) { hit = e; break; } continue; }
+          if (n.dot(e.n) < 0.985 || Math.abs(p.dot(e.n) - e.d) > 0.4) continue;
+          const l = p.dot(e.L); if (l < e.l0 - 0.6 || l > e.l1 + 0.6) continue;
+          hit = e; break;
+        }
+        on = hit ? hit.on : !T;   // eşleşmeyen kalınlık yüzü = kanal / delik duvarı → ham (eğri panelde geniş yüz)
+      }
+      if (!on) { col[i * 3] = rr; col[i * 3 + 1] = rg; col[i * 3 + 2] = rb; }
+    }
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
 }
