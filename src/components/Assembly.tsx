@@ -2090,12 +2090,12 @@ export function HoleFaceSelect({ type, plane, pick, onChange, scope = 'this pane
 }
 const clampPx = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(Math.max(lo, hi), v));
 /* ───────── KENAR BANDI (ConnectorService › 8) ───────── */
-const BAND_INK = '#292524', CONN_DOT = '#0f766e';
-/** Bant işareti (küçük dikdörtgen): bantlı = beyaz + koyu çerçeve · ham = kahverengi · birleşim = kesikli kahverengi çerçeve. */
+const CONN_DOT = '#0f766e';
+/** Bant işareti (küçük dikdörtgen): bantlı = bant rengi (mavi) · ham = kahverengi · birleşim = kesikli kahverengi çerçeve · karışık = yarı yarıya. */
 export function BandSwatch({ state, w = 12, h = 7 }: { state: 'band' | 'raw' | 'joint' | 'mixed'; w?: number; h?: number }) {
-  const style: React.CSSProperties = state === 'band' ? { background: '#fff', border: `1.5px solid ${BAND_INK}` }
+  const style: React.CSSProperties = state === 'band' ? { background: BAND_COLORS.band }
     : state === 'joint' ? { background: BAND_COLORS.rawSoft, border: `1px dashed ${BAND_COLORS.rawEdge}` }
-    : state === 'mixed' ? { background: `linear-gradient(90deg, #fff 50%, ${BAND_COLORS.raw} 50%)`, border: `1.5px solid ${BAND_INK}` }
+    : state === 'mixed' ? { background: `linear-gradient(90deg, ${BAND_COLORS.band} 50%, ${BAND_COLORS.raw} 50%)` }
     : { background: BAND_COLORS.raw, border: `1px solid ${BAND_COLORS.rawEdge}` };
   return <span className="shrink-0 inline-block rounded-[2px]" style={{ width: w, height: h, boxSizing: 'border-box', ...style }} />;
 }
@@ -2132,8 +2132,8 @@ export function BandPicker({ value, presets, ruleText, noNone, onChange }: {
   );
 }
 /** PANEL ÖNİZLEMESİ + KENAR BANDI + BAĞLAYICI (önizlemenin üstünde):
- *  · her kalınlık yüzü boyunca BANT ŞERİDİ: bantlı = beyaz şerit + koyu çerçeve · ham = kahverengi · birleşim (başka panele dayanan) = kesikli;
- *    3B panel de aynı dille boyanır (bantsız kenar ham levha rengi). Bağlayıcı noktaları petrol nokta (bu panelin ucunda) / halka (yüzünde).
+ *  · her kalınlık yüzünün TAM ÜSTÜNDE ince BANT ÇİZGİSİ (panelden boşluksuz; bakılan geniş yüzün kenarında): bantlı = bant rengi (mavi) ·
+ *    ham = kahverengi · birleşim (başka panele dayanan) = kesikli kahverengi. Bağlayıcı noktaları petrol nokta (bu panelin ucunda) / halka (yüzünde).
  *  · her kenar ROLÜNÜN ortasında bir etiket (rol · bant · bağlayıcı adedi); etikete tık → o KENARIN kartı: bant (kural / yok / kalınlık) +
  *    bağlayıcı delik yüzü ve seti. Elle seçim turuncu görünür.
  *  · sol altta "All edges · holes on": panelin BÜTÜN bağlayıcılarının delik yüzü. Sağ üstte gösterge + kesim ölçüsü.
@@ -2175,9 +2175,17 @@ function PanelEdgePreview({ vf, panel, arrowRotated }: { vf: VirtualFace; panel:
   // İşaretler: kenar şeridinin uçları + dış yönü, bağlayıcı noktaları.
   const marks: Record<string, [number, number, number]> = {};
   const strips = (banding?.edges ?? []).filter(e => !e.curved && e.length > 0.5);
+  // Çizgi kenarın orta çizgisinde değil, BAKILAN geniş yüzün kenarındadır (panelin görünen çevresiyle üst üste): kalınlığın iki ucu da işaretlenir,
+  // hangisinin bakılan yüz olduğu önizlemenin bakış yönünden seçilir.
+  const thinF = banding?.thin ? toFrame([banding.thin.x, banding.thin.y, banding.thin.z]) : null;
   for (const e of strips) {
-    marks[`${e.key}|a`] = toFrame(e.a); marks[`${e.key}|b`] = toFrame(e.b);
+    const h = banding?.thin ? e.width / 2 : 0, T = banding?.thin ?? { x: 0, y: 0, z: 0 };
+    for (const [tag, k] of [['+', h], ['-', -h]] as const) {
+      marks[`${e.key}|a${tag}`] = toFrame([e.a[0] + T.x * k, e.a[1] + T.y * k, e.a[2] + T.z * k]);
+      marks[`${e.key}|b${tag}`] = toFrame([e.b[0] + T.x * k, e.b[1] + T.y * k, e.b[2] + T.z * k]);
+    }
     marks[`${e.key}|o`] = toFrame([(e.a[0] + e.b[0]) / 2 + e.out[0] * 40, (e.a[1] + e.b[1]) / 2 + e.out[1] * 40, (e.a[2] + e.b[2]) / 2 + e.out[2] * 40]);
+    marks[`${e.key}|m`] = toFrame([(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2, (e.a[2] + e.b[2]) / 2]);
   }
   const dots: Array<{ key: string; onEdge: boolean }> = [];
   [...mine.map(j => [j, true] as const), ...onFace.map(j => [j, false] as const)].forEach(([j, onEdge], ji) => j.positions.forEach((s, k) => {
@@ -2200,17 +2208,20 @@ function PanelEdgePreview({ vf, panel, arrowRotated }: { vf: VirtualFace; panel:
   return (
     <PanelPreview2D shape={panel} arrowRotated={arrowRotated} anchors={anchors} marks={marks} paintKey={bandKey} overlay={(pts, size, view, dims) => {
       const chipText = (role: PanelEdgeDir) => { const r = roles.find(x => x.role === role); return r ? roleBandText(r) : ''; };
+      // Bakılan geniş yüz kalınlık yönünün hangi ucunda: çizgi uçları o uçtan okunur.
+      const side = thinF && view[0] * thinF[0] + view[1] * thinF[1] + view[2] * thinF[2] < 0 ? '-' : '+';
+      const ends = (key: string) => ({ a: pts[`${key}|a${side}`], b: pts[`${key}|b${side}`], q: pts[`${key}|o`], m: pts[`${key}|m`] });
       // Etiket yeri: o rolün en uzun şeridi boyunca, şeridin DIŞINDA; ölçü kutucuklarına ve önceki etiketlere çarpmayan ilk aday (orta, sonra uçlara doğru).
       const taken = dims.map(d => ({ ...d })), spots: Partial<Record<PanelEdgeDir, { x: number; y: number }>> = {};
       for (const role of chipRoles) {
         const hw = ((EDGE_NAME[role].length + chipText(role).length) * 5.7 + (conns.some(c => c.role === role) ? 62 : 40)) / 2, hh = 10;
         const fit = (x: number, y: number) => ({ x: clampPx(x, hw + 6, size.w - hw - 6), y: clampPx(y, 46, size.h - 48) });
         const e = roles.find(x => x.role === role)?.edges.filter(x => !x.curved).sort((x, y) => y.length - x.length)[0];
-        const a = e ? pts[`${e.key}|a`] : undefined, b = e ? pts[`${e.key}|b`] : undefined, q = e ? pts[`${e.key}|o`] : undefined;
+        const { a, b, q, m } = e ? ends(e.key) : { a: undefined, b: undefined, q: undefined, m: undefined };
         let cands: Array<{ x: number; y: number }> = [];
-        if (a && b && q) {
-          const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, ol = Math.hypot(q.x - mx, q.y - my) || 1, ox = (q.x - mx) / ol, oy = (q.y - my) / ol;
-          const off = Math.abs(ox) * hw + Math.abs(oy) * hh + 13;
+        if (a && b && q && m) {
+          const ol = Math.hypot(q.x - m.x, q.y - m.y) || 1, ox = (q.x - m.x) / ol, oy = (q.y - m.y) / ol;
+          const off = Math.abs(ox) * hw + Math.abs(oy) * hh + 14;
           // Kısa kenarda boy boyunca kaçacak yer yoktur: ikinci halka (daha dışarıda) denenir.
           cands = [0, 26].flatMap(more => [0.5, 0.3, 0.7, 0.16, 0.84].map(t => fit(a.x + (b.x - a.x) * t + ox * (off + more), a.y + (b.y - a.y) * t + oy * (off + more))));
         } else { const p = pts[role]; if (p) cands = [fit(p.x + p.ox * 34, p.y + p.oy * 24)]; }
@@ -2225,16 +2236,14 @@ function PanelEdgePreview({ vf, panel, arrowRotated }: { vf: VirtualFace; panel:
           {/* Bant şeritleri + bağlayıcı noktaları */}
           <svg className="absolute inset-0 w-full h-full" viewBox={`0 0 ${size.w} ${size.h}`} style={{ pointerEvents: 'none', overflow: 'visible' }}>
             {strips.map(e => {
-              const a = pts[`${e.key}|a`], b = pts[`${e.key}|b`], q = pts[`${e.key}|o`]; if (!a || !b || !q) return null;
-              const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, ol = Math.hypot(q.x - mx, q.y - my) || 1, ox = (q.x - mx) / ol, oy = (q.y - my) / ol;
+              const { a, b } = ends(e.key); if (!a || !b) return null;
               if (Math.hypot(b.x - a.x, b.y - a.y) < 3) return null;
-              const on = e.band > 0, off = on ? 6 : 4.5, sel = e.role === cur;
-              const L = { x1: a.x + ox * off, y1: a.y + oy * off, x2: b.x + ox * off, y2: b.y + oy * off };
+              const on = e.band > 0, sel = e.role === cur, L = { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
               return (
                 <g key={e.key} data-band-strip={e.key} data-band={e.band} data-band-source={e.source}>
-                  {sel && <line {...L} stroke="#ea580c" strokeOpacity={0.28} strokeWidth={13} strokeLinecap="round" />}
-                  {on ? <><line {...L} stroke={BAND_INK} strokeWidth={7} /><line {...L} stroke="#fff" strokeWidth={4} /></>
-                    : <line {...L} stroke={BAND_COLORS.raw} strokeWidth={e.joint ? 3 : 3.5} strokeDasharray={e.joint ? '3 3' : undefined} />}
+                  {sel && <line {...L} stroke={on ? BAND_COLORS.band : BAND_COLORS.raw} strokeOpacity={0.22} strokeWidth={9} strokeLinecap="round" />}
+                  <line {...L} stroke={on ? BAND_COLORS.band : BAND_COLORS.raw} strokeWidth={on ? 3 : 2} strokeLinecap={e.joint && !on ? 'butt' : 'round'}
+                    strokeDasharray={e.joint && !on ? '2.5 2.5' : undefined} />
                 </g>
               );
             })}
@@ -2245,7 +2254,7 @@ function PanelEdgePreview({ vf, panel, arrowRotated }: { vf: VirtualFace; panel:
           {/* Sağ üst: gösterge + kesim ölçüsü */}
           <div className="absolute right-2 top-1.5 flex flex-col items-end gap-[3px]" style={{ fontFamily: UI_FONT }}>
             <div className="flex items-center gap-2 text-[9px] font-semibold uppercase tracking-[0.07em] text-stone-500"
-              title="Edge banding — banded edges are drawn (and painted in 3D) in the surface colour, edges without a band show the raw board; an edge that butts against another panel gets no band">
+              title="Edge banding — a banded edge is drawn in blue right on the edge, an edge without a band in raw-board brown, an edge that butts against another panel (no band) dashed. In the 3D view banded edges take the surface colour">
               <span className="flex items-center gap-1"><BandSwatch state="band" />Band</span>
               <span className="flex items-center gap-1"><BandSwatch state="raw" />Raw</span>
               <span className="flex items-center gap-1"><BandSwatch state="joint" />Joint</span>
@@ -2370,7 +2379,7 @@ function PanelTypeStrip({ vf, panel }: { vf: VirtualFace; panel: Shape | undefin
         title={`Panel type — only the types offered on this face (Accessories › Connector rules). ${c.manual ? `Set by hand; automatic would be ${panelTypeLabel(c.auto)}.` : 'Automatic: follows the panel\'s position.'}`} />
       {o && (
         <div className="yago-cell is-passive shrink-0 h-[28px] pl-2 pr-1 flex items-center gap-1.5"
-          title="Edges of this panel named by the body's face roles — connectors and edge banding are applied by these names. The mark shows the edge band (white = banded, brown = raw board, dashed = joined to another panel); the number is the connectors placed on that edge">
+          title="Edges of this panel named by the body's face roles — connectors and edge banding are applied by these names. The mark shows the edge band (blue = banded, brown = raw board, dashed = joined to another panel); the number is the connectors placed on that edge">
           <span className="yago-label shrink-0">Edges</span>
           <div className="flex items-center gap-[3px]">
             {edges.map((e, i) => {

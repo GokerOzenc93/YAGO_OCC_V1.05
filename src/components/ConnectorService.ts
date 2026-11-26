@@ -1095,8 +1095,9 @@ export async function seedConnectorSample(): Promise<void> {
    BİRLEŞİM ALGISI: kenar yüzü boyunca örnek noktalar yüzün dışına `BAND_REACH` mm itilir; nokta başka bir panelin (kapak hariç) hacmine
    düşüyorsa orası örtülüdür (yüzüne dayanma · uç uca dayanma · kanala girme hepsi). Örtülü boy oranı `BAND_JOINT_COVER`'ı aşarsa birleşimdir.
    GÖRÜNÜM: bantsız kenar ham levha renginde (kahverengi), bantlı kenar yüzey renginde — paintPanelBands panel ağına köşe rengi yazar. */
-/** `raw` = arayüzde ham levha rengi · `rawPaint` = 3B sahnede köşe rengi (sahne ışığı parlak; aynı ton için daha koyu yazılır). */
-export const BAND_COLORS = { raw: '#b0855a', rawEdge: '#7f5b36', rawSoft: '#d9bf9f', rawPaint: '#6f4f31' } as const;
+/** `raw` = arayüzde ham levha rengi · `rawPaint` = 3B sahnede köşe rengi (sahne ışığı parlak; aynı ton için daha koyu yazılır) ·
+ *  `band` = panel önizlemesinde BANTLI kenarın rengi (kenarın tam üstünde ince çizgi; etiket ve göstergedeki işaret de bu renk). */
+export const BAND_COLORS = { raw: '#b0855a', rawEdge: '#7f5b36', rawSoft: '#d9bf9f', rawPaint: '#6f4f31', band: '#2563eb' } as const;
 /** Kenar boyunun bu oranı başka panele dayanıyorsa kenar BİRLEŞİMDİR (bant atılmaz). */
 export const BAND_JOINT_COVER = 0.9;
 /** Temas payı (mm): kenarla komşu panel arasındaki bu kadar boşluk dayanma sayılır (arkalık boşluğu 0,5 dahil). */
