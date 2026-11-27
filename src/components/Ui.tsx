@@ -5,7 +5,7 @@ import { createClient } from '@supabase/supabase-js';
 import * as THREE from 'three';
 import { Canvas } from '@react-three/fiber';
 import { PerspectiveCamera, OrbitControls } from '@react-three/drei';
-import { useStoreFields, shapeById, ViewMode, type Shape, Tool, CameraType, OrthoMode, useAppStore, requestRebuild, type SceneToolStatus } from '../store';
+import { useStoreFields, shapeById, ViewMode, type Shape, Tool, useAppStore, requestRebuild, type SceneToolStatus } from '../store';
 import {
   createReplicadBox, convertReplicadToThreeGeometry, evaluateExpression,
   applyShapeChanges, FACE_KINDS, FACE_KIND_LABEL, FACE_ROLES, FACE_ROLE_LABEL, type FaceKind, type FaceRole, faceRoleText,
@@ -241,7 +241,7 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
    ağ isteği yok, eksik dosyada boş düğme yok. Çizgi kalınlığı ekran pikseline göre (--sw) hesaplanır: her boyutta aynı ince/kalın denge.
    SVG içi sınıflar: b = kalın, t = ince, r = kırmızı (kritik / yıkıcı), o = turuncu (ekleme); .mute (pasif düğme) renkleri siyaha indirir. */
 export type IconName =
-  | 'accessories' | 'add-box' | 'area' | 'assembly' | 'back' | 'body' | 'cam-ortho' | 'cam-persp' | 'caret' | 'catalog' | 'check' | 'chevron-right'
+  | 'accessories' | 'add-box' | 'area' | 'assembly' | 'back' | 'body' | 'cam-persp' | 'caret' | 'catalog' | 'check' | 'chevron-right'
   | 'close' | 'connector' | 'connector-layout' | 'connector-rules' | 'copy' | 'cut' | 'cutlist' | 'cylinder' | 'delete' | 'dim-angular'
   | 'dim-distance' | 'dim-hole' | 'dim-linear' | 'divider' | 'door' | 'draw-arc-3p' | 'draw-arc-cont' | 'draw-arc-csa' | 'draw-arc-cse'
   | 'draw-arc-csl' | 'draw-arc-sca' | 'draw-arc-sce' | 'draw-arc-scl' | 'draw-arc-sea' | 'draw-arc-sed' | 'draw-arc-ser' | 'draw-arraypath'
@@ -251,7 +251,7 @@ export type IconName =
   | 'draw-modea' | 'draw-modep' | 'draw-move' | 'draw-offset' | 'draw-pline' | 'draw-poly' | 'draw-poly-c' | 'draw-poly-e' | 'draw-rect'
   | 'draw-rect-cen' | 'draw-rect-rot' | 'draw-rotate' | 'draw-scale' | 'draw-shape' | 'draw-solo' | 'draw-stretch' | 'draw-stretchx'
   | 'draw-stretchy' | 'draw-trim' | 'edge-band' | 'exit' | 'export' | 'eye' | 'face-roles' | 'file-new' | 'float' | 'fullscreen' | 'grid' | 'grip' | 'help' | 'import'
-  | 'layers' | 'layout' | 'legs' | 'light' | 'material' | 'monitor' | 'move' | 'move-p2p' | 'open' | 'ortho' | 'ortho-off' | 'outlines' | 'panel'
+  | 'layers' | 'layout' | 'legs' | 'light' | 'material' | 'monitor' | 'move' | 'move-p2p' | 'open' | 'ortho' | 'outlines' | 'panel'
   | 'param-add' | 'params' | 'paste' | 'pin' | 'plinth' | 'polar' | 'redo' | 'report' | 'rotate' | 'ruler' | 'save' | 'save-as' | 'scale' | 'search'
   | 'select' | 'select-body' | 'select-panel' | 'settings' | 'shelf' | 'snap' | 'snap-center' | 'snap-endpoint' | 'snap-intersection'
   | 'snap-midpoint' | 'snap-nearest' | 'snap-perpendicular' | 'snap-quadrant' | 'snap-tangent' | 'undo' | 'unpin'
@@ -356,13 +356,9 @@ export const ToggleIconButton: React.FC<ToggleIconButtonProps> = ({ active, onCl
 type PresetProps = Omit<IconButtonProps, 'icon' | 'title'>;
 const preset = (icon: IconName, title: string): React.FC<PresetProps> => (props) => <IconButton icon={icon} title={title} {...props} />;
 export const AddBoxButton = preset('add-box', 'Add Box (B)');
-export const CameraPerspectiveButton = preset('cam-persp', 'Perspective View');
-export const CameraOrthographicButton = preset('cam-ortho', 'Orthographic View');
 export const ViewSolidButton = preset('view-solid', 'Solid View');
 export const ViewWireframeButton = preset('view-wireframe', 'Wireframe View');
 export const ViewXRayButton = preset('view-xray', 'X-Ray View');
-export const LinearModeOnButton = preset('ortho', 'Ortho: On — lines lock to horizontal / vertical');
-export const LinearModeOffButton = preset('ortho-off', 'Ortho: Off — free angle');
 
 const STATUS_BAR: React.CSSProperties = {
   bottom: '38px', height: '26px', display: 'flex', alignItems: 'center', padding: '0 14px', gap: '10px', background: TOKENS.bg,
@@ -944,8 +940,8 @@ const TOOL_ROW: React.CSSProperties = {
 };
 
 export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog }) => {
-  const s = useStoreFields('setActiveTool', 'activeTool', 'addShape', 'selectedShapeId', 'cameraType', 'setCameraType',
-    'viewMode', 'setViewMode', 'cycleViewMode', 'orthoMode', 'toggleOrthoMode', 'shapes', 'updateShape', 'deleteShape',
+  const s = useStoreFields('setActiveTool', 'activeTool', 'addShape', 'selectedShapeId',
+    'viewMode', 'setViewMode', 'cycleViewMode', 'shapes', 'updateShape', 'deleteShape',
     'panelSelectMode', 'setPanelSelectMode', 'showOutlines', 'setShowOutlines');
   const { activeTool, setActiveTool, selectedShapeId, panelSelectMode } = s;
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
@@ -1005,14 +1001,7 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
               <ToggleIconButton active={s.showOutlines} onClick={() => s.setShowOutlines(!s.showOutlines)}
                 title={s.showOutlines ? 'Panel outlines: on' : 'Panel outlines: off'} icon="outlines" />
             </CapGroup>
-            <CapGroup label="Camera">
-              {s.cameraType === CameraType.PERSPECTIVE
-                ? <CameraPerspectiveButton onClick={() => s.setCameraType(CameraType.ORTHOGRAPHIC)} />
-                : <CameraOrthographicButton onClick={() => s.setCameraType(CameraType.PERSPECTIVE)} />}
-            </CapGroup>
-            <CapGroup label="Drafting">
-              {s.orthoMode === OrthoMode.ON ? <LinearModeOnButton onClick={s.toggleOrthoMode} /> : <LinearModeOffButton onClick={s.toggleOrthoMode} />}
-            </CapGroup>
+            {/* Perspektif ↔ ortografik geçişi otomatik (CameraController / __cameraAuto); Ortho (F8) çizim panelinin Drafting aids bölümünde. */}
             <CapSep m="0 4px" />
             <CapGroup label="App">
               <IconButton icon="settings" title="Settings" />

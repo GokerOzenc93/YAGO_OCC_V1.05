@@ -1673,7 +1673,13 @@ export const DrawingPanel: React.FC = () => {
   const snapOn = useAppStore(s => s.snapEnabled), setSnapOn = useAppStore(s => s.setSnapEnabled);
   const snapSettings = useAppStore(s => s.snapSettings), toggleSnap = useAppStore(s => s.toggleSnapSetting);
   const [hint, setHint] = useState<Hint>(null);
-  const tip = (title: string, key?: string) => ({ onMouseEnter: () => setHint({ title, key }), onMouseLeave: () => setHint(null) });
+  // Açıklama alttaki şeritte, gerekirse birkaç satır. Şerit büyüyüp düğmenin altına girerse fare şeride geçer: yazı kapanmaz (titreme olmaz),
+  // düğmeden çıkınca kısa gecikmeyle kapanır.
+  const hintOff = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const keepHint = () => { if (hintOff.current) { clearTimeout(hintOff.current); hintOff.current = null; } };
+  const dropHint = () => { keepHint(); hintOff.current = setTimeout(() => { hintOff.current = null; setHint(null); }, 90); };
+  useEffect(() => keepHint, []);
+  const tip = (title: string, key?: string) => ({ onMouseEnter: () => { keepHint(); setHint({ title, key }); }, onMouseLeave: dropHint });
   // Odak düğmede kalmasın: sonraki Enter / Boşluk komut satırına gitsin, düğmeyi yeniden tetiklemesin.
   const run = (id: string) => { (document.activeElement as HTMLElement | null)?.blur?.(); startCommand(id); };
   // Araçlar kategoriye göre; her aile (dikdörtgen, çokgen, daire, elips, yay) tek düğme, son yöntemi başlatır, öteki yöntemler altta.
@@ -1722,12 +1728,12 @@ export const DrawingPanel: React.FC = () => {
   const modifyTools = <div className="dp-flow">{MODIFY_BLOCKS.map(b => group(b.label, b.ids.map(id => tool(id, b, true)), b.ids.length))}</div>;
   const onFace = activePlane !== GROUND_PLANE.id;
   const readout = hint
-    ? <><span style={{ color: P.ink, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{hint.title}</span>
-      {hint.key && <kbd style={{ marginLeft: 'auto', font: `500 10px ${MONO_FONT}`, color: '#c2410c', background: 'rgba(234,88,12,0.08)', padding: '2px 5px', borderRadius: 4 }}>{hint.key}</kbd>}</>
+    ? <><span style={{ flex: 1, minWidth: 0, color: P.ink, fontWeight: 600, overflowWrap: 'anywhere' }}>{hint.title}</span>
+      {hint.key && <kbd style={{ flexShrink: 0, font: `500 10px/16px ${MONO_FONT}`, color: '#c2410c', background: 'rgba(234,88,12,0.08)', padding: '0 5px', borderRadius: 4 }}>{hint.key}</kbd>}</>
     : cmd
-      ? <><i style={{ width: 6, height: 6, borderRadius: '50%', background: P.accent, flexShrink: 0 }} />
-        <span style={{ color: '#c2410c', fontWeight: 600, fontFamily: MONO_FONT, fontSize: 10.5 }}>{cmd.id.replace('_', ' ')}</span>
-        <span style={{ color: P.mute, overflow: 'hidden', textOverflow: 'ellipsis' }}>{cmd.prompt.replace(/^.*? {2}/, '')}</span></>
+      ? <><i style={{ width: 6, height: 6, margin: '5px 0', borderRadius: '50%', background: P.accent, flexShrink: 0 }} />
+        <span style={{ flexShrink: 0, color: '#c2410c', fontWeight: 600, fontFamily: MONO_FONT, fontSize: 10.5 }}>{cmd.id.replace('_', ' ')}</span>
+        <span style={{ flex: 1, minWidth: 0, color: P.mute, overflowWrap: 'anywhere' }}>{cmd.prompt.replace(/^.*? {2}/, '')}</span></>
       : null;
 
   return (
@@ -1828,9 +1834,9 @@ export const DrawingPanel: React.FC = () => {
             </div>
           </Section>
         </div>
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 7, height: 34, padding: '0 14px', borderTop: `1px solid ${P.soft}`, background: P.head,
-          fontSize: 11.5, whiteSpace: 'nowrap', overflow: 'hidden', flexShrink: 0,
+        <div data-dp-readout onMouseEnter={() => { if (hint) keepHint(); }} onMouseLeave={dropHint} style={{
+          display: 'flex', alignItems: 'flex-start', gap: 7, minHeight: 34, padding: '9px 14px', boxSizing: 'border-box', borderTop: `1px solid ${P.soft}`,
+          background: P.head, fontSize: 11.5, lineHeight: '16px', flexShrink: 0,
         }}>{readout}</div>
       </div>
     </div>
