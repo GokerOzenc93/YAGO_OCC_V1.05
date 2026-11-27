@@ -14,10 +14,10 @@ import {
 import {
   type BrepTriInfo, type CoplanarFaceGroup, type FaceData, type Vec3, initReplicad, isShapedBody, matchCurvedFaceGroup, overlapVolumeByCut, surfaceKeyOf,
   angleToTouchPlane, assertBounds, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry,
-  createPanelFromVirtualFace, createReplicadBox, createReplicadBoxAt, cutWithTools, deepCopyShape, dot3, effectiveBodyGeometry, errMsg, findFaceByDescriptor,
+  createPanelFromVirtualFace, createReplicadBox, createReplicadBoxAt, cutWithTools, deepCopyShape, dot3, errMsg, findFaceByDescriptor,
   fromPlaneUV, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix, halfSpaceSlab, isFlatNormal, localBboxOf, normDeg, panelThickness,
   pointFromFracBox, projRange, resolveVfFracPoint, rotateAboutAxis, round1, round3, spanAlong, toVector3, uniqueMeshPoints, uniquePoints, vec3,
-  vertexModsKey, vfRawMinAlong, worldBboxOf,
+  vfRawMinAlong, worldBboxOf,
 } from './Geometry';
 import { isInteriorPanel, isInteriorVf, makeInsideMeshTest, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
 import { edgeGapsOf, isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups } from './DoorService';
@@ -224,7 +224,7 @@ export function panelStepRotation(panel: Shape, vfs: VirtualFace[] = useAppStore
 export function resolveRefTranslateDelta(op: any, rpWorldBox: THREE.Box3): THREE.Vector3 {
   if (!op.sourceFrac || !op.targetFrac) return op.fallback.clone();
   const target = shapeById(op.targetPanelId);
-  const tgtBox = target?.geometry ? worldBboxOf(target, effectiveBodyGeometry(target)) : null;
+  const tgtBox = target?.geometry ? worldBboxOf(target, target.geometry) : null;
   if (!tgtBox) return op.fallback.clone();   // hedef geometri yok → donmuş delta
   return pointFromFracBox(tgtBox, op.targetFrac).sub(pointFromFracBox(rpWorldBox, op.sourceFrac));
 }
@@ -586,101 +586,12 @@ async function shapeRefRotateTargets(
   }
 }
 
-// Vertex düzenlemeli gövde katısı: düzenlenmiş mesh yüzlerinden YARIM-UZAY kesişimi (içbükeyde dışbükey örtü).
-const _bodySolidCache = new WeakMap<object, { key: string; solid: any }>();
+// Gövde katısı (panel kesişimleri için): gövdenin kendi katısının kopyası (kutu + çizim adımları).
+const bodySolidOf = (parent: Shape): any | null => (parent.replicadShape ? deepCopyShape(parent.replicadShape) : null);
 
-interface BodyPlane { n: THREE.Vector3; d: number; center: THREE.Vector3 }
-
-/** Gövdeyi destekleyen düzlemler (tüm köşeler iç tarafta). Çıkarma çentiğinin iç yüzleri gövdeyi oyardı → atlanır; içbükeyde dışbükey örtü. */
-const _bodyPlaneCache = new WeakMap<THREE.BufferGeometry, BodyPlane[]>();
-function supportingBodyPlanes(geo: THREE.BufferGeometry): BodyPlane[] {
-  const hit = _bodyPlaneCache.get(geo);
-  if (hit) return hit;
-  const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined;
-  if (!pos) return [];
-  const { groups } = getFacesAndGroups(geo);
-  geo.computeBoundingBox();
-  const size = geo.boundingBox!.getSize(new THREE.Vector3());
-  const tol = Math.max(0.5, Math.max(size.x, size.y, size.z) * 1e-4);
-  const out: BodyPlane[] = [];
-  const p = new THREE.Vector3();
-  for (const g of groups) {
-    const n = g.normal.clone().normalize();
-    if (!(n.lengthSq() > 0.5)) continue;
-    const d = g.center.dot(n);
-    let maxS = -Infinity, minS = Infinity;
-    for (let i = 0; i < pos.count; i++) {
-      const s = p.fromBufferAttribute(pos, i).dot(n) - d;
-      if (s > maxS) maxS = s;
-      if (s < minS) minS = s;
-    }
-    if (maxS <= tol) out.push({ n, d, center: g.center });
-    else if (minS >= -tol) out.push({ n: n.negate(), d: -d, center: g.center });
-  }
-  _bodyPlaneCache.set(geo, out);
-  return out;
-}
-
-async function effectiveBodySolid(parent: Shape): Promise<any | null> {
-  const mods = parent.vertexModifications;
-  if (!Array.isArray(mods) || mods.length === 0) return parent.replicadShape ? deepCopyShape(parent.replicadShape) : null;
-  const key = vertexModsKey(mods);
-  const cached = parent.geometry ? _bodySolidCache.get(parent.geometry) : undefined;
-  if (cached && cached.key === key) return deepCopyShape(cached.solid);
-  const geo = effectiveBodyGeometry(parent);
-  const planes = supportingBodyPlanes(geo);
-  geo.computeBoundingBox();
-  const bb = geo.boundingBox!;
-  const center = bb.getCenter(new THREE.Vector3()), size = bb.getSize(new THREE.Vector3());
-  const M = Math.max(size.x, size.y, size.z) * 2 + 200;
-  const big = await createPanelFromVirtualFace(
-    [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => [center.x + a * M / 2, center.y + M / 2, center.z + b * M / 2] as Vec3),
-    [0, 1, 0], M, 0);
-  if (!big) return null;
-  let solid = big;
-  for (const pl of planes) {
-    // Dış yarım-uzay kesilir; iç taraf (−n) kalır.
-    const outside = await halfSpaceSlab(pl.center, pl.n, pl.n.clone().negate(), M * 2);
-    if (!outside) continue;
-    try { solid = solid.cut(outside); } catch { /* kesilemeyen düzlem atlanır */ }
-  }
-  if (parent.geometry) _bodySolidCache.set(parent.geometry, { key, solid });
-  return deepCopyShape(solid);
-}
-
-function tiltedBodyPlanes(parent: Shape): Array<{ n: THREE.Vector3; d: number }> {
-  const mods = parent.vertexModifications;
-  if (!Array.isArray(mods) || mods.length === 0 || !parent.geometry) return [];
-  return supportingBodyPlanes(effectiveBodyGeometry(parent))
-    .filter(pl => !isFlatNormal(pl.n, 0.999 - Number.EPSILON))
-    .map(pl => ({ n: pl.n, d: pl.d }));
-}
-
-// Eğik gövde düzlemindeki VF köşeleri dışa uzatılır; sonraki gövde kesişimi ucu eğime göre pahlar.
-function extendVertsOnTiltedPlanes(
-  verts: Vec3[], normal: Vec3, planes: Array<{ n: THREE.Vector3; d: number }>, amount: number,
-): { verts: Vec3[]; moved: number } {
-  if (!planes.length) return { verts, moved: 0 };
-  const nv = new THREE.Vector3(...normal).normalize();
-  let moved = 0;
-  const out = verts.map(c => {
-    const p = toVector3(c);
-    for (const pl of planes) {
-      if (Math.abs(p.dot(pl.n) - pl.d) > 1.0) continue;
-      const dir = pl.n.clone().addScaledVector(nv, -pl.n.dot(nv));
-      if (dir.lengthSq() < 1e-6) continue;   // eğik yüz VF'ye paralel
-      p.addScaledVector(dir.normalize(), amount);
-      moved++;
-      break;
-    }
-    return vec3(p);
-  });
-  return { verts: out, moved };
-}
-
-// ── BİÇİMLENMİŞ GÖVDE (çizimle Shape / Cut, döndürülmüş çıkarma, fillet) — panel gövde yüzüne oturur ──
+// ── BİÇİMLENMİŞ GÖVDE (çizimle Shape / Cut) — panel gövde yüzüne oturur ──
 // Komşuluk mesh'in kıvrım kenarlarından okunur: VF kenarının öbür yanındaki yüz normali (m) → kenar gerektiği kadar dışarı alınır,
-// katı gövdeyle kesişir; içbükey eğik kenarda komşunun panel katmanına (m·p ≥ d − t) uzar. Vertex düzenlemeli gövde eski yolda.
+// katı gövdeyle kesişir; içbükey eğik kenarda komşunun panel katmanına (m·p ≥ d − t) uzar. 
 interface Crease { a: THREE.Vector3; b: THREE.Vector3; n: [THREE.Vector3, THREE.Vector3]; curved: [boolean, boolean]; /** iki yanın yüzey kimliği (BrepTriInfo.tri) */ s: [number, number]; /** iki yandaki üçgenin merkezi */ c: [THREE.Vector3, THREE.Vector3] }
 const _creaseCache = new WeakMap<THREE.BufferGeometry, Crease[]>();
 /** Gövde mesh'inin kıvrım kenarları: iki yanı FARKLI gerçek yüzeye (B-Rep) ait üçgen kenarları. B-Rep bilgisi yoksa boş. */
@@ -1041,7 +952,7 @@ async function curvedPanelSolid(
 ): Promise<any | null> {
   const solid = parent.replicadShape, geo = parent.geometry;
   const brep = geo?.userData?.brep as BrepTriInfo | undefined;
-  if (!solid || !geo || !brep?.keys || (Array.isArray(parent.vertexModifications) && parent.vertexModifications.length > 0)) return null;
+  if (!solid || !geo || !brep?.keys) return null;
   const { faces, groups } = getFacesAndGroups(geo);
   const hit = matchCurvedFaceGroup(toVector3(vf.center), vfNormal(vf), faces, groups);
   if (!hit) return null;
@@ -1175,7 +1086,7 @@ async function clipToGroupCavity(rp: any, panel: Shape): Promise<any> {
 
 async function intersectWithBody(rp: any, parent: Shape, fallbackBox: boolean, /** Doğrulama sonucu (yalnız biçimlenmiş gövde). */ status?: { ok: boolean }): Promise<any> {
   try {
-    let body = await effectiveBodySolid(parent);
+    let body = bodySolidOf(parent);
     if (!body && fallbackBox) {
       const pp: any = parent.parameters || {};
       body = await createReplicadBox({ width: parseFloat(pp.width) || 1, height: parseFloat(pp.height) || 1, depth: parseFloat(pp.depth) || 1 });
@@ -2088,22 +1999,12 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       // Kapak/arkalık gövdeyle sığdırılmaz/kesilmez (gövdenin önünde/arkasında durur); adımları yine uygulanır.
       const isRotated = !isSheetPanel(panel) && (panelHasRotation(panel) || vfTilted || isCurved);
       let genVerts = buildVerts;
-      // İç panel + vertex düzenlemeli gövde: levha eğik yüzden taşmasın diye gövde katısıyla kesilir.
-      const bodyHasMods = Array.isArray(parentFresh.vertexModifications) && parentFresh.vertexModifications.length > 0;
       const hasXform = steps.some((st: any) => st?.type === 'move' || st?.type === 'rotate');
       // BİÇİMLENMİŞ GÖVDE (çizimle eğim / radüs): iç panel ve taşınmış düz panel de gövde katısıyla kesilir (eğik yüzden taşmasın).
-      const shaped = !bodyHasMods && !isSheetPanel(panel) && bodyIsShaped(parentFresh);
-      let needsBodyClip = !isRotated && (isInteriorPanel(panel) ? bodyHasMods || shaped : shaped && hasXform);
+      const shaped = !isSheetPanel(panel) && bodyIsShaped(parentFresh);
+      let needsBodyClip = !isRotated && (isInteriorPanel(panel) ? shaped : shaped && hasXform);
       // Arkalık parçası biçimlenmiş gövdede eğimli / radüslü köşeden taşmasın diye gövdeyle kesilir (kapak kesilmez).
-      if (isBackPanel(panel) && !bodyHasMods && bodyIsShaped(parentFresh)) needsBodyClip = true;
-      // Düz panel + eğik gövde yüzü: VF köşeleri uzatılıp gövdeyle kesilir (kapak/arkalık hariç).
-      if (!isRotated && !isSheetPanel(panel)) {
-        const planes = tiltedBodyPlanes(parentFresh);
-        if (planes.length) {
-          const ext = extendVertsOnTiltedPlanes(buildVerts, vf.normal, planes, thickness * 3 + 2);
-          if (ext.moved > 0) { genVerts = ext.verts; needsBodyClip = true; }
-        }
-      }
+      if (isBackPanel(panel) && bodyIsShaped(parentFresh)) needsBodyClip = true;
       // Gövde yüzüne oturma (fitVertsToBodyEdges): taşınmamış / dönmemiş gövde paneli, gövde yüzünün kendi düzleminde.
       const edgeFit = shaped && !isCurved && !hasXform && !isInteriorPanel(panel) && !vf.stackBaseVfId && !(vf.stackDepth && vf.stackDepth > 0)
         // Eğri komşuya dik kenar HER ZAMAN büyütülüp gövdeyle kesilir (kenar gerçek yüzey olur): eğri panel sonra gelse de önce gelse de
@@ -2208,9 +2109,9 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
         }
       }
 
-      if (isDoorPanel(panel) && !bodyHasMods && bodyIsShaped(parentFresh)) rp = await fitDoorToBody(rp, panel, parentFresh, children, vfsIn);
+      if (isDoorPanel(panel) && bodyIsShaped(parentFresh)) rp = await fitDoorToBody(rp, panel, parentFresh, children, vfsIn);
       // Çakma (dış) arkalık gövdenin arkasındadır: gövdeyle kesişemez → baktığı arka yüzün çevresiyle (boşluksuz) kesişir, kemeri izler.
-      if (isBackPanel(panel) && !bodyHasMods && bodyIsShaped(parentFresh)) {
+      if (isBackPanel(panel) && bodyIsShaped(parentFresh)) {
         const bg = useAppStore.getState().backGroups.find(g => g.id === (panel.parameters as any)?.backGroupId);
         if (bg && slabOutsideBody(rp, parentFresh, bg.axis)) rp = await fitSlabToBodyFace(rp, panel.id, parentFresh, children, vfsIn, bg.axis, bg.side, 0);
       }
@@ -2852,8 +2753,6 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
   for (const [id, vf] of backVfs) interiorMap.set(id, vf);
   if (shapeFaces.length === 0) return virtualFaces.map(vf => interiorMap.get(vf.id) || vf);
 
-  const eff = effectiveBodyGeometry(shape);
-  if (eff !== shape.geometry) shape = { ...shape, geometry: eff };
   const { faces, groups: faceGroups } = getFacesAndGroups(shape.geometry);
   const worldToLocal = getShapeMatrix(shape).invert();
   // İç paneller (raf/dikme) de kardeştir: sırada önce geldikleri gövde panelini damgalar (yetki yalnız sıra).

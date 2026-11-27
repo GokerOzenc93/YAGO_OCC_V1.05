@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { create } from 'zustand';
 import { useAppStore, ViewMode, type Shape, type SceneToolStatus } from '../store';
-import { effectiveBodyGeometry, getFacesAndGroups, getShapeMatrix, groupIndexOfFace } from './Geometry';
+import { getFacesAndGroups, getShapeMatrix, groupIndexOfFace } from './Geometry';
 import { useDraft, cancelCommand as cancelDraftCommand, fmt, matchOpt, SNAP_LABEL, type CmdView, type Opt, type SnapKind } from './Draft';
 import { panelStepMatrix } from './PanelEngine';
 
@@ -241,7 +241,7 @@ export function rctx(shapes: Shape[] = useAppStore.getState().shapes): RCtx {
   if (_rctx && _rctx.shapes === shapes && _rctxIso === iso) return _rctx;
   const byId = new Map(shapes.map(s => [s.id, s])), all = new Map<string, Src>(), srcs: Src[] = [];
   for (const shape of shapes) {
-    const panel = shape.type === 'panel', geo = panel ? shape.geometry : effectiveBodyGeometry(shape);
+    const panel = shape.type === 'panel', geo = panel ? shape.geometry : shape.geometry;
     if (!geo?.getAttribute?.('position')) continue;
     const host = panel ? byId.get(shape.parameters?.parentShapeId) ?? shape : shape;
     const m = getShapeMatrix(host), inv = m.clone().invert(), q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(m));
@@ -1015,10 +1015,10 @@ function replaced(d: Dim, cur: Cursor, R: RCtx): Dim {
   const w = Q.sub(a.c);
   return d.t === 'jog' ? { ...d, ang: Math.atan2(w.dot(a.v), w.dot(a.u)) } : { ...d, ang: Math.atan2(w.dot(a.v), w.dot(a.u)), len: w.length() };
 }
-/** Sahne başka bir tıklama kipindeyken (panel / raf / kapak yerleşimi, köşe düzenleme, sahne araçları, çizim) ölçüler tıklamayı almaz. */
+/** Sahne başka bir tıklama kipindeyken (panel / raf / kapak yerleşimi, sahne araçları, çizim) ölçüler tıklamayı almaz. */
 function sceneBusy(): boolean {
   const a = useAppStore.getState(), d = useDraft.getState();
-  return !!(a.raycastMode || a.volumePickMode || a.doorPickMode || a.backPickMode || a.plinthPickMode || a.vertexEditMode || a.filletMode || a.sceneExStatus
+  return !!(a.raycastMode || a.volumePickMode || a.doorPickMode || a.backPickMode || a.plinthPickMode || a.sceneExStatus
     || d.cmd || d.planePick || d.activePlane !== 'ground' || d.session);
 }
 /** Boştayken imlecin altındaki ölçü (çizgi / ok / yazı, 6 px). Değiştiyse depoya yazar. */

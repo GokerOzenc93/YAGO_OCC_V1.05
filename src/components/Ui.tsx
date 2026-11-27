@@ -5,10 +5,10 @@ import { createClient } from '@supabase/supabase-js';
 import * as THREE from 'three';
 import { Canvas } from '@react-three/fiber';
 import { PerspectiveCamera, OrbitControls } from '@react-three/drei';
-import { useStoreFields, shapeById, ViewMode, type Shape, Tool, CameraType, OrthoMode, useAppStore, childPanelsOf, requestRebuild, type SceneToolStatus } from '../store';
+import { useStoreFields, shapeById, ViewMode, type Shape, Tool, CameraType, OrthoMode, useAppStore, requestRebuild, type SceneToolStatus } from '../store';
 import {
-  translatedBboxOf, createReplicadBox, convertReplicadToThreeGeometry, type Vec3, performBooleanCut, getReplicadVertices, evaluateExpression, axisIndexOf,
-  applyShapeChanges, rebuildBodySolid, FACE_KINDS, FACE_KIND_LABEL, FACE_ROLES, FACE_ROLE_LABEL, type FaceKind, type FaceRole, faceRoleText,
+  createReplicadBox, convertReplicadToThreeGeometry, evaluateExpression,
+  applyShapeChanges, FACE_KINDS, FACE_KIND_LABEL, FACE_ROLES, FACE_ROLE_LABEL, type FaceKind, type FaceRole, faceRoleText,
 } from './Geometry';
 import { PLINTH_FACINGS, PLINTH_FACING_LABEL, type PlinthFacing, bodyFaces, bodyFrontAxis, setBodyFaceRole, setBodyFrontAxis } from './PlinthService';
 import {
@@ -254,7 +254,7 @@ export type IconName =
   | 'layers' | 'layout' | 'legs' | 'light' | 'material' | 'monitor' | 'move' | 'move-p2p' | 'open' | 'ortho' | 'ortho-off' | 'outlines' | 'panel'
   | 'param-add' | 'params' | 'paste' | 'pin' | 'plinth' | 'polar' | 'redo' | 'report' | 'rotate' | 'ruler' | 'save' | 'save-as' | 'scale' | 'search'
   | 'select' | 'select-body' | 'select-panel' | 'settings' | 'shelf' | 'snap' | 'snap-center' | 'snap-endpoint' | 'snap-intersection'
-  | 'snap-midpoint' | 'snap-nearest' | 'snap-perpendicular' | 'snap-quadrant' | 'snap-tangent' | 'subtract' | 'undo' | 'unpin'
+  | 'snap-midpoint' | 'snap-nearest' | 'snap-perpendicular' | 'snap-quadrant' | 'snap-tangent' | 'undo' | 'unpin'
   | 'view-solid' | 'view-wireframe' | 'view-xray' | 'window';
 const ICON_FILES = import.meta.glob('../icons/*.svg', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 const ICON_SRC: Record<string, { svg: string; vb: number }> = {};
@@ -356,7 +356,6 @@ export const ToggleIconButton: React.FC<ToggleIconButtonProps> = ({ active, onCl
 type PresetProps = Omit<IconButtonProps, 'icon' | 'title'>;
 const preset = (icon: IconName, title: string): React.FC<PresetProps> => (props) => <IconButton icon={icon} title={title} {...props} />;
 export const AddBoxButton = preset('add-box', 'Add Box (B)');
-export const SubtractBoxButton = preset('subtract', 'Subtract Intersecting Shapes');
 export const CameraPerspectiveButton = preset('cam-persp', 'Perspective View');
 export const CameraOrthographicButton = preset('cam-ortho', 'Orthographic View');
 export const ViewSolidButton = preset('view-solid', 'Solid View');
@@ -429,7 +428,6 @@ const KEYCAP: React.CSSProperties = {
   fontFamily: UI_FONT, fontSize: '10px', fontWeight: 600, color: '#44403c', lineHeight: '13px', padding: '0 5px', borderRadius: 4,
   background: 'linear-gradient(180deg,#ffffff 0%,#f5f2ec 100%)', border: '1px solid rgba(60,50,40,0.16)', borderBottomWidth: 2, whiteSpace: 'nowrap',
 };
-const axisTxt = (a: string | null | undefined) => (a ? `${a[0].toUpperCase()}${a[1] ?? ''}` : '');
 
 function GuideStatus({ g }: { g: SceneToolStatus }) {
   const accent = g.type ? GUIDE_CLR[g.type] : GUIDE_INK;
@@ -488,7 +486,7 @@ const gk = (k: string, t: string) => ({ k, t });
 function useModeGuide(): SceneToolStatus | null {
   const s = useStoreFields('selectedShapeId', 'raycastMode', 'raycastPendingVf', 'volumePickMode', 'volumePickGroupId', 'volumePickCandidates', 'volumePickIndex',
     'doorPickMode', 'doorPickCandidates', 'doorPickIndex', 'backPickMode', 'backPickCandidates', 'backPickIndex', 'plinthPickMode', 'plinthPickCandidates',
-    'plinthPickIndex', 'quickBodyMode', 'vertexEditMode', 'selectedVertexIndex', 'vertexDirection', 'filletMode', 'selectedFilletFaces');
+    'plinthPickIndex', 'quickBodyMode');
   const exit = [gk('Esc', 'exit')];
   // Tıkla-seç-yerleştir kipleri: aynı yere tekrar tık sıradaki adaya geçer, sağ tık yerleştirir.
   const pick = (label: string, what: string, first: string, n: number, i: number, place = 'place'): SceneToolStatus => !s.selectedShapeId
@@ -513,19 +511,6 @@ function useModeGuide(): SceneToolStatus | null {
     s.plinthPickCandidates.length, s.plinthPickIndex);
   if (s.quickBodyMode) return { label: 'Quick body', type: null, steps: ['Settings', 'Apply'], step: 0,
     text: 'Choose the corner joints, base and back on the left, then Apply', keys: exit };
-  if (s.vertexEditMode) {
-    const step = s.selectedVertexIndex === null ? 0 : !s.vertexDirection ? 1 : 2;
-    return { label: 'Vertex', type: null, steps: ['Corner', 'Direction', 'Value'], step,
-      text: ['Click a corner of the body', 'Click an arrow on the corner — the direction to move it',
-        `Type the new ${axisTxt(s.vertexDirection)[0] ?? ''} coordinate and press Enter`][step],
-      keys: step === 2 ? [gk('Enter', 'apply'), gk('Esc', 'back')] : step === 1 ? [gk('Esc', 'back')] : exit };
-  }
-  if (s.filletMode) {
-    const step = Math.min(2, s.selectedFilletFaces.length);
-    return { label: 'Fillet', type: null, steps: ['Face 1', 'Face 2', 'Radius'], step,
-      text: ['Click the first face', 'Click the second face — the edge between the two is rounded', 'Type the radius and press Enter'][step],
-      keys: step === 2 ? [gk('Enter', 'apply'), ...exit] : exit };
-  }
   return null;
 }
 
@@ -543,13 +528,11 @@ function useIdleHint(): string | null {
 }
 
 export const StatusBar: React.FC = () => {
-  const { shapes, selectedShapeId, vertexEditMode, selectedVertexIndex, sceneExStatus } =
-    useStoreFields('shapes', 'selectedShapeId', 'vertexEditMode', 'selectedVertexIndex', 'sceneExStatus');
+  const { shapes, selectedShapeId, sceneExStatus } = useStoreFields('shapes', 'selectedShapeId', 'sceneExStatus');
   const modeGuide = useModeGuide(), idle = useIdleHint(), dimCmdGuide = useDimCommandStatus(), dimIdleGuide = useDimIdleStatus();
   // Ölçü komutu sürerken yönerge onundur (adım adım); boştayken seçili / imleç altındaki ölçü ve ölçme sonucu, başka bir kip yoksa gösterilir.
   const guide = dimCmdGuide ?? sceneExStatus ?? modeGuide ?? dimIdleGuide;
   const selectedShape = shapeById(selectedShapeId, shapes);
-  const vertexModCount = selectedShape?.vertexModifications?.length || 0;
   const { busy, view } = useBusyView();
   return (
     <div className="fixed left-0 right-0 z-20" style={STATUS_BAR}>
@@ -570,11 +553,6 @@ export const StatusBar: React.FC = () => {
       {selectedShape && (
         <><VSep /><LabelValue label="Position" value={`[${selectedShape.position.map(v => v.toFixed(1)).join(', ')}]`} mono /></>
       )}
-      {vertexEditMode && (
-        <><VSep /><LabelValue label="Vertex Edit" value={selectedVertexIndex !== null ? `V${selectedVertexIndex}` : 'Active'}
-          valueColor={TOKENS.infoClr} mono /></>
-      )}
-      {vertexModCount > 0 && <><VSep /><LabelValue label="Edits" value={vertexModCount} valueColor={TOKENS.modClr} mono /></>}
       <DraftStatus />
       {idle && <><VSep /><span style={{ color: '#8a8378', fontSize: '11px', fontWeight: 460, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{idle}</span></>}
       </>}
@@ -665,17 +643,11 @@ export const Terminal: React.FC = () => {
   const faceCand = useDraft(s => s.planeCandidate?.label ?? null);
   useEffect(() => { setTyped(commandInput); }, [commandInput]);
 
-  // Bekleyen fillet / vertex işlemi varsa girilen sayı ona gider (Scene'in window köprüsü); aksi halde çizim sürücüsüne.
+  // Girilen komut ölçü komutuna ya da çizim sürücüsüne gider.
   const executeCommand = useCallback((command: string) => {
     const trimmed = command.trim();
-    const w = window as any;
-    const num = parseFloat(trimmed);
     // Ölçü komutu etkinse girdi onundur (seçenek harfi, sayı, ölçü yazısı).
     if (dimActive()) { dimRoute(command); setCommandInput(''); return; }
-    if (!commandActive() && trimmed) {
-      if (w.pendingFilletOperation) { if (!isNaN(num) && num > 0) w.handleFilletRadius?.(num); setCommandInput(''); return; }
-      if (w.pendingVertexEdit) { if (!isNaN(num)) { w.handleVertexOffset?.(num); setCommandInput(''); } return; }
-    }
     // Boştayken: ölçü komutu adı (DIM, DLI, DIST …) ya da — son komut ölçüyse — boş Enter ile yineleme; gerisi çizim sürücüsüne.
     if (!commandActive() && dimRoute(trimmed)) { setCommandInput(''); return; }
     submitText(trimmed);
@@ -730,8 +702,7 @@ export const Terminal: React.FC = () => {
       if (e.key === ' ' && dimTextEntry()) { e.preventDefault(); inputRef.current?.focus(); setCommandInput(prev => prev + ' '); return; }
       if (e.key === 'Enter' || e.key === ' ') {
         const onControl = !!t?.closest?.('button,a,select,summary,[role="button"]');
-        const pendingOp = !!(window as any).pendingFilletOperation || !!(window as any).pendingVertexEdit;
-        if (active || dimActive() || (dimWantsEnter() && !onControl && !pendingOp) || (st.planePick && !onControl) || (st.lastCmd && !onControl && !pendingOp)) {
+        if (active || dimActive() || (dimWantsEnter() && !onControl) || (st.planePick && !onControl) || (st.lastCmd && !onControl)) {
           e.preventDefault(); e.stopPropagation();
           if (onControl) t?.blur?.();
           executeCommand(textRef.current);
@@ -918,13 +889,6 @@ const MENU_COMMANDS: Record<string, string> = {
   'Erase All Dimensions': 'DIMCLEAR',
 };
 
-/** Seçili gövdeyle (dünya kutusu) kesişen diğer gövdeler. */
-const intersectingBodies = (sel: Shape | undefined, shapes: Shape[]): Shape[] => {
-  const sb = sel && sel.type !== 'panel' ? translatedBboxOf(sel) : null;
-  if (!sb) return [];
-  return shapes.filter(s => { if (s.id === sel!.id || s.type === 'panel') return false; const b = translatedBboxOf(s); return !!b && sb.intersectsBox(b); });
-};
-
 const TOOLBAR_CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
   @keyframes tb-in{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:translateY(0)}}
@@ -987,8 +951,6 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const dimCmdId = useDim(d => d.cmd?.id ?? null);
   const selectedShape = shapeById(selectedShapeId, s.shapes);
-  const intersecting = React.useMemo(() => { try { return intersectingBodies(selectedShape, s.shapes); } catch { return []; } }, [selectedShape, s.shapes]);
-  const hasIntersectingShapes = intersecting.length > 0;
   const isBoxSelected = selectedShape?.type === 'box';
   React.useEffect(() => { if (panelSelectMode && activeTool !== Tool.SELECT) setActiveTool(Tool.SELECT); }, [panelSelectMode, activeTool, setActiveTool]);
 
@@ -1003,29 +965,6 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
       });
     } catch (err) { alert(`Failed to add box: ${(err as Error).message}`); }
   };
-  /** Seçili gövde, kesiştiği her gövdeden çıkarılır (çıkarma kaydı eklenir) ve silinir. */
-  const handleSubtract = async () => {
-    if (!selectedShapeId || !hasIntersectingShapes) return;
-    try {
-      const sel = selectedShape;
-      if (!sel?.geometry || !sel.replicadShape) return;
-      for (const tgt of intersecting) {
-        if (!tgt.replicadShape) continue;
-        const relOff = sel.position.map((v, i) => v - tgt.position[i]) as Vec3;
-        const relRot = sel.rotation.map((v, i) => v - tgt.rotation[i]) as Vec3;
-        const result = await performBooleanCut(tgt.replicadShape, sel.replicadShape, relOff, relRot, sel.scale);
-        const newVerts = await getReplicadVertices(result);
-        const sub = { geometry: sel.geometry.clone(), relativeOffset: relOff, relativeRotation: relRot, scale: [1, 1, 1] as Vec3 };
-        s.updateShape(tgt.id, {
-          geometry: convertReplicadToThreeGeometry(result), replicadShape: result,
-          subtractionGeometries: [...(tgt.subtractionGeometries || []), sub],
-          parameters: { ...tgt.parameters, scaledBaseVertices: newVerts.map(v => [v.x, v.y, v.z]) },
-        });
-      }
-      s.deleteShape(selectedShapeId);
-    } catch (err) { alert(`Failed to subtract: ${(err as Error).message}`); }
-  };
-
   const toolBtn = (icon: IconName, label: string, tool: Tool, disabled = false) => (
     <TBtn icon={icon} label={label} active={activeTool === tool} disabled={disabled} onClick={() => setActiveTool(tool)} />
   );
@@ -1137,7 +1076,6 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
           <CapSep />
           <CapGroup label="Bodies">
             <AddBoxButton onClick={handleAddBox} />
-            <SubtractBoxButton onClick={handleSubtract} disabled={noSel || !hasIntersectingShapes} className={hasIntersectingShapes ? 'hover:bg-red-50' : ''} />
             <GroupSep />
             <IconButton icon="catalog" title="Catalog" onClick={onOpenCatalog} />
           </CapGroup>
@@ -1569,7 +1507,7 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyCon
       const st = useAppStore.getState();
       if (st.faceExtrudeMode || st.panelMoveMode || st.panelRotateMode || st.sceneExtrudePanelId || escapeOwners.size) return;
       // Yerleştirme / düzenleme kipinde Esc o kipi kapatır (Scene), şerit açık kalır.
-      if (st.raycastMode || st.volumePickMode || st.doorPickMode || st.backPickMode || st.plinthPickMode || st.quickBodyMode || st.vertexEditMode || st.filletMode) return;
+      if (st.raycastMode || st.volumePickMode || st.doorPickMode || st.backPickMode || st.plinthPickMode || st.quickBodyMode) return;
       setIsOpen(false); setIsPinned(false);
     };
     window.addEventListener('keydown', onKey);
@@ -1778,7 +1716,7 @@ export const supabase = supabaseUrl && supabaseAnonKey ? createClient(supabaseUr
 
 export interface CatalogItem {
   id: string; code: string; description: string; tags: string[];
-  geometry_data: any; shape_parameters?: any; subtraction_geometries?: any[]; fillets?: any[];
+  geometry_data: any; shape_parameters?: any;
   preview_image?: string; created_at: string; updated_at: string;
 }
 // Supabase yapılandırılmamışsa yerel kip: katalog boş, silme yapılmaz.
@@ -1911,18 +1849,7 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ isOpen, onClose, onL
 };
 
 interface CustomParameter { id: string; name: string; expression: string; result: number; description: string }
-type ExprResult = { expression: string; result: number };
-type SubKey = 'width' | 'height' | 'depth' | 'posX' | 'posY' | 'posZ' | 'rotX' | 'rotY' | 'rotZ';
-const SUB_KEYS: SubKey[] = ['width', 'height', 'depth', 'posX', 'posY', 'posZ', 'rotX', 'rotY', 'rotZ'];
-const SUB_ROWS: Array<[SubKey, string, string]> = [
-  ['width', 'W', 'Width'], ['height', 'H', 'Height'], ['depth', 'D', 'Depth'],
-  ['posX', 'X', 'Position X'], ['posY', 'Y', 'Position Y'], ['posZ', 'Z', 'Position Z'],
-  ['rotX', 'RX', 'Rotation X'], ['rotY', 'RY', 'Rotation Y'], ['rotZ', 'RZ', 'Rotation Z'],
-];
 const RAD2DEG = 180 / Math.PI;
-const evalSubs = (expr: (k: SubKey) => string, ctx: Record<string, number>) =>
-  Object.fromEntries(SUB_KEYS.map(k => [k, { expression: expr(k), result: evaluateExpression(expr(k), ctx) }])) as Record<SubKey, ExprResult>;
-
 /* Parametre satırı: [kod] Etiket …… [değer] birim; üzerine gelince kenar koyulaşır, odakta turuncu halka (yago-cell). */
 const P_ROW = 'group/prow yago-cell flex items-center gap-1.5 h-[30px] pl-2 pr-1';
 const P_CODE = 'shrink-0 w-[22px] text-[10px] font-semibold tracking-[0.04em] tabular-nums text-[#a39b91] select-none';
@@ -1980,18 +1907,6 @@ const ParameterRow: React.FC<{ label: string; value: number; onChange: (v: numbe
       </div>
     );
   };
-type ExprRowProps = {
-  label: string; labelColor: string; expression: string; onExpr: (v: string) => void; result: number; children: React.ReactNode;
-};
-const ExprRow = ({ label, labelColor, expression, onExpr, result, children }: ExprRowProps) => (
-  <div className={P_ROW}>
-    <span className={P_CODE} style={{ color: labelColor }}>{label}</span>
-    <input type="text" value={expression} onChange={e => onExpr(e.target.value)} className={`${P_INPUT} !text-left`} placeholder="expr" />
-    <span className={P_RESULT}>{result.toFixed(2)}</span>
-    {children}
-  </div>
-);
-
 /* Yüz rolleri: gövdenin ön yönü (Auto = kapak yüzü, yoksa +Z) + her düz yüzün rolü (otomatik, satırdan üstüne yazılır → `faceRoles`).
    Satıra gelince yüz vurgulanır; baza ayak mesafeleri bu rollerden okunur. Kolon / kiriş seçenekleri yüzün yön rolünü değiştirmez, yalnız o
    yüze konan panelin tipini belirler (Column side / Column front / Beam front / Beam horizontal). */
@@ -2054,19 +1969,13 @@ function FacesSection({ shape }: { shape: Shape }) {
 }
 
 export function ParametersPanel() {
-  const { selectedShapeId, shapes, updateShape, subtractionViewMode, selectedSubtractionIndex, setSelectedSubtractionIndex, deleteSubtraction } =
-    useStoreFields('selectedShapeId', 'shapes', 'updateShape', 'subtractionViewMode', 'selectedSubtractionIndex',
-      'setSelectedSubtractionIndex', 'deleteSubtraction');
+  const { selectedShapeId, shapes, updateShape } = useStoreFields('selectedShapeId', 'shapes', 'updateShape');
 
   const [width, setWidth] = useState(0);
   const [height, setHeight] = useState(0);
   const [depth, setDepth] = useState(0);
   const [rot, setRot] = useState<[number, number, number]>([0, 0, 0]);
   const [customParameters, setCustomParameters] = useState<CustomParameter[]>([]);
-  const [vertexModifications, setVertexModifications] = useState<any[]>([]);
-  const [filletRadii, setFilletRadii] = useState<number[]>([]);
-  const initSub = () => Object.fromEntries(SUB_KEYS.map(k => [k, { expression: '0', result: 0 }])) as Record<SubKey, ExprResult>;
-  const [subParams, setSubParams] = useState<Record<SubKey, ExprResult>>(initSub);
 
   const selectedShape = shapeById(selectedShapeId, shapes);
   const getEvalContext = () => ({ W: width, H: height, D: depth, ...customParameters.reduce((acc, p) => ({ ...acc, [p.name]: p.result }), {}) });
@@ -2078,32 +1987,11 @@ export function ParametersPanel() {
       setDepth(selectedShape.parameters.depth || 0);
       setRot([0, 1, 2].map(i => (selectedShape.rotation?.[i] || 0) * RAD2DEG) as [number, number, number]);
       setCustomParameters(selectedShape.parameters.customParameters || []);
-      setVertexModifications(selectedShape.vertexModifications || []);
-      setFilletRadii((selectedShape.fillets || []).map((f: any) => f.radius));
     } else {
       setWidth(0); setHeight(0); setDepth(0); setRot([0, 0, 0]);
-      setCustomParameters([]); setVertexModifications([]); setFilletRadii([]);
+      setCustomParameters([]);
     }
   }, [selectedShape, selectedShapeId, shapes]);
-
-  useEffect(() => {
-    if (!selectedShape || selectedSubtractionIndex === null) return;
-    const sub = selectedShape.subtractionGeometries?.[selectedSubtractionIndex];
-    const pos = sub?.geometry?.getAttribute('position');
-    if (!sub || !pos) return;
-    const size = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute).getSize(new THREE.Vector3());
-    const p = sub.parameters, off = sub.relativeOffset, rr = sub.relativeRotation;
-    const deg = (i: number) => String((rr?.[i] || 0) * RAD2DEG);
-    const raw: Record<SubKey, string> = {
-      width: p?.width ?? String(size.x), height: p?.height ?? String(size.y), depth: p?.depth ?? String(size.z),
-      posX: p?.posX ?? String(off?.[0] || 0), posY: p?.posY ?? String(off?.[1] || 0), posZ: p?.posZ ?? String(off?.[2] || 0),
-      rotX: p?.rotX ?? deg(0), rotY: p?.rotY ?? deg(1), rotZ: p?.rotZ ?? deg(2),
-    };
-    setSubParams(evalSubs(k => raw[k], getEvalContext()));
-  }, [selectedShape?.id, selectedSubtractionIndex, selectedShape?.subtractionGeometries?.length, width, height, depth, customParameters]);
-
-  const handleSubParamChange = (param: SubKey, expression: string) =>
-    setSubParams(prev => ({ ...prev, [param]: { expression, result: evaluateExpression(expression, getEvalContext()) } }));
 
   const persistCustom = (updated: CustomParameter[]) => {
     setCustomParameters(updated);
@@ -2120,61 +2008,14 @@ export function ParametersPanel() {
       return p;
     }));
 
-  const updateVertexModification = (index: number, field: string, value: any) =>
-    setVertexModifications(vertexModifications.map((mod, idx) => {
-      if (idx !== index) return mod;
-      const u = { ...mod, [field]: value };
-      if (field === 'expression') {
-        // İfade, seçilen eksendeki MUTLAK koordinattır (terminal girişi ve Uygula ile aynı sözleşme).
-        const result = evaluateExpression(value, getEvalContext());
-        const ai = axisIndexOf(mod.direction);
-        const np = [...mod.originalPosition] as [number, number, number]; np[ai] = result;
-        const off: [number, number, number] = [0, 0, 0]; off[ai] = result - mod.originalPosition[ai];
-        u.newPosition = np; u.offset = off;
-      }
-      return u;
-    }));
-  // Gövde geometrisi hep TABAN'dır, düzenlemeler çizimde üstüne uygulanır → silinince mesh anında geri döner.
-  const deleteVertexModification = (index: number) => {
-    const updated = vertexModifications.filter((_, i) => i !== index);
-    setVertexModifications(updated);
-    if (selectedShape) {
-      updateShape(selectedShape.id, { vertexModifications: updated });
-      const sid = selectedShape.id;
-      if (childPanelsOf(sid).length) requestRebuild(sid).catch(e => console.error('[YAGO][VERTEX] rebuild hatası:', e));
-    }
-  };
-
   const handleApplyChanges = async () => {
     const currentShape = shapeById(selectedShapeId);
     if (!currentShape) return;
-    const evalSub = evalSubs(k => subParams[k].expression, getEvalContext());
     await applyShapeChanges({
       selectedShape: { ...currentShape, position: [...currentShape.position] as [number, number, number] },
-      width, height, depth, rotX: rot[0], rotY: rot[1], rotZ: rot[2],
-      customParameters, vertexModifications, filletRadii, selectedSubtractionIndex,
-      subWidth: evalSub.width.result, subHeight: evalSub.height.result, subDepth: evalSub.depth.result,
-      subPosX: evalSub.posX.result, subPosY: evalSub.posY.result, subPosZ: evalSub.posZ.result,
-      subRotX: evalSub.rotX.result, subRotY: evalSub.rotY.result, subRotZ: evalSub.rotZ.result,
-      subParams: evalSub, updateShape,
+      width, height, depth, rotX: rot[0], rotY: rot[1], rotZ: rot[2], customParameters, updateShape,
     });
     if (selectedShapeId) await requestRebuild(selectedShapeId);
-  };
-
-  const handleDeleteFillet = async (filletIndex: number) => {
-    const currentShape = shapeById(selectedShapeId);
-    if (!currentShape) return;
-    const newFillets = (currentShape.fillets || []).filter((_: any, i: number) => i !== filletIndex);
-    try {
-      const r = await rebuildBodySolid(
-        { parameters: currentShape.parameters, fillets: newFillets }, currentShape.subtractionGeometries, { width, height, depth });
-      updateShape(currentShape.id, {
-        geometry: r.geometry, replicadShape: r.replicadShape, fillets: r.fillets,
-        position: [...currentShape.position] as [number, number, number],
-        parameters: { ...currentShape.parameters, scaledBaseVertices: r.scaledBaseVertices },
-      });
-      setFilletRadii(filletRadii.filter((_, i) => i !== filletIndex));
-    } catch (error) { console.error('Failed to delete fillet:', error); }
   };
 
   // Araç düğmeleri kenar çubuğu kabuğundaki dikey rayda (Ui.tsx SidebarRail); özel parametre ekleme oraya kaydolur.
@@ -2194,15 +2035,6 @@ export function ParametersPanel() {
         ))}
       </ParamSection>
       {selectedShape.type !== 'panel' && <FacesSection shape={selectedShape} />}
-      {filletRadii.length > 0 && (
-        <ParamSection title="Fillet" count={filletRadii.length}>
-          {filletRadii.map((radius, idx) => (
-            <ParameterRow key={`fillet-${idx}`} label={`F${idx + 1}`} value={radius} unit="mm" description={`Fillet ${idx + 1} radius`}
-              onChange={v => { const r = [...filletRadii]; r[idx] = v; setFilletRadii(r); }}
-              trailing={<DelBtn title="Delete fillet" onClick={() => { void handleDeleteFillet(idx); }} />} />
-          ))}
-        </ParamSection>
-      )}
       {customParameters.length > 0 && (
         <ParamSection title="Parameters" count={customParameters.length}>
           {customParameters.map(param => (
@@ -2216,36 +2048,6 @@ export function ParametersPanel() {
                 className={P_NOTE} placeholder="note…" />
               <DelBtn title="Delete" onClick={() => persistCustom(customParameters.filter(p => p.id !== param.id))} />
             </div>
-          ))}
-        </ParamSection>
-      )}
-      {subtractionViewMode && selectedSubtractionIndex !== null && selectedShape.subtractionGeometries?.[selectedSubtractionIndex] && (
-        <ParamSection title={`Subtraction #${selectedSubtractionIndex + 1}`} accent="#b45309"
-          right={
-            <div className="flex items-center gap-px">
-              <DelBtn title="Delete subtraction" className={`${P_ICON_BTN} hover:!bg-red-50 hover:!text-red-500`}
-                onClick={() => { void deleteSubtraction(selectedShape.id, selectedSubtractionIndex); }} />
-              <button onClick={() => setSelectedSubtractionIndex(null)} className={P_ICON_BTN} title="Close"><X size={12} strokeWidth={2} /></button>
-            </div>
-          }>
-          {SUB_ROWS.map(([key, label, desc]) => (
-            <ExprRow key={key} label={label} labelColor="#b45309" expression={subParams[key].expression}
-              onExpr={v => handleSubParamChange(key, v)} result={subParams[key].result}>
-              <span className={P_DESC}>{desc}</span>
-            </ExprRow>
-          ))}
-        </ParamSection>
-      )}
-      {/* Vertex modu kapalıyken de görünür → her zaman silinebilir. */}
-      {vertexModifications.length > 0 && (
-        <ParamSection title="Vertex edits" count={vertexModifications.length}>
-          {vertexModifications.map((mod, idx) => (
-            <ExprRow key={idx} label={`V${mod.vertexIndex}`} labelColor="#a8a29e" expression={mod.expression}
-              onExpr={v => updateVertexModification(idx, 'expression', v)} result={evaluateExpression(mod.expression, getEvalContext())}>
-              <input type="text" value={mod.description || ''} onChange={e => updateVertexModification(idx, 'description', e.target.value)}
-                className={P_NOTE} placeholder="note…" />
-              <DelBtn title="Delete vertex edit" onClick={() => deleteVertexModification(idx)} />
-            </ExprRow>
           ))}
         </ParamSection>
       )}

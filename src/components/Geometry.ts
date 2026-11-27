@@ -3,7 +3,7 @@ import initOpenCascade from 'opencascade.js';
 import { Plane, cast, draw, makePolygon, makeSolid, setOC } from 'replicad';
 import { type BrepTriInfo, cutShape, geometryFromMeshData, meshDataOf, startCutWorker } from './CutWorker';
 import {
-  type VirtualFace, type FaceDescriptor, type FilletInfo, type SubtractedGeometry, type Shape, shapeById, requestRebuild, vfOfPanel, type RefFacePick,
+  type VirtualFace, type FaceDescriptor, type Shape, shapeById, requestRebuild, vfOfPanel, type RefFacePick,
   type RailStripSpec, type RailExt, type RailExtTarget, type SketchFeature, useAppStore,
 } from '../store';
 import {
@@ -14,7 +14,7 @@ import {
 
 // ════════════════════════════════════════════ 1. GEOMETRİ ÇEKİRDEĞİ + OCC ════════════════════════════════════════════
 // (A) saf three.js: eksen / matris / kutu, VF düzlem tabanı, dönüş çözücüleri, mesh yüz çıkarımı ve gruplama;
-// (B) replicad / OCC: kutu, boolean, VF'den panel, vertex düzenleme, fillet, gövde rebuild.
+// (B) replicad / OCC: kutu, boolean, VF'den panel, gövde rebuild (kutu + çizim adımları).
 
 export type Vec3 = [number, number, number];
 export type AxisDir = 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-';
@@ -467,32 +467,6 @@ export function matchCurvedFaceGroup(center: THREE.Vector3, normal: THREE.Vector
   return best;
 }
 
-export function createGroupBoundaryEdges(faces: FaceData[], groups: CoplanarFaceGroup[]): THREE.BufferGeometry {
-  const edgeVertices: number[] = [];
-  const faceToGroup = new Map<number, number>();
-  groups.forEach((group, groupIdx) => group.faceIndices.forEach(faceIdx => faceToGroup.set(faceIdx, groupIdx)));
-  const edgeMap = new Map<string, { v1: THREE.Vector3; v2: THREE.Vector3; faces: number[] }>();
-  const keyOf = (v: THREE.Vector3) => `${v.x.toFixed(4)},${v.y.toFixed(4)},${v.z.toFixed(4)}`;
-  faces.forEach((face) => {
-    for (let i = 0; i < 3; i++) {
-      const v1 = face.vertices[i], v2 = face.vertices[(i + 1) % 3];
-      const key1 = keyOf(v1), key2 = keyOf(v2);
-      const edgeKey = key1 < key2 ? `${key1}-${key2}` : `${key2}-${key1}`;
-      if (!edgeMap.has(edgeKey)) edgeMap.set(edgeKey, { v1: v1.clone(), v2: v2.clone(), faces: [] });
-      edgeMap.get(edgeKey)!.faces.push(face.faceIndex);
-    }
-  });
-  edgeMap.forEach((edge) => {
-    if (edge.faces.length !== 2) return;
-    const g1 = faceToGroup.get(edge.faces[0]), g2 = faceToGroup.get(edge.faces[1]);
-    if (g1 === undefined || g2 === undefined || g1 === g2) return;
-    edgeVertices.push(edge.v1.x, edge.v1.y, edge.v1.z, edge.v2.x, edge.v2.y, edge.v2.z);
-  });
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(edgeVertices, 3));
-  return geometry;
-}
-
 export function createFaceHighlightGeometry(faces: FaceData[], faceIndices: number[]): THREE.BufferGeometry {
   const positions: number[] = [];
   for (const fi of faceIndices) faces[fi]?.vertices.forEach(v => positions.push(v.x, v.y, v.z));
@@ -814,28 +788,6 @@ export const convertReplicadToThreeGeometry = (shape: any): THREE.BufferGeometry
   }
 };
 
-/** base − cutting; kesici önce ölçeklenir, sonra döndürülür (rad, XYZ sırası), sonra ötelenir. */
-export const performBooleanCut = async (
-  baseShape: any, cuttingShape: any,
-  cuttingPosition?: Vec3, cuttingRotation?: Vec3, cuttingScale?: Vec3,
-): Promise<any> => {
-  await initReplicad();
-  try {
-    let t = cuttingShape;
-    const s = cuttingScale, p = cuttingPosition;
-    if (s && (s[0] !== 1 || s[1] !== 1 || s[2] !== 1)) t = t.scale(s[0], s[1], s[2]);
-    if (cuttingRotation) {
-      const axes: Vec3[] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-      for (let i = 0; i < 3; i++) if (cuttingRotation[i] !== 0) t = t.rotate(cuttingRotation[i] * (180 / Math.PI), [0, 0, 0], axes[i]);
-    }
-    if (p && (p[0] !== 0 || p[1] !== 0 || p[2] !== 0)) t = t.translate(p[0], p[1], p[2]);
-    return baseShape.cut(t);
-  } catch (error) {
-    console.error('Boolean cut failed:', error);
-    throw error;
-  }
-};
-
 export const createPanelFromVirtualFace = async (
   vertices: Vec3[], normal: Vec3, panelThickness: number, planeExpand = 0
 ): Promise<any> => {
@@ -900,130 +852,6 @@ export const createPanelFromVirtualFace = async (
 export const halfSpaceSlab = (center: THREE.Vector3, planeN: THREE.Vector3, keepN: THREE.Vector3, H: number) =>
   createPanelFromVirtualFace(hugeRectOnPlane(center, planeN, H), vec3(keepN), H, 0);
 
-export interface VertexModification {
-  vertexIndex: number;
-  originalPosition: Vec3;
-  newPosition: Vec3;
-  direction: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-';
-  expression: string;
-  description?: string;
-  offset: Vec3;
-}
-
-export function getBoxVertices(width: number, height: number, depth: number): THREE.Vector3[] {
-  const w2 = width / 2, h2 = height / 2, d2 = depth / 2;
-  return [
-    new THREE.Vector3(-w2, -h2, -d2), new THREE.Vector3(w2, -h2, -d2), new THREE.Vector3(w2, h2, -d2), new THREE.Vector3(-w2, h2, -d2),
-    new THREE.Vector3(-w2, -h2, d2), new THREE.Vector3(w2, -h2, d2), new THREE.Vector3(w2, h2, d2), new THREE.Vector3(-w2, h2, d2),
-  ];
-}
-
-const r2 = (v: number) => Math.round(v * 100) / 100;
-const key2 = (x: number, y: number, z: number) => `${r2(x)},${r2(y)},${r2(z)}`;
-
-export async function getReplicadVertices(replicadShape: any): Promise<THREE.Vector3[]> {
-  try {
-    let vertices: any[] = [];
-    if (typeof replicadShape.vertices === 'function') vertices = replicadShape.vertices();
-    else if (Array.isArray(replicadShape.vertices)) vertices = replicadShape.vertices;
-    else {
-      const mesh = replicadShape.mesh({ tolerance: 0.1, angularTolerance: 30 });
-      if (mesh && mesh.vertices) {
-        const uniq = new Map<string, THREE.Vector3>();
-        for (let i = 0; i < mesh.vertices.length; i += 3) {
-          const x = r2(mesh.vertices[i]), y = r2(mesh.vertices[i + 1]), z = r2(mesh.vertices[i + 2]);
-          const k = `${x},${y},${z}`;
-          if (!uniq.has(k)) uniq.set(k, new THREE.Vector3(x, y, z));
-        }
-        return Array.from(uniq.values());
-      }
-    }
-    if (!Array.isArray(vertices) || vertices.length === 0) return [];
-    return vertices.map((v: any) => {
-      if (v && typeof v.point === 'function') { const p = v.point(); return new THREE.Vector3(p[0], p[1], p[2]); }
-      if (Array.isArray(v)) return toVector3(v);
-      if (v && typeof v.x === 'number') return new THREE.Vector3(v.x, v.y, v.z);
-      return null;
-    }).filter((v): v is THREE.Vector3 => v !== null);
-  } catch (error) {
-    console.error('Failed to get Replicad vertices:', error);
-    return [];
-  }
-}
-
-/** Tek kaynak taban köşe listesi (vertexIndex bu listenin indeksi): scaledBaseVertices → replicad köşeleri → kutu parametreleri. */
-export async function resolveBaseVertices(shape: any): Promise<THREE.Vector3[]> {
-  const p = shape?.parameters;
-  if (!p) return [];
-  if (Array.isArray(p.scaledBaseVertices) && p.scaledBaseVertices.length > 0) return p.scaledBaseVertices.map(toVector3);
-  if (shape.replicadShape) return getReplicadVertices(shape.replicadShape);
-  if (shape.type === 'box') return getBoxVertices(p.width, p.height, p.depth);
-  return [];
-}
-
-/** Her düzenleme yalnız KENDİ ekseninde newPosition yazar (aynı eksende sonraki kazanır). */
-export function composeVertexTargets(base: THREE.Vector3[], mods: any[] | undefined): Map<number, THREE.Vector3> {
-  const out = new Map<number, THREE.Vector3>();
-  for (const mod of mods || []) {
-    const b = base[mod?.vertexIndex];
-    if (!b || !mod?.direction || !Array.isArray(mod.newPosition)) continue;
-    const ai = axisIndexOf(mod.direction);
-    const t = out.get(mod.vertexIndex) || b.clone();
-    t.setComponent(ai, mod.newPosition[ai]);
-    out.set(mod.vertexIndex, t);
-  }
-  return out;
-}
-
-/** originalPosition'daki tüm mesh kopyaları yalnız düzenleme ekseninde hedefe çekilir. Düzenleme yoksa girdi döner (klon yok). */
-function applyVertexModsToGeometry(base: THREE.BufferGeometry, mods: any[] | undefined): THREE.BufferGeometry {
-  if (!base || !Array.isArray(mods) || mods.length === 0 || !base.getAttribute('position')) return base;
-  const geom = base.clone();
-  const attr = geom.getAttribute('position') as THREE.BufferAttribute;
-  const positions = attr.array as Float32Array;
-  const vertexMap = new Map<string, number[]>();
-  for (let i = 0; i < positions.length; i += 3) {
-    const key = key2(positions[i], positions[i + 1], positions[i + 2]);
-    const g = vertexMap.get(key); if (g) g.push(i); else vertexMap.set(key, [i]);
-  }
-  const targets = new Map<string, { idx: number[]; t: Vec3 }>();
-  for (const mod of mods) {
-    const op = mod?.originalPosition, np = mod?.newPosition, d = mod?.direction;
-    if (!Array.isArray(op) || !Array.isArray(np) || typeof d !== 'string') continue;
-    const key = key2(op[0], op[1], op[2]);
-    const idx = vertexMap.get(key);
-    if (!idx) continue;
-    const e = targets.get(key) || { idx, t: [op[0], op[1], op[2]] as Vec3 };
-    e.t[axisIndexOf(d)] = np[axisIndexOf(d)];
-    targets.set(key, e);
-  }
-  targets.forEach(({ idx, t }) => { for (const i of idx) { positions[i] = t[0]; positions[i + 1] = t[1]; positions[i + 2] = t[2]; } });
-  attr.needsUpdate = true;
-  geom.computeVertexNormals();
-  geom.computeBoundingBox();
-  geom.computeBoundingSphere();
-  return geom;
-}
-
-export function vertexModsKey(mods: any[] | undefined): string {
-  if (!Array.isArray(mods) || mods.length === 0) return '';
-  return JSON.stringify(mods.map(m => [m?.vertexIndex, m?.direction, m?.originalPosition, m?.newPosition]));
-}
-
-/** Sözleşme: store'daki `shape.geometry` hep tabandır; vertex düzenlemeleri bununla uygulanır. Düzenleme yoksa kendisi döner. */
-const _effCache = new WeakMap<THREE.BufferGeometry, { key: string; geo: THREE.BufferGeometry }>();
-export function effectiveBodyGeometry(shape: any): THREE.BufferGeometry {
-  const base: THREE.BufferGeometry | undefined = shape?.geometry;
-  if (!base) return base as any;
-  const key = vertexModsKey(shape.vertexModifications);
-  if (!key) return base;
-  const hit = _effCache.get(base);
-  if (hit && hit.key === key) return hit.geo;
-  const geo = applyVertexModsToGeometry(base, shape.vertexModifications);
-  _effCache.set(base, { key, geo });
-  return geo;
-}
-
 export function evaluateExpression(expression: string, context: Record<string, number>, fallback = 0): number {
   try {
     let expr = expression.trim();
@@ -1033,88 +861,16 @@ export function evaluateExpression(expression: string, context: Record<string, n
   } catch { return fallback; }
 }
 
-export async function updateFilletCentersForNewGeometry(fillets: FilletInfo[], newGeometry: THREE.BufferGeometry, newSize: BoxSize): Promise<FilletInfo[]> {
-  if (!fillets || fillets.length === 0) return fillets;
-  const faces = extractFacesFromGeometry(newGeometry);
-  return fillets.map((fillet, idx) => {
-    if (!fillet.face1Descriptor || !fillet.face2Descriptor) return fillet;
-    const f1 = findFaceByDescriptor(fillet.face1Descriptor, faces, newGeometry);
-    const f2 = findFaceByDescriptor(fillet.face2Descriptor, faces, newGeometry);
-    if (!f1 || !f2) { console.error(`Could not find matching face${f1 ? '2' : '1'} for fillet #${idx + 1}`); return fillet; }
-    return {
-      ...fillet, face1Data: { normal: vec3(f1.normal), center: vec3(f1.center) },
-      face2Data: { normal: vec3(f2.normal), center: vec3(f2.center) }, originalSize: newSize,
-    };
-  });
-}
-
-export async function applyFillets(replicadShape: any, fillets: FilletInfo[], shapeSize: BoxSize) {
-  if (!fillets || fillets.length === 0) return replicadShape;
-  let currentShape = replicadShape;
-  const tolerance = Math.max(shapeSize.width || 1, shapeSize.height || 1, shapeSize.depth || 1) * 0.08;
-  for (const fillet of fillets) {
-    const o = fillet.originalSize;
-    const scale = new THREE.Vector3(shapeSize.width / o.width, shapeSize.height / o.height, shapeSize.depth / o.depth);
-    // Yüz düzlemi (n, d), fillet kaydedildiği boyuttan güncel boyuta ölçeklenmiş.
-    const plane = (f: FilletInfo['face1Data']) => {
-      const n = new THREE.Vector3(...f.normal);
-      const d = f.planeD !== undefined
-        ? f.planeD * (n.x !== 0 ? scale.x : n.y !== 0 ? scale.y : scale.z)
-        : n.dot(new THREE.Vector3(...f.center).multiply(scale));
-      return { n, d };
-    };
-    const p1 = plane(fillet.face1Data), p2 = plane(fillet.face2Data);
-    const onPlane = (p: { n: THREE.Vector3; d: number }, pts: THREE.Vector3[]) => pts.every(q => Math.abs(p.n.dot(q) - p.d) < tolerance);
-    currentShape = currentShape.fillet((edge: any) => {
-      try {
-        const start = edge.startPoint, end = edge.endPoint;
-        if (!start || !end) return null;
-        const s = new THREE.Vector3(start.x, start.y, start.z), e = new THREE.Vector3(end.x, end.y, end.z);
-        const pts = [s, e, s.clone().add(e).multiplyScalar(0.5)];
-        return onPlane(p1, pts) && onPlane(p2, pts) ? fillet.radius : null;
-      } catch (err) { console.error('Error checking edge:', err); return null; }
-    });
-  }
-  return currentShape;
-}
-
-function subtractionSize(sub: any): BoxSize {
-  const num = (s: any) => { const v = parseFloat(s); return Number.isFinite(v) && v > 0 ? v : undefined; };
-  const p = sub.parameters;
-  const bb = localBboxOf(sub.geometry);
-  const size = bb ? bb.getSize(new THREE.Vector3()) : null;
-  const gs = sub.geometrySize;
-  return {
-    width: num(p?.width) ?? size?.x ?? gs?.[0] ?? 100,
-    height: num(p?.height) ?? size?.y ?? gs?.[1] ?? 100,
-    depth: num(p?.depth) ?? size?.z ?? gs?.[2] ?? 100,
-  };
-}
-
 export interface RebuiltBody {
-  replicadShape: any; geometry: THREE.BufferGeometry; scaledBaseVertices: number[][]; fillets: FilletInfo[];
+  replicadShape: any; geometry: THREE.BufferGeometry;
   /** Çizim adımı olan gövdede: adımlar uygulanmadan ÖNCEKİ mesh (yüz çerçevesinin okunduğu) ve uygulanamayan adımlar. */
   sketchBase?: THREE.BufferGeometry; sketchErrors?: Record<string, string>;
 }
 
-/** Kutu − çıkarmalar (+ filletler); fillet merkezleri yeni geometriye göre tazelenir (refreshFillets=false → olduğu gibi). */
-export async function rebuildBodySolid(
-  body: { parameters?: any; fillets?: FilletInfo[] }, subtractions: Array<SubtractedGeometry | any | null> | undefined,
-  size?: BoxSize, refreshFillets = true, withSketch = true
-): Promise<RebuiltBody> {
+/** Gövde katısı = kutu + çizim adımları (Drawing kipi: Shape / Cut) sırayla. withSketch=false → yalnız kutu. */
+export async function rebuildBodySolid(body: { parameters?: any }, size?: BoxSize, withSketch = true): Promise<RebuiltBody> {
   const sz: BoxSize = size || { width: body.parameters?.width || 1, height: body.parameters?.height || 1, depth: body.parameters?.depth || 1 };
   let shape = await createReplicadBox(sz);
-  for (const sub of subtractions || []) {
-    if (!sub) continue;
-    const cutter = await createReplicadBox(subtractionSize(sub));
-    shape = await performBooleanCut(shape, cutter, sub.relativeOffset || [0, 0, 0], sub.relativeRotation || [0, 0, 0], sub.scale || [1, 1, 1]);
-  }
-  let fillets = body.fillets || [];
-  if (fillets.length) {
-    if (refreshFillets) fillets = await updateFilletCentersForNewGeometry(fillets, convertReplicadToThreeGeometry(shape), sz);
-    shape = await applyFillets(shape, fillets, sz);
-  }
-  // Çizim adımları (gövde): kutu − çıkarmalar − fillet'ten sonra sırayla. Adımsız gövdede çalışmaz.
   const feats = withSketch ? liveSketchFeatures(body) : [];
   let sketchBase: THREE.BufferGeometry | undefined, sketchErrors: Record<string, string> | undefined;
   if (feats.length) {
@@ -1123,23 +879,14 @@ export async function rebuildBodySolid(
     shape = res.shape;
     if (Object.keys(res.errors).length) sketchErrors = res.errors;
   }
-  const verts = await getReplicadVertices(shape);
-  return { replicadShape: shape, geometry: convertReplicadToThreeGeometry(shape), scaledBaseVertices: verts.map(vec3), fillets, sketchBase, sketchErrors };
+  return { replicadShape: shape, geometry: convertReplicadToThreeGeometry(shape), sketchBase, sketchErrors };
 }
 
-type ExprResult = { expression: string; result: number };
 export interface ApplyShapeChangesParams {
   selectedShape: any;
   width: number; height: number; depth: number;
   rotX: number; rotY: number; rotZ: number;
   customParameters: any[];
-  vertexModifications: any[];
-  filletRadii?: number[];
-  selectedSubtractionIndex: number | null;
-  subWidth: number; subHeight: number; subDepth: number;
-  subPosX: number; subPosY: number; subPosZ: number;
-  subRotX: number; subRotY: number; subRotZ: number;
-  subParams?: Record<'width' | 'height' | 'depth' | 'posX' | 'posY' | 'posZ' | 'rotX' | 'rotY' | 'rotZ', ExprResult>;
   updateShape: (id: string, updates: any) => void;
 }
 
@@ -1162,91 +909,36 @@ export function shiftBodyLocal(id: string, shift: Vec3) {
 }
 
 export async function applyShapeChanges(params: ApplyShapeChangesParams) {
-  const { selectedShape, rotX, rotY, rotZ, customParameters, vertexModifications, filletRadii, selectedSubtractionIndex,
-    subWidth, subHeight, subDepth, subPosX, subPosY, subPosZ, subRotX, subRotY, subRotZ, subParams, updateShape } = params;
+  const { selectedShape, rotX, rotY, rotZ, customParameters, updateShape } = params;
   let { width, height, depth } = params;
   if (!selectedShape) return;
   try {
     // Ölçülü profil gövdeyi sürüyorsa (fit): profil yeni parametre değerleriyle çözülür, gövdenin o yüzdeki iki ölçüsü profilden gelir
     // (o eksenlere elle yazılan ölçü geçersizdir), adım yeni kutuya göre yeniden tabanlanır.
     // Yazılan W / H / D profilin girdisidir (ifadeler o adı kullanıyorsa); kullanmıyorsa profil ölçüsü geçerlidir.
-    const driven = selectedShape.vertexModifications?.length ? null : fitDrivenBody({ ...selectedShape.parameters, width, height, depth, customParameters });
+    const driven = fitDrivenBody({ ...selectedShape.parameters, width, height, depth, customParameters });
     if (driven) { const d3 = [width, height, depth]; d3[driven.axes[0]] = driven.size[0]; d3[driven.axes[1]] = driven.size[1]; [width, height, depth] = d3; }
     const cur = driven?.changed ? { ...selectedShape.parameters, sketchFeatures: driven.features } : selectedShape.parameters;
-    const scale = new THREE.Vector3(width / cur.width, height / cur.height, depth / cur.depth);
     const dimensionsChanged = width !== cur.width || height !== cur.height || depth !== cur.depth;
-
-    // Taban köşeler (yeni boyuta ölçeklenmiş) — vertex düzenlemelerinin referansı.
-    let newBaseVertices: THREE.Vector3[] = [];
-    if (cur.scaledBaseVertices?.length > 0 || selectedShape.replicadShape) {
-      const curBase: THREE.Vector3[] = cur.scaledBaseVertices?.length > 0
-        ? cur.scaledBaseVertices.map(toVector3)
-        : await getReplicadVertices(selectedShape.replicadShape);
-      newBaseVertices = dimensionsChanged ? curBase.map(v => v.clone().multiply(scale)) : curBase;
-    } else if (selectedShape.type === 'box') newBaseVertices = getBoxVertices(width, height, depth);
-
-    const evalContext = { W: width, H: height, D: depth, ...customParameters.reduce((acc, p) => ({ ...acc, [p.name]: p.result }), {}) };
-    const originOf = (mod: any): Vec3 => newBaseVertices[mod.vertexIndex] ? vec3(newBaseVertices[mod.vertexIndex]) : mod.originalPosition;
-    const finalPos = new Map<number, Vec3>();
-    for (const mod of vertexModifications) {
-      if (!finalPos.has(mod.vertexIndex)) finalPos.set(mod.vertexIndex, [...originOf(mod)] as Vec3);
-      finalPos.get(mod.vertexIndex)![axisIndexOf(mod.direction)] = evaluateExpression(mod.expression, evalContext);
-    }
-    const updatedVertexMods = vertexModifications.map((mod: any) => {
-      const o = originOf(mod), ai = axisIndexOf(mod.direction), f = finalPos.get(mod.vertexIndex)!;
-      const offset: Vec3 = [0, 0, 0]; offset[ai] = f[ai] - o[ai];
-      return { ...mod, originalPosition: o, newPosition: f, offset };
-    });
-
-    const baseUpdate = {
-      parameters: {
-        ...cur, width, height, depth, customParameters,
-        scaledBaseVertices: newBaseVertices.length > 0 ? newBaseVertices.map(vec3) : cur.scaledBaseVertices,
-      },
-      vertexModifications: updatedVertexMods,
-      rotation: degToRad(rotX, rotY, rotZ),
-      scale: selectedShape.scale,
-    };
-    const withRadii = (fillets: FilletInfo[]) => (filletRadii && filletRadii.length > 0)
-      ? fillets.map((f, i) => ({ ...f, radius: filletRadii[i] !== undefined ? filletRadii[i] : f.radius })) : fillets;
-    const size: BoxSize = { width, height, depth };
-
-    const hasSubtractionChanges = selectedSubtractionIndex !== null && selectedShape.subtractionGeometries?.length > 0;
-    const filletsChanged = !!filletRadii && filletRadii.length > 0 && filletRadii.some((r, i) => (selectedShape.fillets?.[i]?.radius || 0) !== r);
-
-    let subtractions: any[] | undefined = selectedShape.subtractionGeometries;
-    let needsSolid = dimensionsChanged || (filletsChanged && !!selectedShape.replicadShape);
+    const rotation = degToRad(rotX, rotY, rotZ), scale = selectedShape.scale;
+    const parameters = { ...cur, width, height, depth, customParameters };
+    let needsSolid = dimensionsChanged;
     // Parametric çizim adımı olan gövdede özel parametre değeri değişirse katı yeniden kurulur (adım formülleri o değerleri okur).
     const customKey = (list: any[] | undefined) => JSON.stringify((list ?? []).map(p => [p?.name, p?.result]));
     if ((cur.sketchFeatures ?? []).some((f: SketchFeature) => f?.mode === 'points') && customKey(cur.customParameters) !== customKey(customParameters)) needsSolid = true;
     if (driven?.changed) needsSolid = true;
-    if (hasSubtractionChanges) {
-      const updated = {
-        ...selectedShape.subtractionGeometries![selectedSubtractionIndex!],
-        geometry: convertReplicadToThreeGeometry(await createReplicadBox({ width: subWidth, height: subHeight, depth: subDepth })),
-        relativeOffset: [subPosX, subPosY, subPosZ] as Vec3,
-        relativeRotation: degToRad(subRotX, subRotY, subRotZ),
-        parameters: subParams ? Object.fromEntries(Object.entries(subParams).map(([k, v]) => [k, v.expression])) : undefined,
-      };
-      subtractions = selectedShape.subtractionGeometries!.map((sub: any, idx: number) => (idx === selectedSubtractionIndex ? updated : sub));
-      needsSolid = true;
-    }
-
-    const { rotation, scale: shapeScale, vertexModifications: vMods, parameters } = baseUpdate;
-    if (!needsSolid) { updateShape(selectedShape.id, { rotation, scale: shapeScale, vertexModifications: vMods, parameters }); return; }
-    const r = await rebuildBodySolid({ parameters: { ...cur, customParameters }, fillets: withRadii(selectedShape.fillets || []) }, subtractions, size);
+    if (!needsSolid) { updateShape(selectedShape.id, { rotation, scale, parameters }); return; }
+    const r = await rebuildBodySolid({ parameters }, { width, height, depth });
     updateShape(selectedShape.id, {
-      geometry: r.geometry, replicadShape: r.replicadShape, fillets: r.fillets,
-      ...(hasSubtractionChanges ? { subtractionGeometries: subtractions } : {}),
-      position: [...selectedShape.position] as Vec3,
-      rotation, scale: shapeScale, vertexModifications: vMods,
+      geometry: r.geometry, replicadShape: r.replicadShape,
+      position: [...selectedShape.position] as Vec3, rotation, scale,
       // Çizim adımı olan gövdede uygulanamayan adımlar tazelenir (adımı olmayan gövdede parametreler eskisiyle aynı kalır).
-      parameters: { ...parameters, scaledBaseVertices: r.scaledBaseVertices, ...(parameters.sketchFeatures?.length ? { sketchErrors: r.sketchErrors } : {}) },
+      parameters: { ...parameters, ...(parameters.sketchFeatures?.length ? { sketchErrors: r.sketchErrors } : {}) },
     });
     if (driven) shiftBodyLocal(selectedShape.id, driven.shift);
   } catch (error) {
     console.error('Failed to update parameters:', error);
-    updateShape(selectedShape.id, { parameters: { ...selectedShape.parameters, width, height, depth, customParameters }, vertexModifications: [] });
+    updateShape(selectedShape.id, { parameters: { ...selectedShape.parameters, width, height, depth, customParameters } });
   }
 }
 
@@ -2178,10 +1870,10 @@ export function largestFaceNormal(geo: any, tol = 0): THREE.Vector3 | null {
   return best ? (best as { n: THREE.Vector3; a: number }).n.clone() : null;
 }
 /** VF-eğimli levha (eğilmiş gövde yüzünde): dönüş adımı yok ama DÖNMÜŞ kardeş gibi ele alınır. */
-/** Gövdede eksen-dışı (eğik) ya da eğri yüz var mı (çizimle biçimlenmiş; vertex düzenlemeli gövde ayrı yoldadır). */
+/** Gövdede eksen-dışı (eğik) ya da eğri yüz var mı (çizimle biçimlenmiş). */
 const _shapedBodyCache = new WeakMap<THREE.BufferGeometry, boolean>();
-export function isShapedBody(parent: { geometry?: THREE.BufferGeometry | null; vertexModifications?: unknown[] } | null | undefined): boolean {
-  if (!parent?.geometry || (Array.isArray(parent.vertexModifications) && parent.vertexModifications.length > 0)) return false;
+export function isShapedBody(parent: { geometry?: THREE.BufferGeometry | null } | null | undefined): boolean {
+  if (!parent?.geometry) return false;
   const geo = parent.geometry;
   let v = _shapedBodyCache.get(geo);
   if (v === undefined) {

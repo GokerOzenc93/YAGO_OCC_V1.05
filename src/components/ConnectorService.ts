@@ -16,7 +16,7 @@ import {
   type PanelSurfaceRule, type PanelTypeConfig, type PanelTypeId, type PanelTypeRule, type Shape, type VirtualFace, panelOfVf, requestRebuild, shapeById, useAppStore,
   vfOfPanel, type BandTypeId, type EdgeBandConfig, type EdgeBandRule,
 } from '../store';
-import { type Vec3, effectiveBodyGeometry, genId, getFacesAndGroups, largestFaceNormal, localBboxOf, outlineGeometry, panelHasRotation, round1, isFaceKind, roleOfNormal } from './Geometry';
+import { type Vec3, genId, getFacesAndGroups, largestFaceNormal, localBboxOf, outlineGeometry, panelHasRotation, round1, isFaceKind, roleOfNormal } from './Geometry';
 import { type ToolSpec } from './CutWorker';
 import { type HoleCutter, CONNECTOR_LAYOUTS_ID, EDGE_BAND_CONFIG_ID, PANEL_TYPE_CONFIG_ID, holeCutterBox, holeCutterOf, importAccessoryFile, libraryDelete, libraryPut } from './AccessoryService';
 import { isDoorPanel } from './DoorService';
@@ -127,7 +127,7 @@ export function surfaceRuleOf(surface: PanelSurface, cfg: PanelTypeConfig = useA
 
 // ═════════════════════════════════════════════════ 2. OTOMATİK TİP ═════════════════════════════════════════════════
 const dot3 = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-const bodyBoxOf = (body: Shape): THREE.Box3 | null => localBboxOf(effectiveBodyGeometry(body));
+const bodyBoxOf = (body: Shape): THREE.Box3 | null => localBboxOf(body.geometry);
 /** Gövde-yerel yön → rol: o yöne bakan gövde yüzünün rolü (elle verilmiş roller dahil); yüz yoksa ön yöne göre normalden.
  *  `at` (gövde-yerel nokta: kenarın ortası, panelin merkezi) verilirse o yöne bakan yüzlerden noktanın ÖNÜNDEKİ yüz seçilir — düzlemi
  *  noktanın ilerisinde (ya da üstünde) ve sınırları noktanın izdüşümünü kapsayan, en yakın olan. L / çentikli gövdede aynı yöne bakan iki yüzün
@@ -1338,7 +1338,7 @@ export function bodyBanding(bodyId: string, st: St = useAppStore.getState()): Pa
     const vf = vfOfPanel(p, st.virtualFaces), geo = outlineGeometry(p); if (!vf || !geo?.getAttribute('position')) continue;
     srcs.push({ panel: p, vf, geo, type: bandTypeOf(vf, st), thin: bandThinDir(p, vf, geo), door: isDoorPanel(p) });
   }
-  const sig = `${srcs.map(s => `${s.panel.id}:${s.geo.uuid}:${s.type}:${s.vf.edgeBands ? JSON.stringify(s.vf.edgeBands) : ''}`).join('|')}#${JSON.stringify(cfg.rules)}#${cfg.skipJoints}${cfg.deduct}#${bodyFrontAxis(body, st).facing}#${effectiveBodyGeometry(body).uuid}#${JSON.stringify(bodyFaceRolesOf(body))}`;
+  const sig = `${srcs.map(s => `${s.panel.id}:${s.geo.uuid}:${s.type}:${s.vf.edgeBands ? JSON.stringify(s.vf.edgeBands) : ''}`).join('|')}#${JSON.stringify(cfg.rules)}#${cfg.skipJoints}${cfg.deduct}#${bodyFrontAxis(body, st).facing}#${body.geometry.uuid}#${JSON.stringify(bodyFaceRolesOf(body))}`;
   const hit = _bandBody.get(bodyId);
   if (hit && hit.sig === sig) return hit.list;
   // Panel başına korumalı: beklenmedik bir ağ yalnız o paneli bantsız (boyasız) bırakır, gövdenin kalanı etkilenmez.

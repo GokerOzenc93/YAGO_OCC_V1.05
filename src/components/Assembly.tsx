@@ -32,7 +32,7 @@ import {
   setDoorJointRef, setDoorJointOverlay,
 } from './DoorService';
 import {
-  round1, localBboxOf, effectiveBodyGeometry, type ExtrudeStep, type TransformStep, updateExtrudeStep, updateTransformStep, deleteExtrudeStep, deleteTransformStep,
+  round1, localBboxOf, type ExtrudeStep, type TransformStep, updateExtrudeStep, updateTransformStep, deleteExtrudeStep, deleteTransformStep,
   createPanelFromVirtualFace, convertReplicadToThreeGeometry, genId, type Pt, autoLegPoints, edgeRoles, polyExtent, rectPoly, toFacing,
 } from './Geometry';
 import {
@@ -1676,7 +1676,7 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
 }) {
   const [hint, setHint] = useState<string | null>(null);
   const { cell, num } = hintCells(hint, setHint);
-  const bb = localBboxOf(effectiveBodyGeometry(shape));
+  const bb = localBboxOf(shape.geometry);
   const W = bb ? bb.max.x - bb.min.x : 600, H = bb ? bb.max.y - bb.min.y : 720, D = bb ? bb.max.z - bb.min.z : 560;
   const joins = effectiveJoins(cfg);
   const isPlinth = cfg.base === 'plinth', isLegs = cfg.base === 'legs', isPlain = cfg.base === 'plain';

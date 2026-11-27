@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import * as THREE from 'three';
 import { createRoot } from 'react-dom/client';
 import { type Shape, useStoreFields, useAppStore, requestRebuild } from './store';
 import {
@@ -72,36 +71,22 @@ function App() {
 
   const handleOpenCatalog = async () => { await loadCatalogItems(); setCatalogOpen(true); };
 
-  // Katalogdan yükle: kutu − çıkarmalar (+ kayıtlı filletler).
+  // Katalogdan yükle: kayıtlı ölçülerde kutu.
   const handleLoadFromCatalog = async (item: CatalogItem) => {
     try {
       const geometryData = item.geometry_data, shapeParams = item.shape_parameters || {};
-      const subtractions = (item.subtraction_geometries || []).filter((s: any) => s !== null);
-      const fillets = item.fillets || [];
       const size = {
         width: shapeParams.width || geometryData.parameters?.width || 600,
         height: shapeParams.height || geometryData.parameters?.height || 600,
         depth: shapeParams.depth || geometryData.parameters?.depth || 600,
       };
-      const r = await rebuildBodySolid({ parameters: size, fillets }, subtractions, size, false);
-      const restoredSubtractionGeometries = subtractions.map((sub: any) => {
-        const w = parseFloat(sub.parameters?.width) || sub.geometrySize?.[0] || 100;
-        const h = parseFloat(sub.parameters?.height) || sub.geometrySize?.[1] || 100;
-        const d = parseFloat(sub.parameters?.depth) || sub.geometrySize?.[2] || 100;
-        const geometry = new THREE.BoxGeometry(w, h, d); geometry.translate(w / 2, h / 2, d / 2);
-        return {
-          geometry, relativeOffset: sub.relativeOffset || [0, 0, 0], relativeRotation: sub.relativeRotation || [0, 0, 0],
-          scale: sub.scale || [1, 1, 1], parameters: sub.parameters,
-        };
-      });
+      const r = await rebuildBodySolid({ parameters: size }, size);
       addShape({
         id: `${geometryData.type || 'box'}-${Date.now()}`, type: geometryData.type || 'box',
         geometry: r.geometry, replicadShape: r.replicadShape,
         position: [0, 0, 0], rotation: geometryData.rotation || [0, 0, 0], scale: geometryData.scale || [1, 1, 1],
         color: shapeParams.color || geometryData.color || '#2563eb',
-        parameters: { ...size, scaledBaseVertices: r.scaledBaseVertices },
-        vertexModifications: shapeParams.vertexModifications || geometryData.vertexModifications || [],
-        subtractionGeometries: restoredSubtractionGeometries, fillets: r.fillets,
+        parameters: { ...size },
       });
       setCatalogOpen(false);
     } catch (error) {

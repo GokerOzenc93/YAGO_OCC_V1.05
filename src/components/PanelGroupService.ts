@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import {
   type Point2D, type Vec3, panelHasRotation, largestFaceNormal, clipHalfPlane, frontHullOf, clipPolyToConvex, polyArea, genId, round1, localBboxOf,
-  effectiveBodyGeometry, getFacesAndGroups, vertexModsKey, isFlatNormal, matchReferenceFace, getShapeMatrix, dominantAxisLabel, type FaceData, type CoplanarFaceGroup,
+  getFacesAndGroups, isFlatNormal, matchReferenceFace, getShapeMatrix, dominantAxisLabel, type FaceData, type CoplanarFaceGroup,
   computeFaceComponentContour, computeFreeRegionLocal, fromPlaneUV, vec3, createFaceDescriptor, createPanelFromVirtualFace, convertReplicadToThreeGeometry,
-  type MoveTransformStep, type ExtrudeStep, axisDirToVec, panelBehindStackPlane, clipRegionToRailStrip, toUV, applyRailExt, initReplicad, rebuildBodySolid,
+  type MoveTransformStep, type ExtrudeStep, axisDirToVec, panelBehindStackPlane, clipRegionToRailStrip, toUV, applyRailExt, initReplicad, rebuildBodySolid, createReplicadBoxAt,
   panelFrontHull, isShapedBody, uniqueMeshPoints, projRange, type EdgeRole, type Pt, cleanPoly, edgeRoles, pointInPoly,
 } from './Geometry';
 import {
@@ -650,7 +650,7 @@ const pointFromFrac = (body: CavityBox, f: Vec3): Vec3 => [0, 1, 2].map(a => bod
 const toCavityBox = (bb: THREE.Box3): CavityBox => ({ min: [bb.min.x, bb.min.y, bb.min.z], max: [bb.max.x, bb.max.y, bb.max.z] });
 
 export function bodyLocalBox(parent: Shape): CavityBox | null {
-  const bb = localBboxOf(effectiveBodyGeometry(parent));
+  const bb = localBboxOf(parent.geometry);
   return bb ? toCavityBox(bb) : null;
 }
 
@@ -658,7 +658,7 @@ export function bodyLocalBox(parent: Shape): CavityBox | null {
  *  kapak yüzle gider). Uygun yüz yoksa saklı kutu kalır. */
 const _faceBoxCache = new Map<string, Array<{ box: CavityBox }>>();
 export function liveFaceBox(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, stored: CavityBox): CavityBox {
-  const geo = effectiveBodyGeometry(parent);
+  const geo = parent.geometry;
   if (!geo) return stored;
   const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined;
   const key = `${geo.uuid}|${pos?.version ?? 0}|${axis}${side}`;
@@ -1086,13 +1086,13 @@ function buildCavityGrid(
   parent: Shape, obstacles: CavityBox[], splitBoxes: CavityBox[] = [], tiltFaces: TiltFace[] = [], extraPlanes: StepPlane[] = [],
   solids: SolidObstacle[] = [],
 ): CavityGrid | null {
-  const geo = effectiveBodyGeometry(parent);
+  const geo = parent.geometry;
   const body = bodyLocalBox(parent);
   if (!geo || !body) return null;
   const tiltKey = tiltFaces.map(f => `${f.id}:${f.n.map(x => x.toFixed(3)).join(',')}:${f.d.toFixed(1)}`).join(';');
   const planesKey = extraPlanes.map(e => `${e.axis}:${e.coord.toFixed(1)}`).join(',');
   const solidKey = solids.map(x => x.key).join(';');
-  const key = `${geo.uuid}|${vertexModsKey(parent.vertexModifications || [])}|${boxesKey(obstacles)}|${boxesKey(splitBoxes)}|${tiltKey}|${planesKey}|${solidKey}`;
+  const key = `${geo.uuid}|${boxesKey(obstacles)}|${boxesKey(splitBoxes)}|${tiltKey}|${planesKey}|${solidKey}`;
   const hit = _gridCache.get(key);
   if (hit) return hit;
 
@@ -1114,8 +1114,7 @@ function buildCavityGrid(
   const nx = xs.length - 1, ny = ys.length - 1, nz = zs.length - 1;
   const grid: CavityGrid = { body, xs, ys, zs, nx, ny, nz, free: new Uint8Array(nx * ny * nz), obstacles, tiltFaces, ...(solids.length ? { solids } : {}) };
   // Düz kutu gövdede mesh içi testine gerek yok.
-  const modified = !!parent.vertexModifications?.length || !!parent.subtractionGeometries?.some(Boolean) || !!parent.fillets?.length;
-  const inside = groups.length === 6 && axisFaces === 6 && !modified ? null : makeInsideMeshTest(geo);
+  const inside = groups.length === 6 && axisFaces === 6 ? null : makeInsideMeshTest(geo);
   if (inside) grid.inside = inside;
   // Hücre gövdenin içinde mi: merkez, değilse 8 iç örnek (eğik üstte büyük hücrenin merkezi dışarıda kalabilir). Kısmen içerideki serbest;
   // eğri panel katısı da aynı kuralla.
@@ -2905,7 +2904,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
 async function applyQuickBodyInner(shapeId: string, cfg: QuickBodyConfig): Promise<QuickBodyResult | null> {
   const st = useAppStore.getState();
   const body = shapeById(shapeId, st.shapes); if (!body) return null;
-  const eff = effectiveBodyGeometry(body);
+  const eff = body.geometry;
   const { faces, groups } = getFacesAndGroups(eff);
   const box = localBboxOf(eff); if (!box) return null;
   const ctx: FaceCtx = { body, eff, faces, groups, W2L: getShapeMatrix(body).clone().invert(), box };
@@ -3367,13 +3366,14 @@ export async function railsScenario(scen: string, opt: RailsScenarioOptions = {}
     if (pending.length) { await requestRebuild(bodyId); await whenRebuildIdle(bodyId); }
     return pending.length;
   };
+  // L gövde: kutudan çentik kutusu doğrudan kesilir (test gövdesi; gövdeye kayıt yazılmaz, yeniden kurulmaz).
   const makeBody = async (id: string, W: number, H: number, D: number, notch?: { x0: number; z0: number; w: number; d: number }): Promise<Shape> => {
     const size = { width: W, height: H, depth: D };
-    const subs = notch ? [{ parameters: { width: notch.w, height: H + 2, depth: notch.d }, relativeOffset: [notch.x0, -1, notch.z0] as Vec3 }] : [];
-    const r = await rebuildBodySolid({ parameters: size }, subs, size, false);
+    let solid = (await rebuildBodySolid({ parameters: size }, size, false)).replicadShape;
+    if (notch) solid = solid.cut(await createReplicadBoxAt([notch.x0, -1, notch.z0], [notch.x0 + notch.w, H + 1, notch.z0 + notch.d]));
     return {
-      id, type: 'box', geometry: r.geometry, replicadShape: r.replicadShape, position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], color: '#fff',
-      parameters: { ...size, scaledBaseVertices: r.scaledBaseVertices }, vertexModifications: [], subtractionGeometries: [], fillets: [],
+      id, type: 'box', geometry: convertReplicadToThreeGeometry(solid), replicadShape: solid, position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], color: '#fff',
+      parameters: { ...size },
     } as unknown as Shape;
   };
   const rail = (kind: 'horizontal' | 'vertical' | 'none', size = 100, setback = 0) => ({ kind, size, setback }) as RailSpec;

@@ -7,7 +7,7 @@ import {
   type CavityBox, type FaceDescriptor, type Shape, type VirtualFace, useAppStore, shapeById, childPanelsOf, vfOfPanel, panelOfVf, requestRebuild,
 } from '../store';
 import {
-  type AxisDir, type FaceData, type Vec3, axisDirToVec, computeFaceComponentContour, createFaceDescriptor, effectiveBodyGeometry, genId, getFacesAndGroups, localBboxOf,
+  type AxisDir, type FaceData, type Vec3, axisDirToVec, computeFaceComponentContour, createFaceDescriptor, genId, getFacesAndGroups, localBboxOf,
   round1, type EdgeRole, type FaceKind, type FaceRole, type LegRule, type Pt, isFaceKind, autoLegPoints, clampInsidePoly, cleanPoly, clipPolyToRect, edgeRoles,
   fromFacing, rectPoly, roleOfNormal, signedArea, toFacing,
 } from './Geometry';
@@ -126,7 +126,7 @@ const _facesCache = new Map<string, BodyFace[]>();
 /** Gövdenin DÜZ yüzleri rolleriyle (otomatik + parametre); sıra: ön, arka, sol, sağ, üst, alt — her rolde alan azalan. */
 export function bodyFaces(body: Shape | undefined | null, st = useAppStore.getState()): BodyFace[] {
   if (!body?.geometry) return [];
-  const geo = effectiveBodyGeometry(body);
+  const geo = body.geometry;
   const facing = bodyFrontAxis(body, st).facing;
   const fr = bodyFaceRolesOf(body);
   const overrides = fr.overrides ?? [];
@@ -219,7 +219,7 @@ export const bodyFaceRoleAt = (body: Shape | undefined | null, p: Vec3, n: Pt, s
 /* ───────── ETKİN HACİM: bölge ───────── */
 /** Gövdenin zemini (yerel alt düzlem). */
 const floorOf = (body: Shape | undefined): number | null => {
-  const bb = body ? localBboxOf(effectiveBodyGeometry(body)) : null;
+  const bb = body ? localBboxOf(body.geometry) : null;
   return bb ? bb.min.y : null;
 };
 /** Bağlı alt panelin alt yüzü (gövde-yerel y); panel yoksa null. */
@@ -297,7 +297,7 @@ export function plinthRegionOf(s: PlinthSet, shapes = useAppStore.getState().sha
   if (!body?.geometry) return { box, bbox: box, boxes: [box], poly: rectPoly(box.min[0], box.min[2], box.max[0], box.max[2]), carved: false };
   const myIdx = plinthVfIndex(s, vfs);
   const obstacles = earlierSlabs(myIdx === Number.MAX_SAFE_INTEGER ? -1 : myIdx, box, body, shapes, vfs);
-  const geo = effectiveBodyGeometry(body);
+  const geo = body.geometry;
   const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined;
   const key = `${body.id}|${geo.uuid}|${pos?.version ?? 0}|${boxKey(box)}|${obstacles.map(boxKey).join(';')}`;
   return regionForBox(body, box, obstacles, key);
@@ -421,7 +421,7 @@ export function plinthLegSpots(s: PlinthSet, shapes = useAppStore.getState().sha
 const _outlineCache = new WeakMap<object, Pt[] | null>();
 /** Gövde taban yüzünün (normal −Y, en alçak) dış çevresi, (x, z) — pahlı / eğik kenar tam. */
 function bodyFloorOutline(body: Shape): Pt[] | null {
-  const geo = effectiveBodyGeometry(body);
+  const geo = body.geometry;
   if (!geo) return null;
   if (_outlineCache.has(geo)) return _outlineCache.get(geo) ?? null;
   let out: Pt[] | null = null;
@@ -460,13 +460,13 @@ function bottomPanelOf(body: Shape, shapes: Shape[], vfs: VirtualFace[]): { pane
 
 /** Aday hacimler (zeminden): (1) yükseltilmiş alt panelin altı (panele bağlanır), (2) gövde içinde zemin → varsayılan yükseklik. */
 export function plinthCandidates(body: Shape, shapes: Shape[], vfs: VirtualFace[], height: number, facing: PlinthFacing = bodyFrontAxis(body).facing): PlinthPick[] {
-  const bb = localBboxOf(effectiveBodyGeometry(body)); if (!bb) return [];
+  const bb = localBboxOf(body.geometry); if (!bb) return [];
   const H = Math.max(1, height);
   const x0 = bb.min.x, x1 = bb.max.x, z0 = bb.min.z, z1 = bb.max.z, y0 = bb.min.y;
   const out: PlinthPick[] = [];
   const shaped = (p: PlinthPick): PlinthPick => {
     const obstacles = earlierSlabs(Number.MAX_SAFE_INTEGER - 1, p.box, body, shapes, vfs);
-    const geo = effectiveBodyGeometry(body);
+    const geo = body.geometry;
     const pos = geo?.getAttribute('position') as THREE.BufferAttribute | undefined;
     const r = regionForBox(body, p.box, obstacles, `pick|${body.id}|${geo?.uuid}|${pos?.version ?? 0}|${boxKey(p.box)}|${obstacles.map(boxKey).join(';')}`);
     return { ...p, boxes: r.boxes, poly: r.poly };
@@ -484,7 +484,7 @@ export function plinthCandidates(body: Shape, shapes: Shape[], vfs: VirtualFace[
 
 /** Seçme kutusu (gövde-yerel): gövdenin kendisi — tıklama her iki adayı da verir. */
 export function plinthPickBox(body: Shape): CavityBox | null {
-  const bb = localBboxOf(effectiveBodyGeometry(body)); if (!bb) return null;
+  const bb = localBboxOf(body.geometry); if (!bb) return null;
   return { min: [bb.min.x, bb.min.y, bb.min.z], max: [bb.max.x, bb.max.y, bb.max.z] };
 }
 
@@ -587,7 +587,7 @@ export function syncQuickBodyPlinth(shapeId: string, legs: PlinthLegs | null, bo
   const existing = quickPlinthSetOf(shapeId, st.plinthSets);
   // Ayak kalkınca setin sıralama VF'si de düşer (yalnız set silinirse listede görünmeyen yetim VF kalır, sonraki ekleme ikinci VF açar).
   if (!legs) { removeQuickBodyPlinth(shapeId); return; }
-  const bb = localBboxOf(effectiveBodyGeometry(body)); if (!bb) return;
+  const bb = localBboxOf(body.geometry); if (!bb) return;
   const box: CavityBox = { min: [bb.min.x, bb.min.y, bb.min.z], max: [bb.max.x, bb.min.y + Math.max(1, lift), bb.max.z] };
   const set = existing ?? createPlinthSet(shapeId, box, legs, { name: 'Legs', bottomVfId, quickBody: true });
   // Yeniden kurulumda setin ayak listesi (Auto / Custom + Δ) korunur — hızlı gövde yalnız düzeni / modeli yazar.

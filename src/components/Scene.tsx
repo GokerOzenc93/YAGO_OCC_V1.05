@@ -4,8 +4,8 @@ import { Line, TransformControls, PerspectiveCamera, OrthographicCamera, Html, O
 import { useThree, useFrame, Canvas } from '@react-three/fiber';
 import { RefreshCw } from 'lucide-react';
 import {
-  type DoorGroup, engineLoad, entryGate, useAppStore, shapeById, useStoreFields, ViewMode, type VirtualFace, childPanelsOf, vfOfPanel, type FilletInfo, type CavityPick,
-  type XformDelta, applyXformDelta, Tool, type Shape, CameraType, requestRebuild, type SceneToolStatus, type GuideKey, type PanelGroup,
+  type DoorGroup, engineLoad, entryGate, useAppStore, shapeById, useStoreFields, ViewMode, type VirtualFace, childPanelsOf, vfOfPanel, type CavityPick,
+  type XformDelta, applyXformDelta, Tool, type Shape, CameraType, type SceneToolStatus, type GuideKey, type PanelGroup,
 } from '../store';
 import {
   type DoorMemberRect, doorMembersOf, doorPlaneAxes, isDoorPanel, splitDoorAtPanel, collectDoorCuts, DOOR_THICKNESS, confirmDoorPick, doorSlabPolygon,
@@ -14,9 +14,9 @@ import {
 import {
   localBboxOf, type Vec3, edgePointsOf, planeCornerShift, planeNeighbourNormal, planeSpanOf, type FaceData, type CoplanarFaceGroup, createFaceHighlightGeometry,
   flatGroupOfFace, getShapeMatrix, REF_COLORS, confirmRefFaceExtrude, getFacesAndGroups, computeFaceComponentContour, panelInnerBigFace, panelBehindStackPlane,
-  computeFreeRegionLocal, genId, createFaceDescriptor, getFacePlaneAxes, earClipTriangulate, effectiveBodyGeometry, pointInTriangle3D, findPanelCoveringPoint,
-  groupIndexOfFace, panelHasRotation, createGroupBoundaryEdges, applyFillets, matchCurvedFaceGroup, convertReplicadToThreeGeometry, type AxisLetter, type AxisDir,
-  axisDirToVec, uniqueMeshPoints, resolveBaseVertices, composeVertexTargets, confirmPanelMoveRef, confirmPanelRotateRef, axisIndexOf, getReplicadVertices, round1,
+  computeFreeRegionLocal, genId, createFaceDescriptor, getFacePlaneAxes, earClipTriangulate, pointInTriangle3D, findPanelCoveringPoint,
+  groupIndexOfFace, panelHasRotation, matchCurvedFaceGroup, type AxisLetter, type AxisDir,
+  axisDirToVec, uniqueMeshPoints, confirmPanelMoveRef, confirmPanelRotateRef, axisIndexOf, round1,
   swingPoints, footprintGeometry, outlineGeometry, isPostSketchFace, dominantAxisLabel, executeFaceExtrude, mapAxisToVfLocal, angleToTouchPlane, executePanelMove,
   executePanelMoveFixed, executePanelRotate, FACE_KINDS, FACE_KIND_LABEL, FACE_ROLES, FACE_ROLE_LABEL, type FaceKind, type FaceRole, faceRoleText,
 } from './Geometry';
@@ -41,7 +41,7 @@ import { DimLayer, DraftLayer } from './DraftView';
 import { useDraft } from './Draft';
 
 // ═════════════════════════════════════════════════ 1. SAHNE NESNELERİ ═════════════════════════════════════════════════
-/* Sahne nesneleri — şekil başına çizilenler: PanelDrawing, FaceOverlays (yüz / VF / fillet / hacim / kapak seçimi), ShapeWithTransform.
+/* Sahne nesneleri — şekil başına çizilenler: PanelDrawing, FaceOverlays (yüz / VF / hacim / kapak seçimi), ShapeWithTransform.
    Seçili panel taranmaz: dolgu çelik-mavi tona karışır, kenar koyu petrol. Her kapakta şemadaki açılış işareti. */
 
 const PANEL_COLORS = {
@@ -1045,8 +1045,7 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
   const [pending, setPending] = useState<PendingPreview | null>(null);
   const lastClickRef = useRef<{ point: THREE.Vector3; groupIndex: number; cycleIndex: number } | null>(null);
   const shapeVirtualFaces = useMemo(() => virtualFaces.filter(vf => vf.shapeId === shape.id && !vf.plinthId), [virtualFaces, shape.id]);
-  const vertexModsKeyStr = JSON.stringify(shape.vertexModifications || []);
-  const effGeometry = useMemo(() => effectiveBodyGeometry(shape), [shape.geometry, shape.geometry?.uuid, vertexModsKeyStr]);
+  const effGeometry: THREE.BufferGeometry = shape.geometry;
   const { localToWorld, worldToLocal } = useShapeMatrices(shape);
   const normalMatrix = useMemo(() => new THREE.Matrix3().getNormalMatrix(localToWorld), [localToWorld]);
   const { faces, groups: faceGroups } = useFaceGroups(effGeometry, () => { setPending(null); lastClickRef.current = null; });
@@ -1325,92 +1324,6 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
         </>
       )}
     </>
-  );
-};
-
-export const FaceEditor: React.FC<{ shape: any }> = ({ shape }) => {
-  const { filletMode, selectedFilletFaces, addFilletFace, addFilletFaceData } = useStoreFields('filletMode', 'selectedFilletFaces', 'addFilletFace',
-    'addFilletFaceData');
-  const { faces, groups: faceGroups } = useFaceGroups(shape.geometry);
-  const [hoveredGroupIndex, setHoveredGroupIndex] = useState<number | null>(null);
-
-  /** Düzlem sabiti eksen-hizalı yüzde düz üçgenlerin UÇ değerinden alınır (fillet doğruluğu). */
-  const handleFaceSelection = (groupIndex: number) => {
-    if (!filletMode || selectedFilletFaces.length >= 2) return;
-    const group = faceGroups[groupIndex];
-    if (!group) return;
-    const n = group.normal;
-    const ax = [Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)];
-    const k = ax.indexOf(Math.max(...ax));
-    let planeD = n.dot(group.center);
-    if (ax[k] > 0.9 && shape.geometry) {
-      const inGroup = faces.filter(f => group.faceIndices.includes(f.faceIndex));
-      const flat = inGroup.filter(f => !f.isCurved);
-      const vals = (flat.length > 0 ? flat : inGroup).flatMap(f => f.vertices).map(v => v.getComponent(k));
-      if (vals.length > 0) planeD = n.getComponent(k) * (n.getComponent(k) > 0 ? Math.max(...vals) : Math.min(...vals));
-    }
-    addFilletFace(groupIndex);
-    addFilletFaceData({ normal: [n.x, n.y, n.z], center: [group.center.x, group.center.y, group.center.z], planeD });
-  };
-  const handlePointerMove = (e: any) => {
-    if (faces.length === 0) return;
-    e.stopPropagation();
-    const gi = groupIndexOfFace(faceGroups, e.faceIndex);
-    if (gi !== -1) setHoveredGroupIndex(gi);
-  };
-  const selectedFilletGeometries = useMemo(() => (!filletMode || selectedFilletFaces.length === 0) ? []
-    : selectedFilletFaces.map(gi => groupHighlight(faces, faceGroups, gi)).filter((g): g is THREE.BufferGeometry => !!g),
-  [filletMode, selectedFilletFaces, faceGroups, faces]);
-  const highlightGeometry = useMemo(() => groupHighlight(faces, faceGroups, hoveredGroupIndex), [hoveredGroupIndex, faceGroups, faces]);
-  const boundaryEdgesGeometry = useMemo(() => (faces.length === 0 || faceGroups.length === 0) ? null : createGroupBoundaryEdges(faces, faceGroups),
-    [faces, faceGroups]);
-  return (
-    <>
-      <mesh geometry={shape.geometry} visible={false} onPointerMove={handlePointerMove} onPointerOut={(e) => { e.stopPropagation(); setHoveredGroupIndex(null); }}
-        onPointerDown={(e) => { e.stopPropagation(); if (e.button === 2 && hoveredGroupIndex !== null) handleFaceSelection(hoveredGroupIndex); }} />
-      {selectedFilletGeometries.map((geom, idx) => (
-        <mesh key={`selected-${idx}`} geometry={geom}>{highlightMat(SEL_COLORS.active, SEL_COLORS.faceActiveOpacity)}</mesh>
-      ))}
-      {highlightGeometry && !selectedFilletFaces.includes(hoveredGroupIndex!) && (
-        <mesh geometry={highlightGeometry}>{highlightMat(SEL_COLORS.hover, SEL_COLORS.faceHoverOpacity)}</mesh>
-      )}
-      {boundaryEdgesGeometry && (
-        <lineSegments geometry={boundaryEdgesGeometry}>
-          <lineBasicMaterial color={0xffffff} linewidth={2} depthTest={false} transparent opacity={0.9} />
-        </lineSegments>
-      )}
-    </>
-  );
-};
-
-export async function applyFilletToShape(shape: any, selectedFilletFaces: number[], selectedFilletFaceData: any[], radius: number)
-  : Promise<{ geometry: THREE.BufferGeometry; replicadShape: any; filletData: FilletInfo }> {
-  if (!shape || !shape.replicadShape) throw new Error('Shape or replicadShape not found');
-  if (selectedFilletFaces.length !== 2 || selectedFilletFaceData.length !== 2) throw new Error('Two faces must be selected for fillet operation');
-  const { faces, groups } = getFacesAndGroups(shape.geometry);
-  const faceOf = (gi: number) => faces.find(f => groups[gi].faceIndices.includes(f.faceIndex));
-  const f1 = faceOf(selectedFilletFaces[0]), f2 = faceOf(selectedFilletFaces[1]);
-  if (!f1 || !f2) throw new Error('Could not find face data for descriptors');
-  const originalSize = { width: shape.parameters.width || 1, height: shape.parameters.height || 1, depth: shape.parameters.depth || 1 };
-  const filletData: FilletInfo = {
-    face1Descriptor: createFaceDescriptor(f1, shape.geometry), face2Descriptor: createFaceDescriptor(f2, shape.geometry),
-    face1Data: selectedFilletFaceData[0], face2Data: selectedFilletFaceData[1], radius, originalSize,
-  };
-  const filletedShape = await applyFillets(shape.replicadShape, [filletData], originalSize);
-  return { geometry: convertReplicadToThreeGeometry(filletedShape), replicadShape: filletedShape, filletData };
-}
-
-export const FilletEdgeLines: React.FC<{ shape: any }> = ({ shape }) => {
-  const geo = useMemo(() => {
-    if (!shape.geometry) return null;
-    const { faces, groups } = getFacesAndGroups(shape.geometry);
-    return createGroupBoundaryEdges(faces, groups);
-  }, [shape.geometry]);
-  if (!geo) return null;
-  return (
-    <lineSegments geometry={geo}>
-      <lineBasicMaterial color="#000000" linewidth={2} opacity={1} transparent={false} depthTest={true} />
-    </lineSegments>
   );
 };
 
@@ -1698,9 +1611,9 @@ type SlabPickProps<P extends { key: string }> = {
 function SlabPickOverlay<P extends { key: string }>({ shape, active, candidates, index, setPick, thickness, slabOf, deps, candidatesAt, confirm, refineOf }: SlabPickProps<P>) {
   const { worldToLocal } = useShapeMatrices(shape);
   const body = useMemo((): BodyBox | null => {
-    const bb = localBboxOf(effectiveBodyGeometry(shape));
+    const bb = localBboxOf(shape.geometry);
     return bb ? { min: [bb.min.x, bb.min.y, bb.min.z], max: [bb.max.x, bb.max.y, bb.max.z] } : null;
-  }, [shape.geometry, shape.vertexModifications]);
+  }, [shape.geometry]);
   const pickGeo = useMemo(() => (body ? pickBoxGeometry(body) : null), [body]);
   useDisposable(pickGeo);
   const selected = candidates[index] || null;
@@ -1834,37 +1747,9 @@ const deltaOf = (from: Xform, to: Xform): XformDelta => ({
   sd: [0, 1, 2].map(i => to.scale[i] / from.scale[i]),
 });
 
-type SubtractionMeshProps = {
-  subtraction: any; index: number; isHovered: boolean; isSubtractionSelected: boolean; isSelected: boolean;
-  setHovered: (i: number | null) => void; setSelected: (i: number | null) => void;
-};
-const SubtractionMesh: React.FC<SubtractionMeshProps> =
-  React.memo(({ subtraction, index, isHovered, isSubtractionSelected, isSelected, setHovered, setSelected }) => {
-    // Merkezli geometri (eski kayıtlar) kök köşeye ötelenir.
-    const meshOffset = useMemo<Vec3>(() => {
-      const box = localBboxOf(subtraction.geometry)!;
-      const size = box.getSize(new THREE.Vector3()), center = box.getCenter(new THREE.Vector3());
-      const isCentered = Math.abs(center.x) < 0.01 && Math.abs(center.y) < 0.01 && Math.abs(center.z) < 0.01;
-      return isCentered ? [size.x / 2, size.y / 2, size.z / 2] : [0, 0, 0];
-    }, [subtraction.geometry]);
-    return (
-      <group position={subtraction.relativeOffset} rotation={subtraction.relativeRotation}>
-        <mesh geometry={subtraction.geometry} position={meshOffset}
-          onPointerOver={(e) => { e.stopPropagation(); if (isSelected) setHovered(index); }}
-          onPointerOut={(e) => { e.stopPropagation(); setHovered(null); }}
-          onClick={(e) => { e.stopPropagation(); if (isSelected) setSelected(isSubtractionSelected ? null : index); }}>
-          <meshStandardMaterial color={(isHovered || isSubtractionSelected) ? 0xff0000 : 0xffff00} transparent opacity={0.35} depthWrite={false}
-            side={THREE.DoubleSide} />
-        </mesh>
-      </group>
-    );
-  });
-SubtractionMesh.displayName = 'SubtractionMesh';
-
 export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orbitControlsRef: any }> = React.memo(({ shape, isSelected, orbitControlsRef }) => {
   const S = useStoreFields('selectShape', 'selectSecondaryShape', 'secondarySelectedShapeId', 'selectedShapeId', 'activeTool', 'viewMode',
-    'subtractionViewMode', 'hoveredSubtractionIndex', 'setHoveredSubtractionIndex', 'selectedSubtractionIndex', 'setSelectedSubtractionIndex',
-    'showOutlines', 'setSelectedPanelRow', 'panelSelectMode', 'faceEditMode', 'filletMode', 'raycastMode', 'shapes', 'faceExtrudeMode',
+    'showOutlines', 'setSelectedPanelRow', 'panelSelectMode', 'raycastMode', 'shapes', 'faceExtrudeMode',
     'faceExtrudeValueMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'faceExtrudeRefCandidate', 'setFaceExtrudeRefCandidate',
     'panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelRotateMode', 'volumePickMode',
     'faceExtrudeCavityGroupId', 'doorPickMode', 'backPickMode', 'plinthPickMode', 'faceExtrudePlinthId', 'faceRoleHover', 'showFaceRoles',
@@ -1882,19 +1767,17 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   const rp = useRefPick();
   // Gövde adımı düzenlenirken çizilen katı ADIMSIZ önizlemedir; depodaki gövde (ve panelleri) oturum boyunca değişmez.
   const draftPreview = useDraft(st => (st.bodyPreview && st.bodyPreview.shapeId === shape.id ? st.bodyPreview.geometry as THREE.BufferGeometry : null));
-  const vertexModsString = useMemo(() => JSON.stringify(shape.vertexModifications || []), [shape.vertexModifications]);
-  const { faces: refFaces, groups: refFaceGroups } = useMemo(() => (shape.geometry ? getFacesAndGroups(effectiveBodyGeometry(shape)) : { faces: [], groups: [] }),
-    [shape.geometry, vertexModsString]);
+  const { faces: refFaces, groups: refFaceGroups } = useMemo(() => (shape.geometry ? getFacesAndGroups(shape.geometry) : { faces: [], groups: [] }),
+    [shape.geometry]);
   const drawGeometry = draftPreview ?? localGeometry;
   const edgePoints = useMemo(() => safeEdgePoints(drawGeometry, 5), [drawGeometry]);
 
-  // Çizilen gövde = effectiveBodyGeometry (yerleştirme, VF regen ve motorla aynı kaynak).
+  // Çizilen gövde = shape.geometry (yerleştirme, VF regen ve motorla aynı kaynak).
   useEffect(() => {
-    const hasVertexMods = shape.vertexModifications && shape.vertexModifications.length > 0;
-    if (!shape.geometry || !((shape.geometry !== localGeometry) || hasVertexMods)) return;
-    setLocalGeometry(hasVertexMods ? effectiveBodyGeometry(shape).clone() : shape.geometry.clone());
+    if (!shape.geometry || shape.geometry === localGeometry) return;
+    setLocalGeometry(shape.geometry.clone());
     setGeometryKey(prev => prev + 1);
-  }, [shape.parameters?.width, shape.parameters?.height, shape.parameters?.depth, vertexModsString, shape.parameters?.modified, shape.geometry, shape.id]);
+  }, [shape.parameters?.width, shape.parameters?.height, shape.parameters?.depth, shape.parameters?.modified, shape.geometry, shape.id]);
 
   useEffect(() => { isUpdatingRef.current = false; initialRef.current = null; }, [S.panelSelectMode]);
 
@@ -2015,12 +1898,6 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
         }}
         onDoubleClick={(e) => { e.stopPropagation(); enterBodyEdit(shape.id); }}
         onContextMenu={(e: any) => { if (isMoveRefPickActive) e.stopPropagation(); }}>
-        {shape.subtractionGeometries && S.subtractionViewMode && shape.subtractionGeometries.map((sub: any, index: number) => sub && (
-          <SubtractionMesh key={`${shape.id}-subtraction-${index}`} subtraction={sub} index={index} isSelected={isSelected}
-            isHovered={S.hoveredSubtractionIndex === index && isSelected} isSubtractionSelected={S.selectedSubtractionIndex === index && isSelected}
-            setHovered={S.setHoveredSubtractionIndex} setSelected={S.setSelectedSubtractionIndex} />
-        ))}
-
         {!isWireframe && !isXray && !shouldShowAsReference && (
           <>
             <mesh ref={meshRef} geometry={drawGeometry} castShadow receiveShadow {...raycastProps} {...hoverProps}>
@@ -2047,8 +1924,6 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
           </>
         )}
 
-        {shape.fillets?.length > 0 && S.filletMode && <FilletEdgeLines shape={shape} />}
-        {isSelected && S.faceEditMode && <FaceEditor key={`face-editor-${shape.id}-${geoUuid}-${(shape.fillets || []).length}`} shape={shape} />}
         {isSelected && S.raycastMode && <FaceRaycastOverlay key={`raycast-${shape.id}-${geoUuid}`} shape={shape} allShapes={S.shapes} />}
         {isSelected && S.volumePickMode && <VolumePickOverlay shape={shape} allShapes={S.shapes} />}
         {isSelected && S.doorPickMode && <DoorPickOverlay shape={shape} />}
@@ -2498,76 +2373,6 @@ function PlinthVolume({ region }: { region: PlinthRegion }) {
     </>
   );
 }
-
-const ALL_DIRS: AxisDir[] = ['x+', 'x-', 'y+', 'y-', 'z+', 'z-'];
-const CONE_ROT: Record<AxisDir, Vec3> = {
-  'x+': [0, 0, -Math.PI / 2], 'x-': [0, 0, Math.PI / 2], 'y+': [0, 0, 0], 'y-': [Math.PI, 0, 0], 'z+': [Math.PI / 2, 0, 0], 'z-': [-Math.PI / 2, 0, 0],
-};
-const dirColor = (d: AxisDir) => AXIS_RGB[d[0] as AxisLetter].main;
-
-type DirArrowProps = {
-  position: THREE.Vector3; direction: AxisDir; length: number; cone: [number, number]; color: string; opacity?: number; onClick?: () => void;
-};
-function DirArrow({ position, direction, length, cone, color, opacity, onClick }: DirArrowProps) {
-  const end = useMemo(() => position.clone().add(axisDirToVec(direction).multiplyScalar(length)), [position.x, position.y, position.z, direction, length]);
-  const lineGeometry = useMemo(() => {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([position.x, position.y, position.z, end.x, end.y, end.z]), 3));
-    return g;
-  }, [position.x, position.y, position.z, end.x, end.y, end.z]);
-  return (
-    <group>
-      <lineSegments geometry={lineGeometry}>
-        <lineBasicMaterial color={color} linewidth={3} transparent={opacity !== undefined} opacity={opacity ?? 1} />
-      </lineSegments>
-      <mesh position={end} rotation={CONE_ROT[direction]} onClick={onClick ? (e) => { e.stopPropagation(); onClick(); } : undefined}>
-        <coneGeometry args={[cone[0], cone[1], 8]} />
-        <meshBasicMaterial color={color} />
-      </mesh>
-    </group>
-  );
-}
-
-type VertexEditorProps = { shape: any; onVertexSelect: (index: number | null) => void; onDirectionChange: (direction: AxisDir) => void };
-export const VertexEditor: React.FC<VertexEditorProps> = ({ shape, onVertexSelect, onDirectionChange }) => {
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
-  const [currentDirection, setCurrentDirection] = useState<AxisDir | null>(null);
-  const [showDirectionSelector, setShowDirectionSelector] = useState(false);
-  const [modifiedVertices, setModifiedVertices] = useState<THREE.Vector3[]>([]);
-  useEffect(() => {
-    (async () => {
-      if (!shape.parameters) return;
-      const baseVerts = await resolveBaseVertices(shape);
-      // Mesh ile AYNI bileşim (eksen bazlı) — nokta, kübün köşesiyle birlikte hareket eder.
-      const targets = composeVertexTargets(baseVerts, shape.vertexModifications);
-      setModifiedVertices(baseVerts.map((v, i) => (targets.get(i) || v).clone()));
-    })();
-  }, [shape, shape.parameters?.width, shape.parameters?.height, shape.parameters?.depth, shape.replicadShape, shape.vertexModifications]);
-  if (!shape.parameters || modifiedVertices.length === 0) return null;
-  const handleVertexClick = (index: number, e: any) => {
-    e.stopPropagation();
-    if (selectedIndex === index && currentDirection) setShowDirectionSelector(true);
-    else { setSelectedIndex(index); setCurrentDirection(null); setShowDirectionSelector(true); onVertexSelect(index); }
-  };
-  const sel = selectedIndex !== null ? modifiedVertices[selectedIndex] : null;
-  return (
-    <group position={shape.position} rotation={shape.rotation} scale={shape.scale}>
-      {modifiedVertices.map((vertex, index) => (
-        <mesh key={index} position={vertex} onClick={(e) => handleVertexClick(index, e)}
-          onPointerOver={(e) => { e.stopPropagation(); setHoveredIndex(index); }} onPointerOut={(e) => { e.stopPropagation(); setHoveredIndex(null); }}>
-          <sphereGeometry args={[selectedIndex === index ? 8 : 6, 16, 16]} />
-          <meshBasicMaterial color={hoveredIndex === index ? '#ef4444' : selectedIndex === index ? '#f97316' : '#1f2937'} />
-        </mesh>
-      ))}
-      {showDirectionSelector && sel && ALL_DIRS.map(dir => (
-        <DirArrow key={dir} position={sel} direction={dir} length={60} cone={[8, 16]} color={dirColor(dir)} opacity={0.8}
-          onClick={() => { setCurrentDirection(dir); setShowDirectionSelector(false); onDirectionChange(dir); }} />
-      ))}
-      {currentDirection && sel && !showDirectionSelector && <DirArrow position={sel} direction={currentDirection} length={50} cone={[4, 10]} color="#ef4444" />}
-    </group>
-  );
-};
 
 const C_FACE_BG  = 'rgba(240,238,234,0.96)';
 const C_FACE_HOV = 'rgba(232,98,42,0.93)';
@@ -3335,8 +3140,8 @@ function cycleRefPanel(): boolean {
 }
 const refRingCount = () => _refPanelRing?.ids.length ?? 0;
 
-/** Referans şeklinin yüz ağı: panelde kendi ağı, gövdede çizilen (vertex düzenlemeli) ağ — motorun `matchReferenceFace`i aynısını okur. */
-const refGeometryOf = (shape: Shape): THREE.BufferGeometry | undefined => (shape.type === 'panel' ? shape.geometry : effectiveBodyGeometry(shape));
+/** Referans şeklinin yüz ağı (panel ya da gövde) — motorun `matchReferenceFace`i aynısını okur. */
+const refGeometryOf = (shape: Shape): THREE.BufferGeometry | undefined => shape.geometry;
 /** Hareket eden yüzün dünya normali (extrude / hacim): referans yüzün geçerliliği buna göre. Döndürmede null. */
 function refMovingNormal(st: AppState, rp: RefPick): { n: THREE.Vector3; min: number } | null {
   if (rp.tool !== 'extrude' || st.faceExtrudeSelectedFace === null) return null;
@@ -3354,7 +3159,7 @@ function refMovingNormal(st: AppState, rp: RefPick): { n: THREE.Vector3; min: nu
 function RefIsolatePicker({ rp }: { rp: RefPick }) {
   const s = useStoreFields('shapes', 'faceExtrudeSelectedFace', 'faceExtrudeCavityFaceNormal', 'panelGroups');
   const shape = shapeById(rp.isoId, s.shapes);
-  const geometry = useMemo(() => (shape ? refGeometryOf(shape) : undefined), [shape?.geometry, shape?.vertexModifications]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const geometry = useMemo(() => (shape ? refGeometryOf(shape) : undefined), [shape?.geometry]);   // eslint-disable-line react-hooks/exhaustive-deps
   const { faces, groups } = useMemo(() => (geometry ? getFacesAndGroups(geometry) : NO_FACES), [geometry]);
   const matrix = useMemo(() => (shape ? getShapeMatrix(shape) : new THREE.Matrix4()), [shape?.position, shape?.rotation, shape?.scale]);   // eslint-disable-line react-hooks/exhaustive-deps
   const moving = useMemo(() => refMovingNormal(useAppStore.getState(), rp), [rp.tool, rp.cavityId, rp.ownerId, s.faceExtrudeSelectedFace, s.faceExtrudeCavityFaceNormal]);   // eslint-disable-line react-hooks/exhaustive-deps
@@ -3410,7 +3215,7 @@ function RefFaceMark({ rp }: { rp: RefPick }) {
   const s = useStoreFields('shapes', 'faceExtrudeRefCandidate', 'panelRotateRefFace');
   const cand = rp.tool === 'rotate' ? s.panelRotateRefFace : s.faceExtrudeRefCandidate;
   const shape = cand ? shapeById(cand.panelId, s.shapes) : undefined;
-  const geometry = useMemo(() => (shape ? refGeometryOf(shape) : undefined), [shape?.geometry, shape?.vertexModifications]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const geometry = useMemo(() => (shape ? refGeometryOf(shape) : undefined), [shape?.geometry]);   // eslint-disable-line react-hooks/exhaustive-deps
   const geo = useMemo(() => {
     if (!geometry || !cand || cand.faceGroupIndex < 0) return null;
     const { faces, groups } = getFacesAndGroups(geometry);
@@ -3651,12 +3456,12 @@ function sceneFacesOf(panel: Shape): SceneFace[] {
 function useSceneExtrudePanel(): Shape | null {
   const s = useStoreFields('shapes', 'selectedShapeId', 'selectedPanelRow', 'sceneExtrudePanelId', 'panelMoveMode', 'panelRotateMode', 'raycastMode', 'volumePickMode',
     'doorPickMode', 'backPickMode', 'plinthPickMode', 'quickBodyMode', 'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeCavityGroupId',
-    'faceExtrudePlinthId', 'doorRefPickGroupId', 'backRefPickGroupId', 'vertexEditMode', 'faceEditMode', 'filletMode');
+    'faceExtrudePlinthId', 'doorRefPickGroupId', 'backRefPickGroupId');
   const drafting = useDraft(st => !!st.isolate || !!st.bodyPreview || !!st.planePick);
   const row = s.selectedPanelRow;
   if (row === null || !s.selectedShapeId || drafting) return null;
   if (s.panelMoveMode || s.panelRotateMode || s.raycastMode || s.volumePickMode || s.doorPickMode || s.backPickMode || s.plinthPickMode || s.quickBodyMode
-    || s.doorRefPickGroupId || s.backRefPickGroupId || s.vertexEditMode || s.faceEditMode || s.filletMode) return null;
+    || s.doorRefPickGroupId || s.backRefPickGroupId) return null;
   const panel = typeof row === 'number' ? childPanelsOf(s.selectedShapeId, s.shapes).find(p => p.parameters?.faceIndex === row)
     : row.startsWith('vf-') ? s.shapes.find(p => p.type === 'panel' && p.parameters?.virtualFaceId === row.slice(3)) : undefined;
   if (!panel?.geometry || panel.parameters?.parentShapeId !== s.selectedShapeId) return null;
@@ -4779,11 +4584,8 @@ const GL_OPTS = { antialias: true, alpha: false, preserveDrawingBuffer: true, po
 const Scene: React.FC = () => {
   const controlsRef = useRef<any>(null);
   const upFixRef = useRef<THREE.Vector3 | null>(null);   // hareketin başındaki bakış yönü; yalnız yön değişirse (döndürme) up düzeltilir
-  const { shapes, cameraType, selectedShapeId, secondarySelectedShapeId, selectShape, deleteShape, exitIsolation, vertexEditMode, setVertexEditMode,
-    selectedVertexIndex, setSelectedVertexIndex, vertexDirection, setVertexDirection, setFaceEditMode, filletMode, selectedFilletFaces, clearFilletFaces } =
-    useStoreFields('shapes', 'cameraType', 'selectedShapeId', 'secondarySelectedShapeId', 'selectShape', 'deleteShape', 'exitIsolation',
-      'vertexEditMode', 'setVertexEditMode', 'selectedVertexIndex', 'setSelectedVertexIndex', 'vertexDirection', 'setVertexDirection',
-      'setFaceEditMode', 'filletMode', 'selectedFilletFaces', 'clearFilletFaces');
+  const { shapes, cameraType, selectedShapeId, secondarySelectedShapeId, selectShape, deleteShape, exitIsolation } =
+    useStoreFields('shapes', 'cameraType', 'selectedShapeId', 'secondarySelectedShapeId', 'selectShape', 'deleteShape', 'exitIsolation');
 
   useEffect(() => {
     const handle = (e: KeyboardEvent) => {
@@ -4803,13 +4605,6 @@ const Scene: React.FC = () => {
         if (st.plinthPickMode) { e.preventDefault(); st.setPlinthPickMode(false); return; }
         if (st.raycastMode) { e.preventDefault(); st.setRaycastMode(false); return; }
         if (st.quickBodyMode) { e.preventDefault(); st.setQuickBodyMode(false); return; }
-        // Vertex: önce seçili köşe bırakılır, sonra kip kapanır. Fillet: seçimler ve kip kapanır (gövde seçili kalır).
-        if (st.vertexEditMode) {
-          e.preventDefault();
-          if (st.selectedVertexIndex !== null) { st.setSelectedVertexIndex(null); st.setVertexDirection(null); } else st.setVertexEditMode(false);
-          return;
-        }
-        if (st.filletMode) { e.preventDefault(); st.setFilletMode(false); st.setFaceEditMode(false); st.clearFilletFaces(); st.clearFilletFaceData(); return; }
         // REFERANS SEÇİMİ (extrude · hacim · döndürme): yalnız bırakılan panel → geri (panel seçimi); seçilmiş yüz → geri.
         if (st.refIsolateId) { e.preventDefault(); st.setRefIsolateId(null); return; }
         // SAHNE EXTRUDE (panel · hacim · baza seti): Esc bir adım geri — referans yüzü → seçili yüz → araç. Kenar çubuğu açık kalır.
@@ -4844,7 +4639,7 @@ const Scene: React.FC = () => {
           else st.setPanelRotateMode(false);
           return;
         }
-        selectShape(null); exitIsolation(); setVertexEditMode(false); setFaceEditMode(false); clearFilletFaces();
+        selectShape(null); exitIsolation();
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'g') {
         e.preventDefault();
         if (selectedShapeId && secondarySelectedShapeId) useAppStore.getState().createGroup(selectedShapeId, secondarySelectedShapeId);
@@ -4852,75 +4647,13 @@ const Scene: React.FC = () => {
     };
     window.addEventListener('keydown', handle);
     return () => window.removeEventListener('keydown', handle);
-  }, [selectedShapeId, secondarySelectedShapeId, deleteShape, selectShape, exitIsolation, setVertexEditMode, setFaceEditMode, clearFilletFaces]);
+  }, [selectedShapeId, secondarySelectedShapeId, deleteShape, selectShape, exitIsolation]);
 
   useEffect(() => {
     const blockContextMenu = (e: MouseEvent) => e.preventDefault();
     window.addEventListener('contextmenu', blockContextMenu, true);
     return () => window.removeEventListener('contextmenu', blockContextMenu, true);
   }, []);
-
-  // Terminal köprüsü: girilen sayı bekleyen vertex düzenlemesine / fillet yarıçapına gider.
-  useEffect(() => {
-    (window as any).handleVertexOffset = async (newValue: number) => {
-      const cs = useAppStore.getState();
-      const { selectedShapeId: sid, selectedVertexIndex: vi, vertexDirection: vd } = cs;
-      if (sid && vi !== null && vd) {
-        const shape = shapeById(sid, cs.shapes);
-        if (!shape?.parameters) return;
-        // vi editörün köşe listesinin indeksidir (mesh tamponu değil); tek kaynak resolveBaseVertices.
-        const bv = await resolveBaseVertices(shape);
-        if (vi >= bv.length) return;
-        const op: Vec3 = [bv[vi].x, bv[vi].y, bv[vi].z];
-        const ai = axisIndexOf(vd);
-        const np: Vec3 = [...op] as Vec3; np[ai] = newValue;
-        const off: Vec3 = [0, 0, 0]; off[ai] = newValue - op[ai];
-        const description = `Vertex ${vi} ${vd[0].toUpperCase()}${vd[1] === '+' ? '+' : '-'}`;
-        cs.addVertexModification(sid, {
-          vertexIndex: vi, originalPosition: op, newPosition: np, direction: vd, expression: String(newValue), description, offset: off,
-        });
-        if (childPanelsOf(sid).length) {
-          try { await requestRebuild(sid); }
-          catch (e) { console.error('[YAGO][VERTEX] rebuild hatası:', e); }
-        }
-      }
-      (window as any).pendingVertexEdit = false; cs.setSelectedVertexIndex(null);
-    };
-    (window as any).pendingVertexEdit = selectedVertexIndex !== null && vertexDirection !== null;
-    return () => { delete (window as any).handleVertexOffset; delete (window as any).pendingVertexEdit; };
-  }, [selectedVertexIndex, vertexDirection]);
-
-  useEffect(() => {
-    (window as any).handleFilletRadius = async (radius: number) => {
-      const cs = useAppStore.getState();
-      const { selectedShapeId: sid, filletMode: fm, selectedFilletFaces: sff, selectedFilletFaceData: sffd } = cs;
-      if (sid && fm && sff.length === 2 && sffd.length === 2) {
-        const shape = shapeById(sid, cs.shapes); if (!shape?.replicadShape) return;
-        try {
-          const oc = localBboxOf(shape.geometry)?.getCenter(new THREE.Vector3()) ?? new THREE.Vector3();
-          const result = await applyFilletToShape(shape, sff, sffd, radius);
-          const nbv = await getReplicadVertices(result.replicadShape);
-          const nc = localBboxOf(result.geometry)!.getCenter(new THREE.Vector3());
-          // Fillet sonrası kutu merkezi kayar: gövde konumu (dönüş dahil) aynı miktar geri alınır.
-          const ro = new THREE.Vector3().subVectors(nc, oc);
-          const [rx, ry, rz] = shape.rotation;
-          if (rx || ry || rz) ro.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rx, ry, rz, 'XYZ')));
-          const p = shape.parameters;
-          cs.updateShape(sid, {
-            geometry: result.geometry, replicadShape: result.replicadShape,
-            position: [shape.position[0] - ro.x, shape.position[1] - ro.y, shape.position[2] - ro.z], rotation: shape.rotation, scale: shape.scale,
-            parameters: { ...p, scaledBaseVertices: nbv.map(v => [v.x, v.y, v.z]), width: p.width || 1, height: p.height || 1, depth: p.depth || 1 },
-            fillets: [...(shape.fillets || []), result.filletData],
-          });
-          cs.clearFilletFaces();
-          try { await requestRebuild(sid); } catch (err) { console.error('rebuild after fillet failed:', err); }
-        } catch (err) { console.error('fillet failed:', err); cs.clearFilletFaces(); alert(`Failed to apply fillet: ${(err as Error).message}`); }
-      }
-      (window as any).pendingFilletOperation = false;
-    };
-    (window as any).pendingFilletOperation = filletMode && selectedFilletFaces.length === 2;
-    return () => { delete (window as any).handleFilletRadius; delete (window as any).pendingFilletOperation; };
-  }, [filletMode, selectedFilletFaces.length]);
 
   const handleCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
     gl.toneMapping = THREE.ACESFilmicToneMapping;
@@ -4968,9 +4701,6 @@ const Scene: React.FC = () => {
           return (
             <React.Fragment key={shape.id}>
               <ShapeWithTransform shape={shape} isSelected={isSel} orbitControlsRef={controlsRef} />
-              {isSel && vertexEditMode && (
-                <VertexEditor shape={shape} onVertexSelect={i => setSelectedVertexIndex(i)} onDirectionChange={d => setVertexDirection(d)} />
-              )}
             </React.Fragment>
           );
         })}

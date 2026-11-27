@@ -377,33 +377,7 @@ function cutBoxDims(mn0: number, mx0: number, mn1: number, mx1: number, c: CutFr
   }
   return dims.filter(d => d.length < CUT_FULL_SPAN * (d.along === c.p0 ? c.span0 : c.span1));
 }
-const subXform = (sg: any) => {
-  const rot = sg.relativeRotation || [0, 0, 0];
-  return {
-    rotM: new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ')),
-    off: new THREE.Vector3(...((sg.relativeOffset || [0, 0, 0]) as number[])),
-  };
-};
-/** Çıkarma geometrilerinin (subtraction) panel yüzündeki ölçüleri. */
-function cutDimsFromSubGeos(subGeos: any[], box: THREE.Box3, size: THREE.Vector3, thin: number, nDir: THREE.Vector3, frame?: THREE.Matrix4): GroundDimWorld[] {
-  const c = cutFrame(thin, box, size, nDir);
-  const out: GroundDimWorld[] = [];
-  const v = new THREE.Vector3();
-  subGeos.forEach(sg => {
-    const pos = sg?.geometry?.getAttribute('position'); if (!pos) return;
-    const { rotM, off } = subXform(sg);
-    let mn0 = Infinity, mx0 = -Infinity, mn1 = Infinity, mx1 = -Infinity;
-    for (let i = 0; i < pos.count; i++) {
-      v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(rotM).add(off);
-      if (frame) v.applyMatrix4(frame);
-      const c0 = v.getComponent(c.p0), c1 = v.getComponent(c.p1);
-      mn0 = Math.min(mn0, c0); mx0 = Math.max(mx0, c0); mn1 = Math.min(mn1, c1); mx1 = Math.max(mx1, c1);
-    }
-    out.push(...cutBoxDims(Math.max(mn0, c.lo0), Math.min(mx0, c.hi0), Math.max(mn1, c.lo1), Math.min(mx1, c.hi1), c));
-  });
-  return out;
-}
-/** Çıkarma geometrisi yoksa: üst yüzdeki iç kenar kümeleri (cep / kanal) kesim sayılır. */
+/** Üst yüzdeki iç kenar kümeleri (cep / kanal) kesim sayılır. */
 function computeCutDimsWorld(geometry: THREE.BufferGeometry, thin: number, nDir: THREE.Vector3): GroundDimWorld[] {
   const eg = new THREE.EdgesGeometry(geometry, 15);
   const pos = eg.getAttribute('position');
@@ -560,8 +534,6 @@ export function PanelPreview2D({ shape, arrowRotated, anchors, marks, paintKey, 
     if (!renderer) return;
     const frame = panelFrameOf(shape)!;
     const frameGeo = frame.geo;
-    const frameM = new THREE.Matrix4().makeRotationFromQuaternion(frame.inv);
-    const unrotated = Math.abs(frame.inv.w) > 0.9999999;
 
     const dpr = window.devicePixelRatio;
     canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
@@ -616,7 +588,6 @@ export function PanelPreview2D({ shape, arrowRotated, anchors, marks, paintKey, 
     const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
     const upW = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
 
-    const subGeos: any[] = Array.isArray(shape.subtractionGeometries) ? shape.subtractionGeometries : [];
     const groundDims = computeGroundDimWorld(frameGeo, wIdx, hIdx, minIdx, upW);
     // Bombeli panel: önizleme bükülmüş çizilir ama ölçüler açınımdır (liste satırıyla aynı).
     const dev = shape.parameters?.curved ? curvedPanelDims(frameGeo) : null;
@@ -627,7 +598,7 @@ export function PanelPreview2D({ shape, arrowRotated, anchors, marks, paintKey, 
     }
     const allDimsW = [
       ...groundDims,
-      ...(subGeos.length ? cutDimsFromSubGeos(subGeos, bbox, sz, minIdx, nDir, unrotated ? undefined : frameM) : computeCutDimsWorld(frameGeo, minIdx, nDir)),
+      ...computeCutDimsWorld(frameGeo, minIdx, nDir),
     ];
 
     // Kamera kutusu: tüm köşeler + ölçü uçları sığsın; altta pill için pay.
@@ -645,16 +616,6 @@ export function PanelPreview2D({ shape, arrowRotated, anchors, marks, paintKey, 
     camera.top = vSpan * ratioTop / (ratioTop + ratioBot); camera.bottom = -vSpan * ratioBot / (ratioTop + ratioBot);
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
-
-    subGeos.forEach((sg: any) => {
-      if (!sg?.geometry) return;
-      const { rotM, off } = subXform(sg);
-      const sgLines = fatLines(sg.geometry, 0xd97706, 1.2, w, h, disposables);
-      sgLines.matrix.copy(rotM); sgLines.matrix.setPosition(off);
-      if (!unrotated) sgLines.matrix.premultiply(frameM);
-      sgLines.matrixAutoUpdate = false;
-      scene.add(sgLines);
-    });
 
     renderer.render(scene, camera);
     // 2D bağlam WebGL bağlam sınırına sayılmaz.

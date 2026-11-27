@@ -1,15 +1,9 @@
 import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 import * as THREE from 'three';
-import { type AxisDir, type Vec3, type VertexModification, rebuildBodySolid, type LegRule } from './components/Geometry';
+import { type AxisDir, type Vec3, type LegRule } from './components/Geometry';
 import type { PlinthSet, PlinthPick } from './components/PlinthService';
 import type { PtBind, Shape2 } from './components/Draft';
-
-export interface SubtractionParameters {
-  width: string; height: string; depth: string;
-  posX: string; posY: string; posZ: string;
-  rotX: string; rotY: string; rotZ: string;
-}
 
 export interface FaceDescriptor {
   normal: [number, number, number];
@@ -18,15 +12,6 @@ export interface FaceDescriptor {
   isCurved?: boolean;
   axisDirection?: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-' | null;
   axisPosition?: number;
-}
-
-export interface FilletInfo {
-  face1Descriptor: FaceDescriptor;
-  face2Descriptor: FaceDescriptor;
-  face1Data: { normal: [number, number, number]; center: [number, number, number]; planeD?: number };
-  face2Data: { normal: [number, number, number]; center: [number, number, number]; planeD?: number };
-  radius: number;
-  originalSize: { width: number; height: number; depth: number };
 }
 
 /** Çizim adımı (Geometry.applySketchFeatures): hedefin bir yüzüne bağlı 2B profil — çıkarılır (cut) ya da şekli verilir (shape).
@@ -47,14 +32,6 @@ export interface SketchFeature {
   dims?: ((string | null)[] | null)[]; pin?: [number, number] | null; fit?: boolean;
   /** Tasarım yönleri (radyan; yalnız çözümün çizildiği yönden saptırdığı kenarlar — Draft.AngList). */
   angs?: ((number | null)[] | null)[];
-}
-
-export interface SubtractedGeometry {
-  geometry: THREE.BufferGeometry;
-  relativeOffset: [number, number, number];
-  relativeRotation: [number, number, number];
-  scale: [number, number, number];
-  parameters?: SubtractionParameters;
 }
 
 export interface VirtualFace {
@@ -625,11 +602,8 @@ export interface Shape {
   /** Panele işlenen delikler (aksesuar kaynaklı; PanelEngine son geçişte yazar) — üretim listesi. */
   holes?: PanelHole[];
   isolated?: boolean;
-  vertexModifications?: VertexModification[];
   groupId?: string;
   isReferenceBox?: boolean;
-  subtractionGeometries?: (SubtractedGeometry | null)[];
-  fillets?: FilletInfo[];
 }
 
 export enum CameraType { PERSPECTIVE = 'perspective', ORTHOGRAPHIC = 'orthographic' }
@@ -655,7 +629,6 @@ export type SceneToolStatus = {
   steps?: string[]; /** şimdiki adım; `steps.length` = hepsi bitti */ step?: number; note?: string | null; keys?: GuideKey[];
 };
 export type RefFacePick = { panelId: string; faceGroupIndex: number; normalWorld: Vec3; pointWorld: Vec3 };
-type FilletFaceData = { normal: Vec3; center: Vec3; planeD?: number };
 
 export interface AppState {
   shapes: Shape[];
@@ -676,16 +649,6 @@ export interface AppState {
   snapSettings: Record<SnapType, boolean>; toggleSnapSetting: (t: SnapType) => void;
   opencascadeLoading: boolean; setOpenCascadeLoading: (l: boolean) => void;
 
-  vertexEditMode: boolean; setVertexEditMode: (b: boolean) => void;
-  selectedVertexIndex: number | null; setSelectedVertexIndex: (i: number | null) => void;
-  vertexDirection: AxisDir | null; setVertexDirection: (d: AxisDir | null) => void;
-  addVertexModification: (shapeId: string, mod: VertexModification) => void;
-
-  subtractionViewMode: boolean; setSubtractionViewMode: (b: boolean) => void;
-  selectedSubtractionIndex: number | null; setSelectedSubtractionIndex: (i: number | null) => void;
-  hoveredSubtractionIndex: number | null; setHoveredSubtractionIndex: (i: number | null) => void;
-  deleteSubtraction: (shapeId: string, idx: number) => Promise<void>;
-
   showOutlines: boolean; setShowOutlines: (b: boolean) => void;
   selectedPanelRow: number | string | null;
   selectedPanelRowParentId: string | null;
@@ -703,7 +666,6 @@ export interface AppState {
   /** Sahne extrude'un durum çubuğu satırı: üzerine gelinen / seçili okun tipi ve ne yaptığı (Scene yazar, StatusBar çizer). */
   sceneExStatus: SceneToolStatus | null;
   setSceneExStatus: (s: SceneToolStatus | null) => void;
-  faceEditMode: boolean; setFaceEditMode: (b: boolean) => void;
 
   panelGroups: PanelGroup[];
   addPanelGroup: (g: PanelGroup) => void;
@@ -778,13 +740,6 @@ export interface AppState {
   placementPanelType: PanelTypeId | null; setPlacementPanelType: (t: PanelTypeId | null) => void;
   /** Arkalık seçmede tip: 'outer' = arkadan çakma, 'inner' = kanallı. */
   backPickPlacement: BackPlacement; setBackPickPlacement: (p: BackPlacement) => void;
-
-  filletMode: boolean; setFilletMode: (b: boolean) => void;
-  selectedFilletFaces: number[];
-  addFilletFace: (i: number) => void; clearFilletFaces: () => void;
-  selectedFilletFaceData: FilletFaceData[];
-  addFilletFaceData: (d: FilletFaceData) => void;
-  clearFilletFaceData: () => void;
 
   /** HIZLI GÖVDE modu: köşe birleşimleri + taban (düz/ayaklı/bazalı) + arkalık tek seferde yerleştirilir. */
   quickBodyMode: boolean; setQuickBodyMode: (b: boolean) => void;
@@ -976,40 +931,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   toggleSnapSetting: (t) => set((s) => ({ snapSettings: { ...s.snapSettings, [t]: !s.snapSettings[t] } })),
   opencascadeLoading: false, setOpenCascadeLoading: (l) => set({ opencascadeLoading: l }),
 
-  vertexEditMode: false, setVertexEditMode: (b) => set({ vertexEditMode: b }),
-  selectedVertexIndex: null, setSelectedVertexIndex: (i) => set({ selectedVertexIndex: i }),
-  vertexDirection: null, setVertexDirection: (d) => set({ vertexDirection: d }),
-  addVertexModification: (sid, mod) => set((s) => ({
-    shapes: s.shapes.map(sh => {
-      if (sh.id !== sid) return sh;
-      const mods = sh.vertexModifications || [];
-      const i = mods.findIndex(m => m.vertexIndex === mod.vertexIndex && m.direction === mod.direction);
-      return { ...sh, vertexModifications: i >= 0 ? mods.map((m, k) => (k === i ? mod : m)) : [...mods, mod] };
-    }),
-  })),
-
-  subtractionViewMode: false, setSubtractionViewMode: (b) => set({ subtractionViewMode: b }),
-  selectedSubtractionIndex: null, setSelectedSubtractionIndex: (i) => set({ selectedSubtractionIndex: i }),
-  hoveredSubtractionIndex: null, setHoveredSubtractionIndex: (i) => set({ hoveredSubtractionIndex: i }),
-
-  /** Çıkarmayı siler: kalan çıkarmalar + filletlerle gövde baştan kurulur. */
-  deleteSubtraction: async (shapeId, idx) => {
-    const sh = shapeById(shapeId, get().shapes);
-    if (!sh || !sh.subtractionGeometries) return;
-    const arr = [...sh.subtractionGeometries];
-    arr[idx] = null;
-    try {
-      const r = await rebuildBodySolid(sh, arr);
-      set((S) => ({
-        shapes: S.shapes.map(x => (x.id !== shapeId ? x : {
-          ...x, geometry: r.geometry, replicadShape: r.replicadShape, subtractionGeometries: arr, fillets: r.fillets,
-          position: [...sh.position] as Vec3, parameters: { ...x.parameters, scaledBaseVertices: r.scaledBaseVertices },
-        })),
-        selectedSubtractionIndex: null,
-      }));
-      try { await requestRebuild(shapeId); } catch (err) { console.error('rebuild after subtractor delete fail:', err); }
-    } catch (e) { console.error('deleteSubtraction fail:', e); }
-  },
 
   showOutlines: readOutlinePref(), setShowOutlines: (b) => { writeOutlinePref(b); set({ showOutlines: b }); },
   selectedPanelRow: null, selectedPanelRowParentId: null,
@@ -1033,7 +954,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (c === v || (c && v && JSON.stringify(c) === JSON.stringify(v))) return;
     set({ sceneExStatus: v });
   },
-  faceEditMode: false, setFaceEditMode: (b) => set({ faceEditMode: b }),
 
   panelGroups: [],
   addPanelGroup: (g) => set((s) => ({ panelGroups: [...s.panelGroups, g] })),
@@ -1135,14 +1055,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   panelTypeConfig: { rules: {}, surfaces: {} }, setPanelTypeConfig: (c) => set({ panelTypeConfig: c }),
   edgeBandConfig: DEFAULT_EDGE_BANDS, setEdgeBandConfig: (c) => set({ edgeBandConfig: c }),
   placementPanelType: null, setPlacementPanelType: (t) => set({ placementPanelType: t }),
-
-  filletMode: false, setFilletMode: (e) => set({ filletMode: e, selectedFilletFaces: [], selectedFilletFaceData: [] }),
-  selectedFilletFaces: [],
-  addFilletFace: (i) => set((s) => (s.selectedFilletFaces.includes(i) ? {} : { selectedFilletFaces: [...s.selectedFilletFaces, i] })),
-  clearFilletFaces: () => set({ selectedFilletFaces: [], selectedFilletFaceData: [] }),
-  selectedFilletFaceData: [],
-  addFilletFaceData: (d) => set((s) => ({ selectedFilletFaceData: [...s.selectedFilletFaceData, d] })),
-  clearFilletFaceData: () => set({ selectedFilletFaceData: [] }),
 
   quickBodyMode: false,
   setQuickBodyMode: (b) => set({ ...(b ? pickModesOff() : {}), quickBodyMode: b }),

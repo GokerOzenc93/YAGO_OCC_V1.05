@@ -4,7 +4,7 @@ import { Line, Html } from '@react-three/drei';
 import { useThree, useFrame } from '@react-three/fiber';
 import { useAppStore, OrthoMode, SnapType, type Shape, type SketchFeature, childPanelsOf, requestRebuild, shapeById, vfOfPanel } from '../store';
 import {
-  createFaceHighlightGeometry, effectiveBodyGeometry, footprintGeometry, genId, getFacesAndGroups, getShapeMatrix, groupIndexOfFace, placeSketchShapes,
+  createFaceHighlightGeometry, footprintGeometry, genId, getFacesAndGroups, getShapeMatrix, groupIndexOfFace, placeSketchShapes,
   rebuildBodySolid, setSketchSuppressed, sketchFrameOf, sketchVarsOf, SKETCH_HIDDEN_VARS, fitDrivenBody, shiftBodyLocal, type SketchFrame,
 } from './Geometry';
 import { panelStepRotation, whenRebuildIdle } from './PanelEngine';
@@ -90,7 +90,6 @@ type FacePick = {
 const isPanel = (s: Shape) => s.type === 'panel';
 const bodyIdOf = (s: Shape): string => (isPanel(s) ? (s.parameters?.parentShapeId as string) || s.id : s.id);
 /** Çizilen (tıklanabilir) geometri: panelde kendi mesh'i, gövdede vertex düzenlemeleri uygulanmış mesh. */
-const shownGeometryOf = (s: Shape) => (isPanel(s) ? s.geometry : effectiveBodyGeometry(s));
 /** İzolasyonda yalnız görünen şekiller: hedef panel (+ gövdesi) ya da hedef gövde. */
 const visibleShapes = (shapes: Shape[], iso: DraftIsolate | null) =>
   (iso ? shapes.filter(s => s.id === iso.targetId) : shapes);
@@ -135,7 +134,7 @@ function facePickOf(shape: Shape, hit: THREE.Intersection, shapes: Shape[]): Fac
 }
 /** Şeklin ANA yüzü: en geniş düz yüz (eşit iki geniş yüzden kameraya bakan). Panel satırındaki Sketch aracı seçime bununla başlar. */
 function mainFacePick(shape: Shape, shapes: Shape[], camPos: THREE.Vector3 | null): FacePick | null {
-  const geo = shownGeometryOf(shape);
+  const geo = shape.geometry;
   if (!geo?.getAttribute?.('position')) return null;
   const { faces, groups } = getFacesAndGroups(geo), hostM = hostMatrix(shape, shapes);
   let best = -1, bestScore = -Infinity;
@@ -157,7 +156,7 @@ function faceCandidates(ray: THREE.Ray, shapes: Shape[], iso: DraftIsolate | nul
   const byMesh = new Map<THREE.Object3D, Shape>(), list = visibleShapes(shapes, iso);
   for (const s of list) {
     if (only && s.id !== only) continue;
-    const g = shownGeometryOf(s);
+    const g = s.geometry;
     if (!g?.getAttribute?.('position')) continue;
     const mesh = new THREE.Mesh(g);
     mesh.matrixAutoUpdate = false; mesh.matrixWorld.copy(hostMatrix(s, shapes));
@@ -445,7 +444,7 @@ async function uncutMeshOf(target: Shape): Promise<THREE.BufferGeometry> {
   if (!sketchFeaturesOf(target).length) return target.geometry;
   const hit = uncutCache.get(target.geometry);
   if (hit) return hit;
-  const g = (await rebuildBodySolid({ parameters: target.parameters, fillets: target.fillets }, target.subtractionGeometries, undefined, false, false)).geometry;
+  const g = (await rebuildBodySolid({ parameters: target.parameters }, undefined, false)).geometry;
   uncutCache.set(target.geometry, g);
   return g;
 }
@@ -509,7 +508,7 @@ const stepRotationOf = (target: Shape) => (isPanel(target) ? panelStepRotation(t
  *  Parametric'te formüle bağlı nokta varsa yapılmaz (formüller kutudan ölçülür). Döner: (yeni) çerçeve + öteleme; gövde uyarlanamıyorsa null.
  *  Profil kutuya zaten oturuyorsa çerçeve aynen döner — ölçülü profilde adım `fit` işaretlenir (Geometry.fitDrivenBody). */
 function fitBodyToProfile(target: Shape, fr: SketchFrame, ents: Entity[], dx: number, dy: number, param: boolean): { w: number; h: number; dx: number; dy: number } | null {
-  if (isPanel(target) || target.vertexModifications?.length) return null;
+  if (isPanel(target)) return null;
   if (param && ents.some(e => (e.t === 'circle' && !!e.re) || e.pb?.some(b => b?.x?.k === 'F' || b?.y?.k === 'F'))) return null;
   const P = target.parameters as { width?: number; height?: number; depth?: number };
   const dims = [Number(P.width), Number(P.height), Number(P.depth)];
@@ -545,7 +544,7 @@ function fitBodyToProfile(target: Shape, fr: SketchFrame, ents: Entity[], dx: nu
  *  değiştiyse profil yeni değerle yeniden çözülür (Parameters'tan değer değişince çalışan yolun aynısı). */
 function settleDrivenBody(id: string) {
   const s = shapeById(id);
-  if (!s || isPanel(s) || s.vertexModifications?.length) return;
+  if (!s || isPanel(s)) return;
   const d = fitDrivenBody(s.parameters);
   if (!d?.changed) return;
   const dims = [Number(s.parameters.width), Number(s.parameters.height), Number(s.parameters.depth)];
@@ -559,11 +558,11 @@ async function rebuildTarget(id: string) {
   if (!s) return;
   const bodyId = bodyIdOf(s);
   if (isPanel(s)) { await requestRebuild(bodyId, { changedPanelId: s.id }); await whenRebuildIdle(bodyId); return; }
-  const r = await rebuildBodySolid({ parameters: s.parameters, fillets: s.fillets }, s.subtractionGeometries, undefined, false);
+  const r = await rebuildBodySolid({ parameters: s.parameters });
   const now = shapeById(id);
   if (!now) return;
   useAppStore.getState().updateShape(id, {
-    geometry: r.geometry, replicadShape: r.replicadShape, parameters: { ...now.parameters, scaledBaseVertices: r.scaledBaseVertices, sketchErrors: r.sketchErrors },
+    geometry: r.geometry, replicadShape: r.replicadShape, parameters: { ...now.parameters, sketchErrors: r.sketchErrors },
   });
   if (childPanelsOf(id).length) { await requestRebuild(id); await whenRebuildIdle(id); }
 }
@@ -582,7 +581,6 @@ export async function applySketch(): Promise<string | null> {
   if (!ft) return 'Pick a face first.';
   const ents = st.entities.filter(e => e.plane === ft.plane.id && !e.ref), picked = ents.filter(e => st.selection.includes(e.id)), use = picked.length ? picked : ents;
   if (!profileLoops(use).loops.length) return 'Draw a closed profile on the face first.';
-  if (ft.kind === 'body' && ft.shape.vertexModifications?.length) return 'Not available on a vertex-edited body yet.';
   cancelCommand();
   await whenRebuildIdle(ft.bodyId);
   const target = shapeById(ft.shape.id);
@@ -624,7 +622,7 @@ async function refreshBodyPreview(shapeId: string, featureId: string): Promise<b
   previewSrc = { shapeId, featureId, geometry: s.geometry, tick };
   try {
     const feats = sketchFeaturesOf(s).filter(x => x.id !== featureId);
-    const r = await rebuildBodySolid({ parameters: { ...s.parameters, sketchFeatures: feats }, fillets: s.fillets }, s.subtractionGeometries, undefined, false);
+    const r = await rebuildBodySolid({ parameters: { ...s.parameters, sketchFeatures: feats } });
     try { (r.replicadShape as { delete?: () => void } | undefined)?.delete?.(); } catch { /* yalnız mesh gerekli */ }
     if (tick !== previewTick) { r.geometry.dispose(); return false; }
     const old = useDraft.getState().bodyPreview;
