@@ -128,12 +128,28 @@ export function surfaceRuleOf(surface: PanelSurface, cfg: PanelTypeConfig = useA
 // ═════════════════════════════════════════════════ 2. OTOMATİK TİP ═════════════════════════════════════════════════
 const dot3 = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const bodyBoxOf = (body: Shape): THREE.Box3 | null => localBboxOf(effectiveBodyGeometry(body));
-/** Gövde-yerel yön → rol: o yöne bakan en büyük gövde yüzünün rolü (elle verilmiş roller dahil); yüz yoksa ön yöne göre normalden. */
-function roleOfDir(body: Shape, d: Vec3, st: St = useAppStore.getState()): PanelEdgeDir {
-  let best: { role: PanelEdgeDir; area: number } | null = null;
-  for (const f of bodyFaces(body, st)) if (dot3(f.normal, d) > 0.9 && (!best || f.area > best.area)) best = { role: f.role, area: f.area };
+/** Gövde-yerel yön → rol: o yöne bakan gövde yüzünün rolü (elle verilmiş roller dahil); yüz yoksa ön yöne göre normalden.
+ *  `at` (gövde-yerel nokta: kenarın ortası, panelin merkezi) verilirse o yöne bakan yüzlerden noktanın ÖNÜNDEKİ yüz seçilir — düzlemi
+ *  noktanın ilerisinde (ya da üstünde) ve sınırları noktanın izdüşümünü kapsayan, en yakın olan. L / çentikli gövdede aynı yöne bakan iki yüzün
+ *  rolü farklı olabilir (köşe dolabında büyük +Z yüzü "left", çentik yüzü "front"): EN BÜYÜK yüzü almak çentiğe bakan kenara yanlış rol
+ *  veriyordu (sağ panelin ön kenarı "left" → bant gelmedi). `at` yoksa eski davranış: en büyük yüz. */
+function roleOfDir(body: Shape, d: Vec3, st: St = useAppStore.getState(), at?: Vec3 | null): PanelEdgeDir {
+  let best: { role: PanelEdgeDir; score: number } | null = null;
+  for (const f of bodyFaces(body, st)) {
+    if (dot3(f.normal, d) <= 0.9) continue;
+    let score = -f.area;
+    if (at) {
+      const along = dot3([f.center[0] - at[0], f.center[1] - at[1], f.center[2] - at[2]], d);
+      let outside = 0;
+      for (let a = 0; a < 3; a++) if (Math.abs(d[a]) < 0.5) outside += Math.max(0, f.bounds.min[a] - at[a] - 1, at[a] - f.bounds.max[a] - 1);
+      // Noktanın gerisinde kalan yüz (düzlemi 2 mm'den fazla arkada) en sona; sonra izdüşümün yüze uzaklığı, sonra düzleme uzaklık.
+      score = (along < -2 ? 1e6 : 0) + outside * 4 + Math.max(0, along) - f.area * 1e-9;
+    }
+    if (!best || score < best.score) best = { role: f.role, score };
+  }
   return best?.role ?? roleOfNormal({ x: d[0], y: d[1], z: d[2] }, bodyFrontAxis(body, st).facing);
 }
+const boxCenterV = (b: THREE.Box3): Vec3 => [(b.min.x + b.max.x) / 2, (b.min.y + b.max.y) / 2, (b.min.z + b.max.z) / 2];
 /** Panelin yüzeyi: iç panelde araç (raf / dikme / arkalık), gövde panelinde üstünde durduğu gövde yüzünün özel görevi (kolon / kiriş),
  *  yoksa yön rolü. Kapak / baza seti → null. */
 function surfaceOfVf(vf: VirtualFace, st: St = useAppStore.getState()): PanelSurface | null {
@@ -151,7 +167,7 @@ function surfaceOfVf(vf: VirtualFace, st: St = useAppStore.getState()): PanelSur
     const score = d + (inside ? 0 : 1);
     if (!best || score < best.d - 0.5) best = { role: f.kind ?? f.role, d: score };
   }
-  return best && best.d < 3 ? best.role : roleOfDir(body, vf.normal, st);
+  return best && best.d < 3 ? best.role : roleOfDir(body, vf.normal, st, vf.center);
 }
 const boxOfPoints = (pts: Vec3[]): THREE.Box3 | null => (pts.length ? new THREE.Box3().setFromPoints(pts.map(p => new THREE.Vector3(...p))) : null);
 /** Yüzeydeki yer: yüzeyin yarısından fazlasını kaplıyorsa 'full'; değilse hangi yarıda olduğu. Sol / sağ yüzde hep 'full'. */
@@ -271,11 +287,14 @@ export function panelOrientation(panel: Shape | undefined | null, st: St = useAp
   const toBody = fr.inv.clone().invert();
   const dirOf = (i: number, sign: number): Vec3 => { const v = new THREE.Vector3().setComponent(i, sign).applyQuaternion(toBody); return [v.x, v.y, v.z]; };
   const thin = ax.axes[0].i, inPlane = [0, 1, 2].filter(i => i !== thin);
-  const faces: [PanelEdgeDir, PanelEdgeDir] = [roleOfDir(body, dirOf(thin, 1), st), roleOfDir(body, dirOf(thin, -1), st)];
+  // Rol konuma bağlı (roleOfDir): panelin merkezi ve kenarlarının ortası gövde-yerel.
+  const bb = localBboxOf(panel.geometry), c = bb ? boxCenterV(bb) : null;
+  const at = (dir: Vec3, half: number): Vec3 | null => (c ? [c[0] + dir[0] * half, c[1] + dir[1] * half, c[2] + dir[2] * half] : null);
+  const faces: [PanelEdgeDir, PanelEdgeDir] = [roleOfDir(body, dirOf(thin, 1), st, c), roleOfDir(body, dirOf(thin, -1), st, c)];
   const edges: PanelEdgeInfo[] = [];
   for (const i of inPlane) for (const sign of [1, -1]) {
     const dir = dirOf(i, sign), other = inPlane.find(k => k !== i)!;
-    edges.push({ role: roleOfDir(body, dir, st), dir, length: round1(ax.size.getComponent(other)) });
+    edges.push({ role: roleOfDir(body, dir, st, at(dir, ax.size.getComponent(i) / 2)), dir, length: round1(ax.size.getComponent(other)) });
   }
   return { plane: PLANE_OF_ROLE[faces[0]], thickness: round1(ax.size.getComponent(thin)), faces, edges };
 }
@@ -701,7 +720,7 @@ function hiddenFaceRole(type: PanelTypeId, plane: Exclude<PanelPlane, 'any'>, bo
   if (plane === 'horizontal') return type === 'top' || type.startsWith('top') ? 'top' : 'bottom';
   if (plane === 'frontal') return 'rear';
   const bb = bodyBoxOf(body), c = (box.min.getComponent(thin) + box.max.getComponent(thin)) / 2, bc = bb ? (bb.min.getComponent(thin) + bb.max.getComponent(thin)) / 2 : c;
-  return Math.abs(c - bc) < 1 ? 'left' : roleOfDir(body, unit(thin, c > bc ? 1 : -1), st);
+  return Math.abs(c - bc) < 1 ? 'left' : roleOfDir(body, unit(thin, c > bc ? 1 : -1), st, boxCenterV(box));
 }
 const _jointCache = new Map<string, { sig: string; joints: PanelJoint[] }>();
 /** Gövdenin tüm birleşimleri (kural + temas). Sonuç panel geometrileri / tipler / kütüphane değişene kadar saklanır. */
@@ -720,7 +739,7 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
     }).filter((x): x is NonNullable<typeof x> => !!x);
   // İmzada panelin elle set seçimi de var (setlerin içeriği ve varsayılanı `connectorLayouts` ile zaten imzada).
   const picks = (vf: VirtualFace) => `${CONNECTOR_GROUPS.map(g => panelSetPick(vf, g.key, st) ?? (panelSetPick(vf, g.key, st) === null ? '-' : '')).join('/')}/${panelFlipPick(vf, st) ?? ''}/${vf.connectorEdges ? JSON.stringify(vf.connectorEdges) : ''}`;
-  const sig = `${slabs.map(s => `${s.p.id}:${s.uuid}:${s.type}:${picks(s.vf)}`).join('|')}#${JSON.stringify(cfg.rules ?? {})}#${st.connectors.map(c => c.id).join(',')}#${JSON.stringify(st.connectorLayouts)}#${bodyFrontAxis(body, st).facing}`;
+  const sig = `${slabs.map(s => `${s.p.id}:${s.uuid}:${s.type}:${picks(s.vf)}`).join('|')}#${JSON.stringify(cfg.rules ?? {})}#${st.connectors.map(c => c.id).join(',')}#${JSON.stringify(st.connectorLayouts)}#${bodyFrontAxis(body, st).facing}#${JSON.stringify(bodyFaceRolesOf(body))}`;
   const hit = _jointCache.get(bodyId);
   if (hit && hit.sig === sig) {
     // Bağlayıcının içeriği (delik / model) değişmiş olabilir: nesne güncel listeden yeniden bağlanır.
@@ -730,10 +749,13 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
   for (const B of slabs) {
     const edges = B.type ? cfg.rules?.[B.type]?.edges : undefined;
     if (!B.type || !edges || !ruleHasGroup({ edges })) continue;
-    const plane = PLANE_OF_ROLE[roleOfDir(body, unit(B.thin, 1), st)];
-    const faceRoles: [PanelEdgeDir, PanelEdgeDir] = [roleOfDir(body, unit(B.thin, 1), st), roleOfDir(body, unit(B.thin, -1), st)];
+    const bc = boxCenterV(B.info.box);
+    const plane = PLANE_OF_ROLE[roleOfDir(body, unit(B.thin, 1), st, bc)];
+    const faceRoles: [PanelEdgeDir, PanelEdgeDir] = [roleOfDir(body, unit(B.thin, 1), st, bc), roleOfDir(body, unit(B.thin, -1), st, bc)];
     for (const i of [0, 1, 2]) if (i !== B.thin) for (const s of [1, -1]) {
-      const role = roleOfDir(body, unit(i, s), st);
+      // Kenarın ortası (rol konuma bağlı — L gövdede aynı yöne bakan yüzlerin rolü farklı olabilir).
+      const ec: Vec3 = [...bc]; ec[i] = s > 0 ? B.info.box.max.getComponent(i) : B.info.box.min.getComponent(i);
+      const role = roleOfDir(body, unit(i, s), st, ec);
       // Kenarın grubu → PANELİN o kenardaki seti (kenar-özel seçim → panelin seti → varsayılan) → satırları (bağlayıcısı olanlar); satır kimliği birleşim anahtarına girer. Boy aralığı temas
       // boyu belli olunca elenir.
       const list = rulesIn(edges, role).flatMap(rule => (panelEdgeSetOf(B.vf, role, rule.group!, st)?.lines ?? [])
@@ -744,7 +766,7 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
       const tB = end.max[B.thin] - end.min[B.thin];
       // Dizilim yönü: kenarın bitiş ucunun rolüne bakan eksen yönü (derinlikte önden arkaya …).
       const endRole = EDGE_ENDS[plane][role]?.[1];
-      const aSign = roleOfDir(body, unit(a, 1), st) === endRole ? 1 : roleOfDir(body, unit(a, -1), st) === endRole ? -1 : 1;
+      const aSign = roleOfDir(body, unit(a, 1), st, ec) === endRole ? 1 : roleOfDir(body, unit(a, -1), st, ec) === endRole ? -1 : 1;
       // Kolon / kiriş panelinde görünmeyen yüz = kolona / kirişe bakan yüz (panelin oturduğu gövde yüzünün dış yönü).
       const want = hiddenFaceRole(B.type, plane, body, B.info.box, B.thin, st);
       const hidden = TYPE_BY_ID.get(B.type)?.group === 'boxing' ? (B.vf.normal[B.thin] >= 0 ? 1 : -1) : faceRoles[0] === want ? 1 : faceRoles[1] === want ? -1 : 1;
@@ -1232,7 +1254,8 @@ function panelBandingOf(s: BandSource, body: Shape, slabs: BandSlab[], cfg: Edge
     const nIn = T ? n.clone().addScaledVector(T, -n.dot(T)) : n.clone();
     if (nIn.lengthSq() < 1e-6) continue;
     nIn.normalize();
-    const role = roleOfDir(body, [nIn.x, nIn.y, nIn.z], st), tris = g.faceIndices.map(fi => faces[fi]);
+    // Rol, kenarın ÖNÜNDEKİ gövde yüzünden (konuma bağlı): L gövdede çentiğe bakan kenar çentik yüzünün rolünü alır.
+    const role = roleOfDir(body, [nIn.x, nIn.y, nIn.z], st, [g.center.x, g.center.y, g.center.z]), tris = g.faceIndices.map(fi => faces[fi]);
     const own = s.vf.edgeBands?.[role], rule = bandRuleOf(s.type, role, cfg);
     let cols: THREE.Vector3[][] = [], weights: number[] | null = null, length = 0, a = g.center.clone(), b = g.center.clone();
     const paint: BandPaintEdge = { n, d: 0, L: new THREE.Vector3(), l0: 0, l1: 0, on: false, cents: null };

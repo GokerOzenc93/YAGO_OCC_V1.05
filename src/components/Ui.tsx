@@ -181,7 +181,7 @@ export function useEscapeOwner(key: string, active: boolean): void {
 }
 
 export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }> = ({ activeTab, hasShape }) => {
-  const s = useStoreFields('accessoryCategory', 'setAccessoryCategory', 'raycastMode', 'setRaycastMode', 'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'doorPickMode',
+  const s = useStoreFields('showFaceRoles', 'setShowFaceRoles', 'accessoryCategory', 'setAccessoryCategory', 'raycastMode', 'setRaycastMode', 'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'doorPickMode',
     'setDoorPickMode', 'backPickMode', 'setBackPickMode', 'plinthPickMode', 'setPlinthPickMode', 'quickBodyMode', 'setQuickBodyMode', 'vertexEditMode', 'setVertexEditMode',
     'subtractionViewMode', 'setSubtractionViewMode', 'filletMode', 'setFilletMode', 'setFaceEditMode', 'selectedFilletFaces', 'clearFilletFaces',
     'clearFilletFaceData', 'selectedShapeId', 'shapes', 'virtualFaces');
@@ -206,6 +206,8 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
       ...toggleEdit(s.subtractionViewMode, s.setSubtractionViewMode) },
     { key: 'fillet', label: 'Fillet', icon: 'fillet', title: 'Round the edge between two faces', active: s.filletMode,
       badge: filletN > 0 ? `${filletN}/2` : undefined, onClick: toggleFillet },
+    { key: 'roles', group: 'Faces', label: 'Face\nroles', icon: 'face-roles', active: s.showFaceRoles, onClick: () => s.setShowFaceRoles(!s.showFaceRoles),
+      title: 'Show the role of every face on the body (front, rear, left, right, top, bottom, column / beam) — click a label in the 3D view to change it. Panel edges, edge banding and connectors follow these roles' },
     { key: 'param', group: 'Data', label: 'Param', icon: 'param-add', title: 'Add a custom parameter', onClick: () => railActions.addCustomParameter?.() },
   ];
   const vp = (m: 'shelf' | 'divider') => s.volumePickMode === m && !s.volumePickGroupId;
@@ -264,7 +266,7 @@ export type IconName =
   | 'draw-ellipse-axis' | 'draw-erase' | 'draw-explode' | 'draw-extend' | 'draw-face' | 'draw-fillet' | 'draw-join' | 'draw-line' | 'draw-mirror'
   | 'draw-modea' | 'draw-modep' | 'draw-move' | 'draw-offset' | 'draw-pline' | 'draw-poly' | 'draw-poly-c' | 'draw-poly-e' | 'draw-rect'
   | 'draw-rect-cen' | 'draw-rect-rot' | 'draw-rotate' | 'draw-scale' | 'draw-shape' | 'draw-solo' | 'draw-stretch' | 'draw-stretchx'
-  | 'draw-stretchy' | 'draw-trim' | 'edge-band' | 'exit' | 'export' | 'eye' | 'file-new' | 'fillet' | 'float' | 'fullscreen' | 'grid' | 'grip' | 'help' | 'import'
+  | 'draw-stretchy' | 'draw-trim' | 'edge-band' | 'exit' | 'export' | 'eye' | 'face-roles' | 'file-new' | 'fillet' | 'float' | 'fullscreen' | 'grid' | 'grip' | 'help' | 'import'
   | 'layers' | 'layout' | 'legs' | 'light' | 'material' | 'monitor' | 'move' | 'move-p2p' | 'open' | 'ortho' | 'ortho-off' | 'outlines' | 'panel'
   | 'param-add' | 'params' | 'paste' | 'pin' | 'plinth' | 'polar' | 'redo' | 'report' | 'rotate' | 'ruler' | 'save' | 'save-as' | 'scale' | 'search'
   | 'select' | 'select-body' | 'select-panel' | 'settings' | 'shelf' | 'snap' | 'snap-center' | 'snap-endpoint' | 'snap-intersection'
@@ -2015,7 +2017,9 @@ const ROLE_DOT: Record<FaceRole | FaceKind, string> = {
   columnSide: '#6d5fa3', columnFront: '#6d5fa3', beamFront: '#a16207', beamHoriz: '#a16207',
 };
 function FacesSection({ shape }: { shape: Shape }) {
-  const { setFaceRoleHover, showFaceRoles, setShowFaceRoles, doorGroups } = useStoreFields('setFaceRoleHover', 'showFaceRoles', 'setShowFaceRoles', 'doorGroups');
+  const { setFaceRoleHover, showFaceRoles, doorGroups } = useStoreFields('setFaceRoleHover', 'showFaceRoles', 'doorGroups');
+  // Liste kendi düğmesiyle açılır; küpteki rol etiketleri AYRI düğmede (rayda "Face roles" → showFaceRoles).
+  const [listOpen, setListOpen] = useState(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const faces = useMemo(() => bodyFaces(shape), [shape, shape.parameters?.faceRoles, doorGroups]);
   const front = bodyFrontAxis(shape);
@@ -2023,16 +2027,19 @@ function FacesSection({ shape }: { shape: Shape }) {
   if (!faces.length) return null;
   const hover = (gi: number | null) => setFaceRoleHover(gi == null ? null : { shapeId: shape.id, gi });
   const axisLabel = (f: { axis: string | null }) => (f.axis ? (PLINTH_FACING_LABEL[f.axis] ?? f.axis) : '∠');
-  // Liste varsayılan kapalı; "Show face roles" açılınca yüzlere rozet yazılır, rozete tık da değiştirir.
+  // Liste varsayılan kapalı ("Show list"); küpteki rozetler soldaki "Face roles" düğmesiyle — ikisi birbirinden bağımsız.
   return (
     <ParamSection title="Faces" count={faces.length}
-      right={<button type="button" onClick={() => setShowFaceRoles(!showFaceRoles)} aria-pressed={showFaceRoles}
-        title="Show the role of every face on the body (click a label in the 3D view to change it) and list the faces here"
-        className={`h-[22px] px-2.5 rounded-[6px] text-[10.5px] font-semibold tracking-[0.02em] ring-1 transition-colors
-          ${showFaceRoles ? 'bg-[#292524] text-white ring-[#292524]' : 'bg-white text-stone-600 ring-[#e3ddd4] hover:bg-[#f6f3ee] hover:ring-[#cfc7bc] hover:text-stone-800'}`}>
-        Show face roles
-      </button>}>
-      {showFaceRoles && (
+      right={<div className="flex items-center gap-1.5">
+        {showFaceRoles && <span className="yago-hint shrink-0" title="Face role labels are shown on the body — turn them off with Face roles on the left">labels on</span>}
+        <button type="button" onClick={() => setListOpen(o => !o)} aria-pressed={listOpen}
+          title="List every face of the body with its role here — change a role from the list"
+          className={`h-[22px] px-2.5 rounded-[6px] text-[10.5px] font-semibold tracking-[0.02em] ring-1 transition-colors
+            ${listOpen ? 'bg-[#292524] text-white ring-[#292524]' : 'bg-white text-stone-600 ring-[#e3ddd4] hover:bg-[#f6f3ee] hover:ring-[#cfc7bc] hover:text-stone-800'}`}>
+          {listOpen ? 'Hide list' : 'Show list'}
+        </button>
+      </div>}>
+      {listOpen && (
         <>
           <div className={P_ROW} title="Front of the body (default +Z). Every face role, the plinth leg offsets, doors, backs and the quick body follow it.">
             <span className={P_CODE}>F</span>
