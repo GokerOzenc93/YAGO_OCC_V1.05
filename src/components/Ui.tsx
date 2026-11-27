@@ -182,30 +182,14 @@ export function useEscapeOwner(key: string, active: boolean): void {
 
 export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }> = ({ activeTab, hasShape }) => {
   const s = useStoreFields('showFaceRoles', 'setShowFaceRoles', 'accessoryCategory', 'setAccessoryCategory', 'raycastMode', 'setRaycastMode', 'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'doorPickMode',
-    'setDoorPickMode', 'backPickMode', 'setBackPickMode', 'plinthPickMode', 'setPlinthPickMode', 'quickBodyMode', 'setQuickBodyMode', 'vertexEditMode', 'setVertexEditMode',
-    'subtractionViewMode', 'setSubtractionViewMode', 'filletMode', 'setFilletMode', 'setFaceEditMode', 'selectedFilletFaces', 'clearFilletFaces',
-    'clearFilletFaceData', 'selectedShapeId', 'shapes', 'virtualFaces');
+    'setDoorPickMode', 'backPickMode', 'setBackPickMode', 'plinthPickMode', 'setPlinthPickMode', 'quickBodyMode', 'setQuickBodyMode',
+    'selectedShapeId', 'shapes', 'virtualFaces');
   const sel = shapeById(s.selectedShapeId, s.shapes);
-  const subN = sel?.subtractionGeometries?.filter(x => x !== null).length ?? 0;
-  const filletN = s.selectedFilletFaces.length;
   // Hızlı gövde yerleşmişse düğme pasif: paneller listedeki Body satırından düzenlenir; hepsi silinince yeniden etkin.
   const bodyPlaced = !!sel && s.virtualFaces.some(f => f.shapeId === sel.id && !!f.quickBody);
   const toggle = (on: boolean, set: (b: boolean) => void) => ({ active: on, onClick: () => set(!on) });
-  // Vertex / Subtract açılınca fillet ve yüz düzenleme kapanır; Fillet açılınca ikisi kapanır.
-  const toggleEdit = (on: boolean, set: (b: boolean) => void) => ({
-    active: on, onClick: () => { set(!on); if (!on) { s.setFilletMode(false); s.setFaceEditMode(false); } },
-  });
-  const toggleFillet = () => {
-    const n = !s.filletMode;
-    s.setFilletMode(n); s.setFaceEditMode(n); s.clearFilletFaces(); s.clearFilletFaceData();
-    if (n) { s.setVertexEditMode(false); s.setSubtractionViewMode(false); }
-  };
+  // Vertex / Subtract / Fillet düğmeleri kaldırıldı (Goker, 27 Kas 2026): gövdenin biçimi Drawing kipinde (Shape / Cut, radüs) verilir.
   const params: RailSpec[] = [
-    { key: 'vertex', group: 'Shape', label: 'Vertex', icon: 'vertex', title: 'Edit the body outline by moving vertices', ...toggleEdit(s.vertexEditMode, s.setVertexEditMode) },
-    { key: 'subtract', label: 'Subtract', icon: 'subtract', title: 'Show and edit boolean subtractions', badge: subN > 0 ? subN : undefined,
-      ...toggleEdit(s.subtractionViewMode, s.setSubtractionViewMode) },
-    { key: 'fillet', label: 'Fillet', icon: 'fillet', title: 'Round the edge between two faces', active: s.filletMode,
-      badge: filletN > 0 ? `${filletN}/2` : undefined, onClick: toggleFillet },
     { key: 'roles', group: 'Faces', label: 'Face\nroles', icon: 'face-roles', active: s.showFaceRoles, onClick: () => s.setShowFaceRoles(!s.showFaceRoles),
       title: 'Show the role of every face on the body (front, rear, left, right, top, bottom, column / beam) — click a label in the 3D view to change it. Panel edges, edge banding and connectors follow these roles' },
     { key: 'param', group: 'Data', label: 'Param', icon: 'param-add', title: 'Add a custom parameter', onClick: () => railActions.addCustomParameter?.() },
@@ -266,11 +250,11 @@ export type IconName =
   | 'draw-ellipse-axis' | 'draw-erase' | 'draw-explode' | 'draw-extend' | 'draw-face' | 'draw-fillet' | 'draw-join' | 'draw-line' | 'draw-mirror'
   | 'draw-modea' | 'draw-modep' | 'draw-move' | 'draw-offset' | 'draw-pline' | 'draw-poly' | 'draw-poly-c' | 'draw-poly-e' | 'draw-rect'
   | 'draw-rect-cen' | 'draw-rect-rot' | 'draw-rotate' | 'draw-scale' | 'draw-shape' | 'draw-solo' | 'draw-stretch' | 'draw-stretchx'
-  | 'draw-stretchy' | 'draw-trim' | 'edge-band' | 'exit' | 'export' | 'eye' | 'face-roles' | 'file-new' | 'fillet' | 'float' | 'fullscreen' | 'grid' | 'grip' | 'help' | 'import'
+  | 'draw-stretchy' | 'draw-trim' | 'edge-band' | 'exit' | 'export' | 'eye' | 'face-roles' | 'file-new' | 'float' | 'fullscreen' | 'grid' | 'grip' | 'help' | 'import'
   | 'layers' | 'layout' | 'legs' | 'light' | 'material' | 'monitor' | 'move' | 'move-p2p' | 'open' | 'ortho' | 'ortho-off' | 'outlines' | 'panel'
   | 'param-add' | 'params' | 'paste' | 'pin' | 'plinth' | 'polar' | 'redo' | 'report' | 'rotate' | 'ruler' | 'save' | 'save-as' | 'scale' | 'search'
   | 'select' | 'select-body' | 'select-panel' | 'settings' | 'shelf' | 'snap' | 'snap-center' | 'snap-endpoint' | 'snap-intersection'
-  | 'snap-midpoint' | 'snap-nearest' | 'snap-perpendicular' | 'snap-quadrant' | 'snap-tangent' | 'subtract' | 'undo' | 'unpin' | 'vertex'
+  | 'snap-midpoint' | 'snap-nearest' | 'snap-perpendicular' | 'snap-quadrant' | 'snap-tangent' | 'subtract' | 'undo' | 'unpin'
   | 'view-solid' | 'view-wireframe' | 'view-xray' | 'window';
 const ICON_FILES = import.meta.glob('../icons/*.svg', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 const ICON_SRC: Record<string, { svg: string; vb: number }> = {};
