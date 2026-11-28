@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import initOpenCascade from 'opencascade.js';
-import { Plane, cast, draw, makePolygon, makeSolid, setOC } from 'replicad';
+import { Plane, type Shape3D, cast, draw, iterTopo, makePolygon, makeSolid, measureVolume, setOC } from 'replicad';
 import { type BrepTriInfo, cutShape, geometryFromMeshData, meshDataOf, startCutWorker } from './CutWorker';
 import {
   type VirtualFace, type FaceDescriptor, type Shape, shapeById, requestRebuild, vfOfPanel, type RefFacePick,
@@ -2363,9 +2363,13 @@ export interface ExtrudeStep {
   refFaceGroupIndex?: number;
   refNormalWorld?: Vec3;
   refPointWorld?: Vec3;
+  /** Referans EĞRİ (bombeli) yüz: Extrude'da uç o yüzeyin şeklini alır, Dimensions edit'te düz uç yüzeye İLK değdiği yerde durur. */
+  refCurved?: boolean;
   /** Yalnız rebuild anında (kalıcı değil): referansın çözülen düzlemi. */
   refPlaneCenterLocal?: Vec3;
   refPlaneNormalLocal?: Vec3;
+  /** Yalnız rebuild anında: eğri referans yüzeyi — üçgenleri (panel çerçevesinde), sahibinin katısı, sahibi gövde mi. */
+  refSurface?: { tris: Float64Array; solid: Shape3D; body: boolean };
   resolvedValue?: number;
   /** OK modu adımı: her rebuild'de bu eksen yönündeki EN DIŞ yüze uygulanır (aynı ok tekrar tıklanınca değer toplanır). */
   outer?: boolean;
@@ -2584,12 +2588,23 @@ const dominantAxis = (n: THREE.Vector3): AxisLetter => dominantAxisLabel(n)[0].t
 
 /** Referans yüz grubunu güncel geometride bulur: normal (> 0.8) + tıklamaya en yakın merkez; yoksa saklı indeks. */
 export function matchReferenceFace(
-  ref: Shape | undefined, refFaceGroupIndex: number, refNormalWorld?: Vec3, refPointWorld?: Vec3
+  ref: Shape | undefined, refFaceGroupIndex: number, refNormalWorld?: Vec3, refPointWorld?: Vec3, /** eğri yüz referansı */ curved = false,
 ): { group: CoplanarFaceGroup; faces: FaceData[]; matrix: THREE.Matrix4 } | null {
   if (!ref?.geometry) return null;
   const { faces, groups } = getFacesAndGroups(ref.geometry);
   let group = groups[refFaceGroupIndex];
   const matrix = getShapeMatrix(ref);
+  if (curved) {
+    // Eğri yüzün ortalama normali / merkezi yüzü tanıtmaz: tıklanan noktaya en yakın EĞRİ yüz (üçgen merkezlerinden).
+    const lp = refPointWorld ? new THREE.Vector3(...refPointWorld).applyMatrix4(matrix.clone().invert()) : null;
+    let best: CoplanarFaceGroup | null = null, bd = Infinity;
+    if (lp) for (const g of groups) {
+      if (!g.isCurved) continue;
+      for (const fi of g.faceIndices) { const d = faces[fi].center.distanceToSquared(lp); if (d < bd) { bd = d; best = g; } }
+    }
+    if (best) group = best;
+    return group?.isCurved ? { group, faces, matrix } : null;
+  }
   if (refNormalWorld && refPointWorld) {
     // Nokta için TERS matris (klon), normal için orijinal matris.
     const localPoint = new THREE.Vector3(...refPointWorld).applyMatrix4(matrix.clone().invert());
@@ -2607,6 +2622,66 @@ export function resolveReferenceFacePlane(
 ): { center: THREE.Vector3; normal: THREE.Vector3 } | null {
   const m = matchReferenceFace(shapeById(refShapeId, shapes), refFaceGroupIndex, refNormalWorld, refPointWorld);
   return m ? { center: m.group.center.clone(), normal: m.group.normal.clone().normalize() } : null;
+}
+
+/** Yüz grubunun üçgenleri düz dizi olarak (9 sayı / üçgen), isteğe bağlı matrisle dönüştürülmüş. */
+export function groupTriangles(faces: FaceData[], group: CoplanarFaceGroup, matrix?: THREE.Matrix4): Float64Array {
+  const out = new Float64Array(group.faceIndices.length * 9), v = new THREE.Vector3();
+  group.faceIndices.forEach((fi, k) => {
+    const vs = faces[fi]?.vertices ?? [];
+    for (let j = 0; j < 3; j++) { v.copy(vs[j] ?? vs[0]); if (matrix) v.applyMatrix4(matrix); out[k * 9 + j * 3] = v.x; out[k * 9 + j * 3 + 1] = v.y; out[k * 9 + j * 3 + 2] = v.z; }
+  });
+  return out;
+}
+/** `o + t·d` DOĞRUSUNUN (iki yön) üçgenlerle kesişimi: |t| en küçük olan; kesişmiyorsa null. Eğri referans yüzeyine uzaklık. */
+export function lineToTriangles(tris: Float64Array, o: THREE.Vector3, d: THREE.Vector3): number | null {
+  let best: number | null = null;
+  for (let i = 0; i + 8 < tris.length; i += 9) {
+    const ax = tris[i], ay = tris[i + 1], az = tris[i + 2];
+    const e1x = tris[i + 3] - ax, e1y = tris[i + 4] - ay, e1z = tris[i + 5] - az, e2x = tris[i + 6] - ax, e2y = tris[i + 7] - ay, e2z = tris[i + 8] - az;
+    const px = d.y * e2z - d.z * e2y, py = d.z * e2x - d.x * e2z, pz = d.x * e2y - d.y * e2x;
+    const det = e1x * px + e1y * py + e1z * pz;
+    if (Math.abs(det) < 1e-10) continue;
+    const inv = 1 / det, tx = o.x - ax, ty = o.y - ay, tz = o.z - az;
+    const u = (tx * px + ty * py + tz * pz) * inv;
+    if (u < -1e-6 || u > 1 + 1e-6) continue;
+    const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
+    const v = (d.x * qx + d.y * qy + d.z * qz) * inv;
+    if (v < -1e-6 || u + v > 1 + 1e-6) continue;
+    const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
+    if (best === null || Math.abs(t) < Math.abs(best)) best = t;
+  }
+  return best;
+}
+/** Yüz grubunun örnek noktaları: her üçgenin köşeleri + kenar ortaları + merkezi (uzun üçgen kenarı `step` mm'den seyrek kalmayacak biçimde bölünür). */
+function groupSamplePoints(faces: FaceData[], group: CoplanarFaceGroup, step = 12): THREE.Vector3[] {
+  const out: THREE.Vector3[] = [];
+  for (const fi of group.faceIndices) {
+    const vs = faces[fi]?.vertices; if (!vs || vs.length < 3) continue;
+    const [a, b, c] = vs, L = Math.max(a.distanceTo(b), b.distanceTo(c), c.distanceTo(a)), n = Math.min(24, Math.max(2, Math.ceil(L / step)));
+    for (let i = 0; i <= n; i++) for (let j = 0; j <= n - i; j++) {
+      const u = i / n, v = j / n;
+      out.push(new THREE.Vector3().copy(a).multiplyScalar(1 - u - v).addScaledVector(b, u).addScaledVector(c, v));
+    }
+  }
+  return out;
+}
+/** Çok parçalı katıdan tek parça: `near` verilirse kutusu o noktaya en yakın olan (eşitlikte büyük hacim), verilmezse en büyük hacimli.
+ *  Tek parçalıysa katının kendisi. Eğri yüzeyle kesimden / uzatmadan sonra öte yanda kalan kopuk artık atılır. */
+export function keepMainSolid<T>(shape: T, near?: THREE.Vector3): T {
+  try {
+    const solids = Array.from(iterTopo((shape as unknown as Shape3D).wrapped, 'solid')).map(s => cast(s) as Shape3D);
+    if (solids.length <= 1) return shape;
+    let best: Shape3D | null = null, bd = Infinity, bv = -Infinity;
+    for (const s of solids) {
+      const v = measureVolume(s);
+      if (v < 1) continue;
+      let d = 0;
+      if (near) { const [lo, hi] = s.boundingBox.bounds as unknown as number[][]; d = Math.hypot(...[0, 1, 2].map(k => Math.max(lo[k] - near.getComponent(k), 0, near.getComponent(k) - hi[k]))); }
+      if (d < bd - 0.5 || (Math.abs(d - bd) <= 0.5 && v > bv)) { best = s; bd = d; bv = v; }
+    }
+    return best ? (best as unknown as T) : shape;
+  } catch { return shape; }
 }
 
 
@@ -2793,7 +2868,21 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
   let extrudeAmount: number;
   // AÇILI referans: yüz köşelerinin düzleme (yüz normali boyunca) mesafe aralığı; uç eğime göre pahlanır.
   let bevel: { refC: THREE.Vector3; nOut: THREE.Vector3; tMin: number; tMax: number } | null = null;
-  if (step.refPlaneCenterLocal) {
+  // EĞRİ referans: yüzün örnek noktalarından yüz normali boyunca eğri yüzeye uzaklık aralığı.
+  let curve: { tMin: number; tMax: number } | null = null;
+  if (step.refSurface) {
+    const tris = step.refSurface.tris;
+    let tMin = Infinity, tMax = -Infinity;
+    for (const p of groupSamplePoints(faces, bestGroup)) {
+      const t = lineToTriangles(tris, p, faceNormal);
+      if (t === null) continue;
+      if (t < tMin) tMin = t; if (t > tMax) tMax = t;
+    }
+    if (!Number.isFinite(tMin)) return null;   // yüz o yüzeye hiç bakmıyor → adım atlanır
+    const tc = lineToTriangles(tris, faceCenter, faceNormal);
+    if (step.plane) extrudeAmount = tMin;      // Dimensions edit: düz uç yüzeye İLK değdiği yerde durur (yüzeyin içine girmez)
+    else { curve = { tMin, tMax }; extrudeAmount = tc ?? (tMin + tMax) / 2; }
+  } else if (step.refPlaneCenterLocal) {
     const refC = new THREE.Vector3(...step.refPlaneCenterLocal);
     const refN = step.refPlaneNormalLocal ? new THREE.Vector3(...step.refPlaneNormalLocal).normalize() : null;
     const par = refN ? refN.dot(faceNormal) : 1;
@@ -2819,7 +2908,7 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
   } else {
     extrudeAmount = step.value;
   }
-  if (!bevel && Math.abs(extrudeAmount) < 0.01) return { noop: true, amount: 0 };
+  if (!bevel && !curve && Math.abs(extrudeAmount) < 0.01) return { noop: true, amount: 0 };
 
   const samplePt = step.samplePoint ? new THREE.Vector3(...step.samplePoint) : undefined;
   const matchingFace = findMatchingReplicadFace(currentShape, faceNormal, faceCenter, samplePt);
@@ -2830,6 +2919,28 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
     pb.Build(new oc.Message_ProgressRange_1());
     return cast(pb.Shape());
   };
+  if (curve && step.refSurface) {
+    // 1) Yüz, eğri yüzeyi her noktada geçecek kadar uzatılır; 2) yüz sütununun yüzeyin ÖTESİNDE kalan kısmı kesilir → uç yüzeyin şeklini
+    //    alır. "Ötesi" yüzeyin sahibinden okunur: panelse katısının içi, gövdeyse gövdenin dışı. 3) Öte yanda kalan kopuk artık atılır.
+    const ext = curve.tMax + 2;
+    let shape = currentShape;
+    if (ext > 0.01) shape = shape.fuse(prismOf(matchingFace, ext));
+    const lo = Math.min(curve.tMin, 0) - 2, hi = Math.max(curve.tMax, 0) + 2;
+    const column = prismOf(matchingFace.clone().translate(faceNormal.x * lo, faceNormal.y * lo, faceNormal.z * lo), hi - lo);
+    const owner = step.refSurface.solid.clone();
+    let tool: Shape3D | null = null;
+    if (step.refSurface.body) tool = column.cut(owner);
+    else {
+      try { const common: Shape3D = column.intersect(owner); tool = measureVolume(common) > 0.5 ? common : null; } catch { tool = null; }
+      // Common boş / hatalı dönebiliyor → örtüşme kesmeyle kurulur (sütun − (sütun − panel)).
+      if (!tool) tool = column.clone().cut(column.clone().cut(step.refSurface.solid.clone()));
+    }
+    let toolVol = 0; try { toolVol = tool ? measureVolume(tool) : 0; } catch { toolVol = 0; }
+    const cutShape = toolVol > 0.5 ? shape.cut(tool) : shape;
+    const finalShape = keepMainSolid(cutShape, faceCenter.clone().addScaledVector(faceNormal, Math.min(curve.tMin, 0) - 5));
+    if (!(measureVolume(finalShape) > 1)) return null;
+    return { replicadShape: finalShape, geometry: convertReplicadToThreeGeometry(finalShape), amount: extrudeAmount };
+  }
   if (bevel) {
     // 1) Yüz, düzlemi her köşede geçecek kadar uzatılır; 2) yüz sütunu ∩ düzlemin ötesi kesilir → uç eğimli.
     let shape = currentShape;
@@ -2900,7 +3011,13 @@ export async function applyExtrudeSteps(
   const resolved: Array<{ id: string; value: number }> = [];
   for (const step of steps) {
     let effectiveStep = step;
-    if (step.refShapeId && shapes) {
+    if (step.refShapeId && shapes && step.refCurved) {
+      // EĞRİ referans: yüzey her rebuild'de sahibinin güncel ağından + katısından okunur.
+      const owner = shapeById(step.refShapeId, shapes);
+      const m = matchReferenceFace(owner, step.refFaceGroupIndex ?? -1, step.refNormalWorld, step.refPointWorld, true);
+      if (!m || !owner?.replicadShape) continue;
+      effectiveStep = { ...step, refSurface: { tris: groupTriangles(m.faces, m.group), solid: owner.replicadShape, body: owner.type !== 'panel' } };
+    } else if (step.refShapeId && shapes) {
       const plane = resolveReferenceFacePlane(step.refShapeId, step.refFaceGroupIndex ?? -1, shapes, step.refNormalWorld, step.refPointWorld);
       // Referans silinmiş/çözülemiyor → adım HİÇ uygulanmaz (yanlışlıkla tam kesim olmasın).
       if (!plane) continue;
@@ -2999,7 +3116,7 @@ async function executeFaceExtrudeToReference(
 ): Promise<boolean> {
   const up = upsertFaceStep(panel, faceGroupIndex, 0, true, clickPoint, {
     refShapeId: ref.panelId, refFaceGroupIndex: ref.faceGroupIndex, refNormalWorld: ref.normalWorld, refPointWorld: ref.pointWorld,
-    ...(plane ? { plane: true } : {}),
+    ...(ref.curved ? { refCurved: true } : {}), ...(plane ? { plane: true } : {}),
   });
   if (!up) return false;
   return commitAndRebuild(panel, { [up.key]: up.steps }, updateShape);

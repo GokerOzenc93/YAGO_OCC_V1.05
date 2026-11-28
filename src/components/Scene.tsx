@@ -19,6 +19,7 @@ import {
   axisDirToVec, uniqueMeshPoints, confirmPanelMoveRef, confirmPanelRotateRef, axisIndexOf, round1,
   swingPoints, footprintGeometry, outlineGeometry, isPostSketchFace, dominantAxisLabel, executeFaceExtrude, mapAxisToVfLocal, angleToTouchPlane, executePanelMove,
   executePanelMoveFixed, executePanelRotate, FACE_KINDS, FACE_KIND_LABEL, FACE_ROLES, FACE_ROLE_LABEL, type FaceKind, type FaceRole, faceRoleText,
+  matchReferenceFace, groupTriangles, lineToTriangles,
 } from './Geometry';
 import { connectorPartInstances, paintPanelBands, panelBandKey, panelBanding, placementTypeFor } from './ConnectorService';
 import {
@@ -3165,12 +3166,19 @@ function RefIsolatePicker({ rp }: { rp: RefPick }) {
   const moving = useMemo(() => refMovingNormal(useAppStore.getState(), rp), [rp.tool, rp.cavityId, rp.ownerId, s.faceExtrudeSelectedFace, s.faceExtrudeCavityFaceNormal]);   // eslint-disable-line react-hooks/exhaustive-deps
   // Yüz başına hüküm: null = referans olabilir, metin = neden olamaz.
   const verdicts = useMemo(() => groups.map((g: CoplanarFaceGroup): string | null => {
-    if (g.isCurved) return 'Curved face — pick a flat face';
+    if (g.isCurved) {
+      // Eğri (bombeli) yüz yalnız panel Extrude / Dimensions edit referansı olur (hacim ve döndürme düzlem ister); kenarın gidiş yönüne
+      // bakan bir kısmı olmalı.
+      if (rp.tool !== 'extrude' || rp.cavityId) return 'Curved face — pick a flat face';
+      if (!moving) return null;
+      const faces1 = g.faceIndices.some(fi => Math.abs(faces[fi].normal.clone().normalize().transformDirection(matrix).dot(moving.n)) >= moving.min);
+      return faces1 ? null : 'This face runs along the direction the edge moves — the edge can never reach it';
+    }
     if (!moving) return null;
     const dot = Math.abs(g.normal.clone().normalize().transformDirection(matrix).dot(moving.n));
     return dot >= moving.min ? null : rp.cavityId ? 'This face is not square to the volume face — it cannot be reached'
       : 'This face runs along the direction the edge moves — the edge can never reach it';
-  }), [groups, moving, matrix, rp.cavityId]);
+  }), [faces, groups, moving, matrix, rp.cavityId, rp.tool]);
   const [hover, setHover] = useState<number | null>(null);
   const blockedGeo = useMemo(() => {
     const idx = groups.flatMap((g: CoplanarFaceGroup, i: number) => (verdicts[i] ? g.faceIndices : []));
@@ -3182,7 +3190,9 @@ function RefIsolatePicker({ rp }: { rp: RefPick }) {
   useEffect(() => () => { hoverCursor(false); useAppStore.getState().setRefPickNote(null); }, []);
   if (!shape || !geometry) return null;
   const giOf = (e: any) => { const gi = groupIndexOfFace(groups, e.faceIndex); return gi >= 0 ? gi : null; };
-  const note = (gi: number | null) => useAppStore.getState().setRefPickNote(gi === null ? null : verdicts[gi] ?? `Click to use this face (${dominantAxisLabel(groups[gi].normal)})`);
+  const note = (gi: number | null) => useAppStore.getState().setRefPickNote(gi === null ? null : verdicts[gi] ?? (groups[gi].isCurved
+    ? (useAppStore.getState().sceneExtrudePlane ? 'Click to use this curved face — the edge stops where it first touches it' : 'Click to use this curved face — the edge takes its shape')
+    : `Click to use this face (${dominantAxisLabel(groups[gi].normal)})`));
   const ok = hover !== null && !verdicts[hover];
   return (
     <group matrix={matrix} matrixAutoUpdate={false}>
@@ -3194,7 +3204,8 @@ function RefIsolatePicker({ rp }: { rp: RefPick }) {
           const gi = giOf(e);
           if (gi === null || verdicts[gi]) return;
           const N = groups[gi].normal.clone().normalize().transformDirection(matrix), st = useAppStore.getState();
-          const pick = { panelId: shape.id, faceGroupIndex: gi, normalWorld: [N.x, N.y, N.z] as Vec3, pointWorld: [e.point.x, e.point.y, e.point.z] as Vec3 };
+          const pick = { panelId: shape.id, faceGroupIndex: gi, normalWorld: [N.x, N.y, N.z] as Vec3, pointWorld: [e.point.x, e.point.y, e.point.z] as Vec3,
+            ...(groups[gi].isCurved ? { curved: true } : {}) };
           if (rp.tool === 'rotate') st.setPanelRotateRefFace(pick); else st.setFaceExtrudeRefCandidate(pick);
         }}>
         <HitMaterial />
@@ -3944,6 +3955,11 @@ function SceneExtrudeTool({ t }: { t: SceneExTarget }) {
     const cand = S.faceExtrudeRefCandidate;
     if (mode !== 'ref' || !active || !cand || cand.faceGroupIndex < 0) return null;
     const i = faces.indexOf(active), nW = world[i].normal, N = new THREE.Vector3(...cand.normalWorld), par = nW.dot(N);
+    if (cand.curved) {
+      // Eğri referans: yol, yüzün çıpasından yüz normali boyunca yüzeye (motorla aynı ölçüm; uç yüzeyin şeklini alır).
+      const m = matchReferenceFace(shapeById(cand.panelId), cand.faceGroupIndex, cand.normalWorld, cand.pointWorld, true);
+      return m ? lineToTriangles(groupTriangles(m.faces, m.group, m.matrix), new THREE.Vector3(...world[i].origin), nW) : null;
+    }
     if (Math.abs(par) < 0.5) return null;
     return new THREE.Vector3(...cand.pointWorld).sub(new THREE.Vector3(...world[i].origin)).dot(N) / par;
   }, [mode, active, S.faceExtrudeRefCandidate, faces, world]);

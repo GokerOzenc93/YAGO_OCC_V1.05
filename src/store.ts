@@ -628,7 +628,7 @@ export type SceneToolStatus = {
   label: string; type: 'fixed' | 'dyn' | 'ref' | null; text: string;
   steps?: string[]; /** şimdiki adım; `steps.length` = hepsi bitti */ step?: number; note?: string | null; keys?: GuideKey[];
 };
-export type RefFacePick = { panelId: string; faceGroupIndex: number; normalWorld: Vec3; pointWorld: Vec3 };
+export type RefFacePick = { panelId: string; faceGroupIndex: number; normalWorld: Vec3; pointWorld: Vec3; /** eğri (bombeli) yüz: yalnız panel Extrude / Dimensions edit referansı */ curved?: boolean };
 
 export interface AppState {
   shapes: Shape[];

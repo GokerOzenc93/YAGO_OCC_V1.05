@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { Shape3D } from 'replicad';
 import {
   type CavityBox, type PanelGroup, type PanelHole, type RailExt, type RailExtTarget, type Shape, type VirtualFace, childPanelsOf, panelOfVf,
   engineLoad, entryGate, shapeById, useAppStore, vfOfPanel,
@@ -17,7 +18,7 @@ import {
   createPanelFromVirtualFace, createReplicadBox, createReplicadBoxAt, cutWithTools, deepCopyShape, dot3, errMsg, findFaceByDescriptor,
   fromPlaneUV, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix, halfSpaceSlab, isFlatNormal, localBboxOf, normDeg, panelThickness,
   pointFromFracBox, projRange, resolveVfFracPoint, rotateAboutAxis, round1, round3, spanAlong, toVector3, uniqueMeshPoints, uniquePoints, vec3,
-  vfRawMinAlong, worldBboxOf,
+  vfRawMinAlong, worldBboxOf, keepMainSolid,
 } from './Geometry';
 import { isInteriorPanel, isInteriorVf, makeInsideMeshTest, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
 import { edgeGapsOf, isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups } from './DoorService';
@@ -364,6 +365,65 @@ async function robustCut(out: any, tool: any, toolGeo: THREE.BufferGeometry | nu
 }
 const _curvedCutCache = new Map<string, any>();
 const _bodyClipCache = new WeakMap<THREE.BufferGeometry, Map<string, any>>();
+
+/* TAŞINMIŞ DÜZ PANEL, BİÇİMLİ GÖVDE — yeni yerinde eğri / eğik sınıra yeniden oturma.
+   Panelin bölgesi (VF çokgeni) yerleştiği hizadan gelir; eğri panel bölge damgalamaz, yayın açıldığı yöne taşınan panel yayın gerisinde
+   kalıyordu (düz kardeşte sorun yok: bölge kardeş damgalarıyla gerçek yerinde çözülür). YUMUŞAK kenar = eğri / eğik gövde yüzüne ya da
+   onun paneline dayanan kenar; çokgen o kenarlardan gövde kutusuna kadar uzatılır, taşınır ve uzantı gerçek sınırlarla kesilir. */
+/** Çokgenin yumuşak kenarlarından uzatılmışı; yumuşak kenar yoksa null. Düzlem: köşeler (dış yüz), levha −normal yönünde `t` kalınlığında. */
+function softGrownVerts(parent: Shape, normal: Vec3, verts: Vec3[], t: number): Vec3[] | null {
+  const geo = parent.geometry, bb = geo ? localBboxOf(geo) : null;
+  if (!geo || !bb || verts.length < 3) return null;
+  const n = new THREE.Vector3(...normal).normalize();
+  const { u, v } = getFacePlaneAxes(n);
+  const d0 = n.dot(new THREE.Vector3(...verts[0]));
+  const P = verts.map(q => { const p = new THREE.Vector3(...q); return { x: p.dot(u), y: p.dot(v) }; });
+  let area = 0;
+  for (let i = 0; i < P.length; i++) { const a = P[i], b = P[(i + 1) % P.length]; area += a.x * b.y - b.x * a.y; }
+  if (Math.abs(area) < 1) return null;
+  const ccw = area > 0, to3 = (x: number, y: number, off = 0) => new THREE.Vector3().addScaledVector(u, x).addScaledVector(v, y).addScaledVector(n, d0 + off);
+  const { faces, groups } = getFacesAndGroups(geo);
+  const inBody = insideTestOf(geo), tri = new THREE.Triangle(), cp = new THREE.Vector3();
+  const distTo = (g: CoplanarFaceGroup, p: THREE.Vector3): number => {
+    let best = Infinity;
+    for (const fi of g.faceIndices) { const vs = faces[fi]?.vertices; if (!vs || vs.length < 3) continue; tri.set(vs[0], vs[1], vs[2]); tri.closestPointToPoint(p, cp); const d = cp.distanceTo(p); if (d < best) best = d; }
+    return best;
+  };
+  // Panel düzlemine paralel olmayan gövde yüzleri: eksen duvarı (sert) / eğri ya da eğik yüz (yumuşak).
+  const side = groups.filter(g => g.isCurved || Math.abs(g.normal.clone().normalize().dot(n)) < 0.999);
+  const corners = [0, 1, 2, 3, 4, 5, 6, 7].map(i => new THREE.Vector3(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z));
+  const grow: number[] = [], out2: Array<{ x: number; y: number }> = [];
+  for (let i = 0; i < P.length; i++) {
+    const a = P[i], b = P[(i + 1) % P.length], dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy);
+    if (len < 0.5) { grow.push(0); out2.push({ x: 0, y: 0 }); continue; }
+    const ox = (ccw ? dy : -dy) / len, oy = (ccw ? -dx : dx) / len;
+    out2.push({ x: ox, y: oy });
+    const mid = to3((a.x + b.x) / 2, (a.y + b.y) / 2, -t / 2), o3 = new THREE.Vector3().addScaledVector(u, ox).addScaledVector(v, oy);
+    const wall = side.some(g => !g.isCurved && isFlatNormal(g.normal.clone().normalize()) && g.normal.clone().normalize().dot(o3) > 0.99 && distTo(g, mid) < 2);
+    let soft = false;
+    if (!wall) {
+      const probe = mid.clone().addScaledVector(o3, 1.5);
+      soft = !inBody([probe.x, probe.y, probe.z])
+        || side.some(g => (g.isCurved || !isFlatNormal(g.normal.clone().normalize())) && distTo(g, mid) <= t + 6);
+    }
+    grow.push(soft ? Math.max(0, ...corners.map(c => c.clone().sub(mid).dot(o3))) + 5 : 0);
+  }
+  if (!grow.some(g => g > 0)) return null;
+  // Her kenar kendi doğrusunda dışa ötelenir; köşe = komşu iki doğrunun kesişimi (sert kenar kendi doğrusunda uzar).
+  const res: Vec3[] = [];
+  for (let k = 0; k < P.length; k++) {
+    const i0 = (k - 1 + P.length) % P.length, a0 = P[i0], a1 = P[k], b1 = P[(k + 1) % P.length];
+    const p0 = { x: a0.x + out2[i0].x * grow[i0], y: a0.y + out2[i0].y * grow[i0] }, d0v = { x: a1.x - a0.x, y: a1.y - a0.y };
+    const p1 = { x: a1.x + out2[k].x * grow[k], y: a1.y + out2[k].y * grow[k] }, d1v = { x: b1.x - a1.x, y: b1.y - a1.y };
+    const den = d0v.x * d1v.y - d0v.y * d1v.x;
+    let x: number, y: number;
+    if (Math.abs(den) < 1e-6 * (Math.hypot(d0v.x, d0v.y) * Math.hypot(d1v.x, d1v.y) || 1)) { const g = Math.max(grow[i0], grow[k]); x = a1.x + out2[k].x * g; y = a1.y + out2[k].y * g; }
+    else { const s0 = ((p1.x - p0.x) * d1v.y - (p1.y - p0.y) * d1v.x) / den; x = p0.x + d0v.x * s0; y = p0.y + d0v.y * s0; }
+    const q = to3(x, y);
+    res.push([q.x, q.y, q.z]);
+  }
+  return res;
+}
 export async function cutByEarlierOverlaps(rp: any, panel: Shape, earlier: Shape[]): Promise<any> {
   if (!earlier.length) return rp;
   const mine = _overlapBox(rp);
@@ -2032,6 +2092,10 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
         catch { /* sınır kesilemedi → panel uzatılmış haliyle gövdeyle kesilir */ }
       }
 
+      // Taşınmış düz panel: yumuşak kenarlardan uzatılmış çokgen (yeni yerinde eğri / eğik sınıra oturmak için; aşağıda `fitMovedToSoftEdges`).
+      const softVerts = shaped && !isRotated && !isCurved && hasXform && !steps.some(st => st?.type === 'rotate')
+        ? softGrownVerts(parentFresh, vf.normal, buildVerts, thickness) : null;
+      const movedBy = new THREE.Vector3();
       const { ops, resolvedRotations, quat: stepRot } = composeSteps(steps, vf);
       const mergedRot = mergeResolved(steps, resolvedRotations);
       if (mergedRot) { steps = mergedRot as TransformStep[]; stepsChanged = true; }
@@ -2039,6 +2103,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       for (const op of ops) {
         if (op.kind === 'translate') {
           rp = rp.translate(op.d.x, op.d.y, op.d.z);
+          movedBy.add(op.d);
         } else if (op.kind === 'refTranslate') {
           let rpWorldBox: THREE.Box3;
           try { rpWorldBox = localBboxOf(convertReplicadToThreeGeometry(rp))!.translate(new THREE.Vector3(...parentPos)); }
@@ -2056,6 +2121,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
           // TEK KAYNAK: uygulanan delta panele yazılır; damgalama bunu okur (yeniden çözmez).
           refDeltaApplied = vec3(d);
           rp = rp.translate(d.x, d.y, d.z);
+          movedBy.add(d);
         } else {
           rp = rp.rotate(op.deg, vec3(op.pivot), vec3(op.axis));
         }
@@ -2084,6 +2150,47 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
           }
           if (status.ok && bucket && !(edgeFit!.limits.length)) { if (bucket.size > 16) bucket.delete(bucket.keys().next().value as string); bucket.set(clipKey!, deepCopyShape(rp)); }
         }
+      }
+      // TAŞINMIŞ panel yeni yerinde eğri / eğik sınıra oturur: uzatılmış levhanın panelin DIŞINDA kalan kısmı gövdeyle, bölge damgalayan
+      // (düz) bütün kardeşlerle ve sırada önce gelen eğri / eğik yüz panelleriyle kesilip panele eklenir. Panelin kendi kısmına dokunulmaz.
+      if (softVerts && movedBy.lengthSq() > 1e-6) {
+        try {
+          let ext = await createPanelFromVirtualFace(softVerts, vf.normal, thickness, 0);
+          if (ext) {
+            ext = ext.translate(movedBy.x, movedBy.y, movedBy.z);
+            const { measureVolume } = await import('replicad');
+            const status = { ok: true };
+            let extra = ext.cut(deepCopyShape(rp));
+            // Uzantının gövde içinde kalan kısmı yoksa (panel yeni yerinde de gövde sınırında) gövde kesişimi hiç denenmez.
+            if (parentFresh.geometry && probesInside(convertReplicadToThreeGeometry(extra), parentFresh.geometry).inside < 2) status.ok = false;
+            else extra = await intersectWithBody(extra, parentFresh, false, status);
+            // Uzantı yoksa (panel yeni yerinde de sınıra varıyor) kardeşlerle uğraşılmaz — incecik artıkta kesim boşuna denenirdi.
+            const live = () => status.ok && measureVolume(extra) > 1;
+            const myOrder = orderOf(panel);
+            for (const c of live() ? children : []) {
+              if (c.id === panel.id || isSheetPanel(c)) continue;
+              const fresh = shapeById(c.id);
+              if (!fresh?.replicadShape || !fresh.geometry) continue;
+              if (!panelStampsRegions(fresh, parentFresh, vfsIn) && orderOf(c) >= myOrder) continue;   // sonra gelen eğri panel bu paneli kendisi keser
+              if (!boundsOverlapBox(extra.boundingBox.bounds, localBboxOf(fresh.geometry)!)) continue;
+              // Önce düz kesim: uzantının TAMAMI kardeşin içindeyse (yan panelin kalınlığına denk gelen parça) sonuç boştur → uzantı düşer
+              // (doğrulamalı kesim boş sonucu "kurulamadı" sayıp uzantıyı aynen bırakıyor, panel yan panelin içinden geçiyordu).
+              const v0 = measureVolume(extra);
+              let rest: Shape3D | null = null, v1 = NaN;
+              try { const r: Shape3D = extra.clone().cut(deepCopyShape(fresh.replicadShape)); rest = r; try { v1 = measureVolume(r); } catch { v1 = 0; } } catch { rest = null; }
+              if (rest && v1 < 1) { status.ok = false; break; }
+              if (rest && v0 - v1 >= 1) { try { assertBounds(rest); extra = rest; continue; } catch { /* doğrulamalı kesime düşer */ } }
+              extra = (await robustCut(extra, deepCopyShape(fresh.replicadShape), fresh.geometry, `${panel.id} uzantı − ${fresh.id}`)).rp;
+              if (!live()) break;
+            }
+            if (live()) {
+              const c0 = toVector3(vf.center).add(movedBy).addScaledVector(vfNormal(vf), -thickness / 2);
+              const grown = keepMainSolid(rp.fuse(extra), c0);
+              assertBounds(grown);
+              if (measureVolume(grown) > measureVolume(rp) + 0.5) rp = grown;
+            }
+          }
+        } catch (err) { console.warn('[YAGO][MOTOR] taşınan panel eğri sınıra uzatılamadı:', panel.id, errMsg(err)); }
       }
       // Biçimlenmiş gövdede arkalık eğimli / eğri panellerin iç yüzünde biter (içlerinden geçip görünmesin).
       if (needsBodyClip && isBackPanel(panel)) {
