@@ -2160,7 +2160,8 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       let decor: { plan: DecorPlan; bytes: Uint8Array } | null = null;
       const feats = groove ? liveSketchFeatures(panel) : [];
       const postSteps = groove ? postExtrudeStepsOf(panel) : [];
-      if (groove && !isSheetPanel(panel)) {
+      // Arkalık da: kalın arkalığın düz birleşiminde bağlayıcı delikleri (kanalı yok — `backGrooveCuttersFor` arkalığa boş döner). Kapak hariç.
+      if (groove && (!isSheetPanel(panel) || isBackPanel(panel))) {
         const boxes = isRotated ? [] : mergeGrooveCutters(backGrooveCuttersFor(panel));
         // Bağlayıcılar: bu panelin B (uç + yüz) ya da A (temas yüzü) olduğu birleşimlerin delikleri + pocket / line katıları.
         const conn = connectorCutsFor(panel);
@@ -2317,7 +2318,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
   const connectorFixup = async (vfs: VirtualFace[], title?: string) => {
     for (let round = 0; round < 2; round++) {
       const st = useAppStore.getState();
-      const stale = children.filter(c => { const p = shapeById(c.id, st.shapes); return !!p && !isSheetPanel(p) && connectorCutSig(p, st) !== (_connSig.get(c.id) ?? ''); });
+      const stale = children.filter(c => { const p = shapeById(c.id, st.shapes); return !!p && (!isSheetPanel(p) || isBackPanel(p)) && connectorCutSig(p, st) !== (_connSig.get(c.id) ?? ''); });
       if (!stale.length) return;
       jobPlan(stale.map(panel => ({ panel, final: true })), title);
       for (const c of stale) await buildStep(c, vfs, true);

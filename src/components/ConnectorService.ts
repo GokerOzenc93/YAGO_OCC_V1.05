@@ -20,6 +20,8 @@ import { type Vec3, genId, getFacesAndGroups, largestFaceNormal, localBboxOf, ou
 import { type ToolSpec } from './CutWorker';
 import { type HoleCutter, CONNECTOR_LAYOUTS_ID, EDGE_BAND_CONFIG_ID, PANEL_TYPE_CONFIG_ID, holeCutterBox, holeCutterOf, importAccessoryFile, libraryDelete, libraryPut } from './AccessoryService';
 import { isDoorPanel } from './DoorService';
+// BackService ↔ PanelGroupService ↔ ConnectorService döngüsel: yalnız fonksiyon içinde kullanılır (üst düzeyde okuma yok).
+import { backGrooveCuttersFor } from './BackService';
 import { bodyFaceRolesOf, bodyFaces, bodyFrontAxis } from './PlinthService';
 import { geoAxes, panelFrameOf } from './PanelSchematics';
 import { QUICK_PANEL_NAME, QUICK_RAIL_NAME, groupName, renameMemberVfs } from './PanelGroupService';
@@ -723,6 +725,10 @@ function hiddenFaceRole(type: PanelTypeId, plane: Exclude<PanelPlane, 'any'>, bo
   return Math.abs(c - bc) < 1 ? 'left' : roleOfDir(body, unit(thin, c > bc ? 1 : -1), st, boxCenterV(box));
 }
 const _jointCache = new Map<string, { sig: string; joints: PanelJoint[] }>();
+/** Arkalıkla birleşimde bağlayıcı yalnız KALIN arkalıkta (mm; 18'lik levha — ölçü yuvarlaması payıyla). İnce arkalık çakılır / kanala girer. */
+export const BACK_CONNECTOR_MIN_T = 17.5;
+/** İki kutu gerçekten kesişiyor mu (her eksende `tol`'dan fazla). */
+const boxesCut = (a: CavityBox, b: CavityBox, tol = 0.05): boolean => [0, 1, 2].every(k => Math.min(a.max[k], b.max[k]) - Math.max(a.min[k], b.min[k]) > tol);
 /** Gövdenin tüm birleşimleri (kural + temas). Sonuç panel geometrileri / tipler / kütüphane değişene kadar saklanır. */
 export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): PanelJoint[] {
   const cfg = st.panelTypeConfig;
@@ -735,11 +741,14 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
       // Kalınlık ekseni: VF normali (dar şeritte en küçük ölçü kalınlık olmayabilir); belirsizse en küçük ölçü.
       const na = vf.normal.map(Math.abs), byN = na.indexOf(Math.max(...na));
       const thin = na[byN] > 0.9 ? byN : info.size.indexOf(Math.min(...info.size));
-      return { p, vf, info, thin, uuid: geo!.uuid, type: panelTypeOf(vf, st) };
+      return { p, vf, info, thin, uuid: geo!.uuid, type: panelTypeOf(vf, st), back: !!vf.backGroupId };
     }).filter((x): x is NonNullable<typeof x> => !!x);
+  // Arkalık kanalları (panel başına bir kez): kanal açılan birleşime bağlayıcı atılmaz.
+  const grooves = new Map<string, CavityBox[]>();
+  const groovesOf = (p: Shape): CavityBox[] => grooves.get(p.id) ?? grooves.set(p.id, backGrooveCuttersFor(p)).get(p.id)!;
   // İmzada panelin elle set seçimi de var (setlerin içeriği ve varsayılanı `connectorLayouts` ile zaten imzada).
   const picks = (vf: VirtualFace) => `${CONNECTOR_GROUPS.map(g => panelSetPick(vf, g.key, st) ?? (panelSetPick(vf, g.key, st) === null ? '-' : '')).join('/')}/${panelFlipPick(vf, st) ?? ''}/${vf.connectorEdges ? JSON.stringify(vf.connectorEdges) : ''}`;
-  const sig = `${slabs.map(s => `${s.p.id}:${s.uuid}:${s.type}:${picks(s.vf)}`).join('|')}#${JSON.stringify(cfg.rules ?? {})}#${st.connectors.map(c => c.id).join(',')}#${JSON.stringify(st.connectorLayouts)}#${bodyFrontAxis(body, st).facing}#${JSON.stringify(bodyFaceRolesOf(body))}`;
+  const sig = `${slabs.map(s => `${s.p.id}:${s.uuid}:${s.type}:${picks(s.vf)}`).join('|')}#${JSON.stringify(cfg.rules ?? {})}#${st.connectors.map(c => c.id).join(',')}#${JSON.stringify(st.connectorLayouts)}#${bodyFrontAxis(body, st).facing}#${JSON.stringify(bodyFaceRolesOf(body))}#${JSON.stringify(st.backGroups.filter(g => g.shapeId === bodyId))}`;
   const hit = _jointCache.get(bodyId);
   if (hit && hit.sig === sig) {
     // Bağlayıcının içeriği (delik / model) değişmiş olabilir: nesne güncel listeden yeniden bağlanır.
@@ -777,6 +786,17 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
         const face = A.info.planes[i][s > 0 ? 0 : 1]; if (face.n < 3) continue;
         const tOv = overlap(end.min[B.thin], end.max[B.thin], face.min[B.thin], face.max[B.thin]), aOv = overlap(end.min[a], end.max[a], face.min[a], face.max[a]);
         if (tOv[1] - tOv[0] < tB * 0.6 || aOv[1] - aOv[0] < 10) continue;
+        // ARKALIK: bağlayıcı yalnız kalın (18) arkalıkla DÜZ birleşimde — birleşimde kanal açılıyorsa (kanallı kenar / derz) atılmaz.
+        if (B.back || A.back) {
+          const bk = B.back ? B : A, other = B.back ? A : B;
+          if (bk.info.size[bk.thin] < BACK_CONNECTOR_MIN_T) continue;
+          const zone: CavityBox = { min: [0, 0, 0], max: [0, 0, 0] };
+          zone.min[i] = c - 1; zone.max[i] = c + 1;
+          zone.min[B.thin] = tOv[0] - 1; zone.max[B.thin] = tOv[1] + 1;
+          zone.min[a] = aOv[0]; zone.max[a] = aOv[1];
+          const solid: CavityBox = { min: other.info.box.min.toArray() as Vec3, max: other.info.box.max.toArray() as Vec3 };
+          if (!other.back && groovesOf(other.p).some(g => boxesCut(g, zone) && boxesCut(g, solid))) continue;
+        }
         const o: Vec3 = [0, 0, 0];
         o[i] = c; o[B.thin] = (end.min[B.thin] + end.max[B.thin]) / 2; o[a] = aSign > 0 ? aOv[0] : aOv[1];
         const length = round1(aOv[1] - aOv[0]);
