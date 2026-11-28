@@ -719,7 +719,7 @@ export interface CavityGrid {
 }
 
 // Eğri panel ızgarada kutu engeli değil katıdır: hücre ancak tamamı katının içindeyse dolu; açıklık katının gerçek yüzeyini okur.
-interface SolidObstacle { id: string; vfId?: string; key: string; bbox: CavityBox; inside: (p: Vec3) => boolean }
+interface SolidObstacle { id: string; vfId?: string; key: string; bbox: CavityBox; inside: (p: Vec3) => boolean; /** mesh + gövde-yerel öteleme (sınır hücreleri için) */ geo?: THREE.BufferGeometry; d?: Vec3 }
 const _solidTests = new WeakMap<THREE.BufferGeometry, (p: Vec3) => boolean>();
 function solidObstacleOf(p: Shape, parent: Shape, bbox: CavityBox): SolidObstacle {
   let test = _solidTests.get(p.geometry);
@@ -730,7 +730,7 @@ function solidObstacleOf(p: Shape, parent: Shape, bbox: CavityBox): SolidObstacl
     for (let a = 0; a < 3; a++) if (q[a] < bbox.min[a] || q[a] > bbox.max[a]) return false;
     return t([q[0] - d[0], q[1] - d[1], q[2] - d[2]]);
   };
-  return { id: p.id, vfId: (p.parameters as any)?.virtualFaceId, key: `${p.id}:${p.geometry.uuid}:${d.map(x => x.toFixed(1)).join(',')}`, bbox, inside };
+  return { id: p.id, vfId: (p.parameters as any)?.virtualFaceId, key: `${p.id}:${p.geometry.uuid}:${d.map(x => x.toFixed(1)).join(',')}`, bbox, inside, geo: p.geometry, d: d as Vec3 };
 }
 const isCurvedBodyPanel = (p: Shape): boolean => !!(p.parameters as any)?.curved;
 
@@ -1096,12 +1096,28 @@ function buildCavityGrid(
   const hit = _gridCache.get(key);
   if (hit) return hit;
 
-  const { groups } = getFacesAndGroups(geo);
+  const { faces, groups } = getFacesAndGroups(geo);
   const px: number[] = [], py: number[] = [], pz: number[] = [];
   let axisFaces = 0;
+  // BİÇİMLİ BAĞLAM: çizimle biçimlenmiş gövde (eğri / eğik yüz) ya da eğri panel — hücreler şekli örneklemeyle izler.
+  const shaped = solids.length > 0 || isShapedBody(parent);
   for (const g of groups) {
     // Eğri yüzün ORTALAMA normali eksene denk gelebilir (simetrik kemer → +Y): düzlem değildir, ızgara düzlemi / kutu gövde sayımı dışı.
-    if (g.isCurved || !isFlatNormal(g.normal)) continue;
+    if (g.isCurved || !isFlatNormal(g.normal)) {
+      // Eğri / eğik gövde yüzünün KAPSAMI ızgara düzlemi olur (yüzün gövdeyi boydan boya geçmediği eksenlerde): yayın / eğimin başladığı
+      // ve bittiği hiza hücre sınırıdır → hacmin düz kısmı ile eğrinin altı ayrı hücreler; boşluğun (çentiğin) iki yanı tek hücrede birleşmez.
+      if (!shaped) continue;
+      const lo: Vec3 = [Infinity, Infinity, Infinity], hi: Vec3 = [-Infinity, -Infinity, -Infinity];
+      for (const fi of g.faceIndices) for (const v of faces[fi].vertices) {
+        const q = [v.x, v.y, v.z];
+        for (let k = 0; k < 3; k++) { if (q[k] < lo[k]) lo[k] = q[k]; if (q[k] > hi[k]) hi[k] = q[k]; }
+      }
+      for (let k = 0; k < 3; k++) {
+        if (!(hi[k] - lo[k] > 1) || (lo[k] <= body.min[k] + 1 && hi[k] >= body.max[k] - 1)) continue;
+        (k === 0 ? px : k === 1 ? py : pz).push(lo[k], hi[k]);
+      }
+      continue;
+    }
     axisFaces++;
     const onX = Math.abs(g.normal.x) > 0.999, onY = Math.abs(g.normal.y) > 0.999;
     (onX ? px : onY ? py : pz).push(onX ? g.center.x : onY ? g.center.y : g.center.z);
@@ -1118,14 +1134,65 @@ function buildCavityGrid(
   if (inside) grid.inside = inside;
   // Hücre gövdenin içinde mi: merkez, değilse 8 iç örnek (eğik üstte büyük hücrenin merkezi dışarıda kalabilir). Kısmen içerideki serbest;
   // eğri panel katısı da aynı kuralla.
+  // BİÇİMLİ BAĞLAMDA hücrenin HERHANGİ bir yerinde serbest nokta varsa hücre serbesttir (bölge gerçek boşluğu EKSİKSİZ örter; fazlasını
+  // açıklık ölçümü, önizleme ve motor gerçek yüzeyle keser). 9 örnek, yayın kestiği büyük hücrenin köşesinde kalan boşluğu kaçırıyordu
+  // (içbükey yay: raf yayın 20 mm gerisinde bitiyordu). Yoğun örnekleme (eksen başına kenarın 0,5 mm içi + çeyrekler + orta, 5³; ilk
+  // serbestte çıkılır) yalnız SINIR hücrelerinde: gövde / eğri panel yüzeyinin içinden geçtiği hücreler. Yüzeyin geçmediği hücre tek
+  // parçadır → merkezi yeter.
   const ptFree = (q: Vec3): boolean => (!inside || inside(q)) && !solids.some(x => x.inside(q));
+  const boundary = shaped && (inside || solids.length) ? new Uint8Array(nx * ny * nz) : null;
+  if (boundary) {
+    const E = 0.01, axes = [xs, ys, zs], cnt = [nx, ny, nz];
+    const mark = (g: THREE.BufferGeometry, d: Vec3) => {
+      const pos = g.getAttribute('position') as THREE.BufferAttribute, idx = g.getIndex(), n = idx ? idx.count : pos.count;
+      const lo: Vec3 = [0, 0, 0], hi: Vec3 = [0, 0, 0], r0 = [0, 0, 0], r1 = [0, 0, 0];
+      for (let t = 0; t + 2 < n; t += 3) {
+        lo[0] = lo[1] = lo[2] = Infinity; hi[0] = hi[1] = hi[2] = -Infinity;
+        for (let v = 0; v < 3; v++) {
+          const vi = idx ? idx.getX(t + v) : t + v, q = [pos.getX(vi) + d[0], pos.getY(vi) + d[1], pos.getZ(vi) + d[2]];
+          for (let a = 0; a < 3; a++) { if (q[a] < lo[a]) lo[a] = q[a]; if (q[a] > hi[a]) hi[a] = q[a]; }
+        }
+        // Üçgen kutusunun İÇİNDEN geçtiği hücre aralığı (hücre yüzüne yalnız değen sayılmaz — eksen yüzleri ızgara düzlemindedir).
+        let ok = true;
+        for (let a = 0; a < 3 && ok; a++) {
+          const pl = axes[a]; let i0 = 0, i1 = cnt[a] - 1;
+          while (i0 <= i1 && !(pl[i0 + 1] > lo[a] + E)) i0++;
+          while (i1 >= i0 && !(pl[i1] < hi[a] - E)) i1--;
+          if (i0 > i1) ok = false;
+          r0[a] = i0; r1[a] = i1;
+        }
+        if (!ok) continue;
+        for (let k = r0[2]; k <= r1[2]; k++) for (let j = r0[1]; j <= r1[1]; j++) for (let i = r0[0]; i <= r1[0]; i++) boundary[(k * ny + j) * nx + i] = 1;
+      }
+    };
+    if (inside) mark(geo, [0, 0, 0]);
+    for (const x of solids) if (x.geo) mark(x.geo, x.d ?? [0, 0, 0]);
+  }
+  const fracs = (lo: number, hi: number): number[] => {
+    const d = hi - lo, e = Math.min(0.5, d / 4);
+    return boundary ? [lo + d / 2, lo + d / 4, hi - d / 4, lo + e, hi - e] : [lo + d / 4, hi - d / 4];
+  };
+  // PANEL KATMANI ARTIĞI: düz panelin ucuna bitişik, onun KALINLIK aralığında kalan sınır hücresi (yan panelin tepesi ile eğimli / eğri
+  // gövde yüzü arasındaki üçgen) hacim sayılmaz — yoksa açıklık yan panelin iç yüzünde değil gövde yüzünde biter, dikme ortadan kayardı.
+  // Yalnız merkezi dolu olup yoğun örneklemeyle serbest çıkan hücreye sorulur.
+  const slabLeftover = (i: number, j: number, k: number): boolean => {
+    const lo = [xs[i], ys[j], zs[k]], hi = [xs[i + 1], ys[j + 1], zs[k + 1]];
+    for (const o of obstacles) {
+      const dim = [0, 1, 2].map(a => o.max[a] - o.min[a]), a = dim.indexOf(Math.min(...dim));
+      if (dim[a] > 60 || lo[a] < o.min[a] - TOL || hi[a] > o.max[a] + TOL) continue;
+      const [b, c] = [0, 1, 2].filter(x => x !== a);
+      for (const [u, v] of [[b, c], [c, b]]) {
+        const abuts = Math.abs(lo[u] - o.max[u]) <= TOL || Math.abs(hi[u] - o.min[u]) <= TOL;
+        if (abuts && Math.min(hi[v], o.max[v]) - Math.max(lo[v], o.min[v]) > TOL) return true;
+      }
+    }
+    return false;
+  };
   const cellInBody = (i: number, j: number, k: number, c: Vec3): boolean => {
     if (!inside && !solids.length) return true;
     if (ptFree(c)) return true;
-    for (const fx of [0.25, 0.75]) for (const fy of [0.25, 0.75]) for (const fz of [0.25, 0.75]) {
-      const q: Vec3 = [xs[i] + (xs[i + 1] - xs[i]) * fx, ys[j] + (ys[j + 1] - ys[j]) * fy, zs[k] + (zs[k + 1] - zs[k]) * fz];
-      if (ptFree(q)) return true;
-    }
+    if (boundary && (!boundary[(k * ny + j) * nx + i] || slabLeftover(i, j, k))) return false;
+    for (const x of fracs(xs[i], xs[i + 1])) for (const y of fracs(ys[j], ys[j + 1])) for (const z of fracs(zs[k], zs[k + 1])) if (ptFree([x, y, z])) return true;
     return false;
   };
   for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
@@ -1452,7 +1519,15 @@ function candidateFamily(
   const regionIsBox = boxes.some(b => !b.derived && b.cells.size === cells.size);
   const shaped = pickFromRegion(g, cells, seed, 'shaped', planes, ray);
   if (!regionIsBox && spansAtLeast(shaped.bbox, minSpan)) out.push(shaped);
-  for (const b of boxes) out.push(pickFromRegion(g, b.cells, seed, 'box', planes, ray));
+  // Biçimli bağlamda açıklık gerçek yüzeyden okunur: hücreleri farklı ama açıklığı aynı adaylar (yayın kestiği hücrenin ince artığı)
+  // kullanıcıya aynı hacimdir → tıklama döngüsünde bir kez sunulur.
+  const fine = !!(g.solids?.length || g.inside);
+  const same = (a: CavityBox, b: CavityBox) => [0, 1, 2].every(k => Math.abs(a.min[k] - b.min[k]) <= 0.5 && Math.abs(a.max[k] - b.max[k]) <= 0.5);
+  for (const b of boxes) {
+    const pick = pickFromRegion(g, b.cells, seed, 'box', planes, ray);
+    if (fine && out.some(o => same(o.bbox, pick.bbox))) continue;
+    out.push(pick);
+  }
   return out;
 }
 

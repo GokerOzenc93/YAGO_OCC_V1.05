@@ -2002,7 +2002,9 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       const hasXform = steps.some((st: any) => st?.type === 'move' || st?.type === 'rotate');
       // BİÇİMLENMİŞ GÖVDE (çizimle eğim / radüs): iç panel ve taşınmış düz panel de gövde katısıyla kesilir (eğik yüzden taşmasın).
       const shaped = !isSheetPanel(panel) && bodyIsShaped(parentFresh);
-      let needsBodyClip = !isRotated && (isInteriorPanel(panel) ? shaped : shaped && hasXform);
+      // Üst üste panel (başka panelin önünde) de: bölgesi gövde yüzünün konturundan gelir, içerideki düzlemde gövde daha dar olabilir (yay).
+      const stacked = !!vf.stackBaseVfId || !!(vf.stackDepth && vf.stackDepth > 0);
+      let needsBodyClip = !isRotated && (isInteriorPanel(panel) ? shaped : shaped && (hasXform || stacked));
       // Arkalık parçası biçimlenmiş gövdede eğimli / radüslü köşeden taşmasın diye gövdeyle kesilir (kapak kesilmez).
       if (isBackPanel(panel) && bodyIsShaped(parentFresh)) needsBodyClip = true;
       // Gövde yüzüne oturma (fitVertsToBodyEdges): taşınmamış / dönmemiş gövde paneli, gövde yüzünün kendi düzleminde.
@@ -2142,13 +2144,17 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       if (!panelHasRotation(panel) && !isSheetPanel(panel) && !isCurved) rp = await cutByRotatedPressers(rp, panel, vf, children.filter(c => !miterJoined(parentFresh, panel, c, vfsIn)), vfsIn, orderOf);
       await shapeRefRotateTargets(rp, panel, vf, children, orderOf, refContacts, updateShape);
       // İÇ İÇE GEÇME KORUMASI: son geçişte, sırada önce üretilen kardeşlerin katısı bu katıdan çıkarılır (gerçek çakışma varsa).
-      if (groove && !isRotated && !isSheetPanel(panel) && !vf.stackBaseVfId) {
+      // Üst üste panel yalnız biçimlenmiş gövdede ve yalnız BÖLGE DAMGALAMAYAN önceki kardeşlerle (eğri panel, eğik yüz paneli) kesilir:
+      // bölge çözümü onları görmez, tek kesişim yeri burası (yoksa yığındaki panel eğri panelin içinden geçiyordu). Tabanı ve öteki
+      // düz kardeşler bölge çözümünde zaten hesaba katılır.
+      if (groove && !isRotated && !isSheetPanel(panel) && (!vf.stackBaseVfId || shaped)) {
         const myIdx = children.findIndex(c => c.id === panel.id);
         const now = useAppStore.getState().shapes;
         // Adımlı panel kendi kurallarıyla; yalnız önce gelen eğri panelle kesilir (eğri panel damgalamadığından tek kesişim yeri).
         const stepped = hasAnySteps(panel);
         const earlier = children.slice(0, Math.max(0, myIdx)).map(c => shapeById(c.id, now))
-          .filter((c): c is Shape => !!c && !isSheetPanel(c) && (!stepped || isCurvedPanel(c)) && !miterJoined(parentFresh, panel, c, vfsIn));
+          .filter((c): c is Shape => !!c && !isSheetPanel(c) && (!stepped || isCurvedPanel(c)) && !miterJoined(parentFresh, panel, c, vfsIn)
+            && (!vf.stackBaseVfId || !panelStampsRegions(c, parentFresh, vfsIn)));
         rp = await cutByEarlierOverlaps(rp, panel, earlier);
       }
 
