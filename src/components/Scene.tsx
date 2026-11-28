@@ -1529,8 +1529,10 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
   const cutIds = useMemo(() => [...(oset.solids ?? []).map(x => x.id), ...oset.tiltFaces.map(x => x.id)], [oset]);
   const refineKey = (p: CavityPick | null) => (p && volumePickMode
     ? `vol|${shape.geometry?.uuid}|${p.boxes.map(b => [...b.min, ...b.max].map(n => n.toFixed(1)).join(',')).join(';')}|${p.seed.map(n => n.toFixed(0)).join(',')}|${cutIds.map(id => shapeById(id, allShapes)?.geometry?.uuid ?? '').join(',')}`
+      // "Biçimi izleyen" eş seçenek: hacme komşu panellerin çizim cepleri eklenir.
+      + (p.fit ? `|fit:${p.fit.ids.map(id => shapeById(id, allShapes)?.geometry?.uuid ?? '').join(',')}:${p.fit.boxes.map(b => [...b.min, ...b.max].map(n => n.toFixed(1)).join(',')).join(';')}` : '')
     : null);
-  const refine = (p: CavityPick | null) => async () => (p ? (await import('./PanelEngine')).refinedVolumeSurface(shape, p.boxes, p.seed, cutIds) : null);
+  const refine = (p: CavityPick | null) => async () => (p ? (await import('./PanelEngine')).refinedVolumeSurface(shape, p.boxes, p.seed, cutIds, p.fit) : null);
   const selectedSoup = useRefinedSoup(refineKey(selected), refine(selected));
   const hoverSoup = useRefinedSoup(hoverIsSelected ? null : refineKey(hoverPick), refine(hoverPick), 180);
   const selectedMesh = useMemo(() => (selected ? (selectedSoup ? soupMesh(selectedSoup) : surfaceMesh(selected.surface)) : null), [selected, selectedSoup]);

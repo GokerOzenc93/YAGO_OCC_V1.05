@@ -47,7 +47,8 @@ export interface VirtualFace {
   touchingSiblingIds?: string[];
   /** Kardeş ayak izine göre değişmez taraf (±1); stored-wins birleşir. */
   sideRelations?: Record<string, number>;
-  /** Açıkken panel serbest bölgenin tam (L/U/çentikli) şeklini alır. */
+  /** Açıkken panel serbest bölgenin tam (L/U/çentikli) şeklini alır ve sırada önce gelen kardeşlerin çizimle açılan boşluklarına uzar
+   *  (PanelEngine.fillSketchPockets). İç panelde (raf / dikme) yalnız ikincisi. */
   fitFaceShape?: boolean;
   /** Eğri yüz paneli: yüzeyin içe kalınlaştırılmışı (PanelEngine.curvedPanelSolid). vertices = kiriş dörtgeni, normal = ortalama, center = tık.
    *  Bölge çözümüne girmez; komşularıyla katı düzeyinde sıraya göre kesişir. */
@@ -285,6 +286,9 @@ export interface CavityPick {
   /** arrow = tıklanan yüzden içeri; axis = dizilim ekseni (raf Y, dikme okun yatay diki); facing = sayım tarafı; at = giriş noktası. */
   axis: 0 | 1 | 2; facing: 1 | -1; at: [number, number, number];
   arrow: { axis: 0 | 1 | 2; facing: 1 | -1 };
+  /** "Biçimi izleyen" seçenek: hacim aynı, üyeler komşu panellerin çizimle açılan boşluklarına uzar (`ids` = o paneller, `boxes` = boşlukların
+   *  bu hacme değen kısmı — yalnız önizleme için). */
+  fit?: { ids: string[]; boxes: CavityBox[] };
 }
 /** RAF / DİKME GRUBU: n panel + n+1 boşluk; hacim her rebuild'de çıpa etrafında yeniden büyütülür, boşluklar kilit kuralıyla dağıtılır. */
 export interface PanelGroup {
@@ -302,6 +306,8 @@ export interface PanelGroup {
   /** Düz kutu alternatifi: kayıtlı kutuya (gövde oranı) en çok örtüşen maksimal kutu. */
   boxMode?: boolean;
   boxFrac?: CavityBox;
+  /** Üyeler "yüzeyin şeklini al" ile doğar (VF.fitFaceShape): komşu panellerin çizimle açılan boşluklarına uzarlar. */
+  fitShape?: boolean;
   count: number;
   gaps: GapSpec[];
   /** HEDEF ARALIK (>0): adet her çözümde açıklıktan türetilir (eşit boşluk hedefe en yakın). Adet/boşluk elle girilince kalkar. */

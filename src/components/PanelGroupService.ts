@@ -4,7 +4,7 @@ import {
   getFacesAndGroups, isFlatNormal, matchReferenceFace, getShapeMatrix, dominantAxisLabel, type FaceData, type CoplanarFaceGroup,
   computeFaceComponentContour, computeFreeRegionLocal, fromPlaneUV, vec3, createFaceDescriptor, createPanelFromVirtualFace, convertReplicadToThreeGeometry,
   type MoveTransformStep, type ExtrudeStep, axisDirToVec, panelBehindStackPlane, clipRegionToRailStrip, toUV, applyRailExt, initReplicad, rebuildBodySolid, createReplicadBoxAt,
-  panelFrontHull, isShapedBody, uniqueMeshPoints, projRange, type EdgeRole, type Pt, cleanPoly, edgeRoles, pointInPoly,
+  panelFrontHull, isShapedBody, uniqueMeshPoints, projRange, type EdgeRole, type Pt, cleanPoly, edgeRoles, pointInPoly, sketchPocketsOf,
 } from './Geometry';
 import {
   type CavityBox, type Shape, type VirtualFace, panelOfVf, type GapSpec, useAppStore, type PanelGroup, type CavityPick, type CavityStep, shapeById,
@@ -716,7 +716,10 @@ export interface CavityGrid {
   tiltFaces?: TiltFace[];
   /** Eğri paneller: kutu değil KATI (mesh içi) olarak sınırlar. */
   solids?: SolidObstacle[];
+  /** Çizim cepleri (çizimle panelden çıkarılan hacmin parça kutuları): hücreleri DEĞİŞTİRMEZ; adaylara "biçimi izleyen" eş seçenek ekler. */
+  pockets?: SketchPocket[];
 }
+export interface SketchPocket { id: string; box: CavityBox }
 
 // Eğri panel ızgarada kutu engeli değil katıdır: hücre ancak tamamı katının içindeyse dolu; açıklık katının gerçek yüzeyini okur.
 interface SolidObstacle { id: string; vfId?: string; key: string; bbox: CavityBox; inside: (p: Vec3) => boolean; /** mesh + gövde-yerel öteleme (sınır hücreleri için) */ geo?: THREE.BufferGeometry; d?: Vec3 }
@@ -1084,7 +1087,7 @@ const hasPlane = (g: CavityGrid, pl: StepPlane) => axisPlanes(g, pl.axis).some(v
 
 function buildCavityGrid(
   parent: Shape, obstacles: CavityBox[], splitBoxes: CavityBox[] = [], tiltFaces: TiltFace[] = [], extraPlanes: StepPlane[] = [],
-  solids: SolidObstacle[] = [],
+  solids: SolidObstacle[] = [], pockets: SketchPocket[] = [],
 ): CavityGrid | null {
   const geo = parent.geometry;
   const body = bodyLocalBox(parent);
@@ -1092,7 +1095,7 @@ function buildCavityGrid(
   const tiltKey = tiltFaces.map(f => `${f.id}:${f.n.map(x => x.toFixed(3)).join(',')}:${f.d.toFixed(1)}`).join(';');
   const planesKey = extraPlanes.map(e => `${e.axis}:${e.coord.toFixed(1)}`).join(',');
   const solidKey = solids.map(x => x.key).join(';');
-  const key = `${geo.uuid}|${boxesKey(obstacles)}|${boxesKey(splitBoxes)}|${tiltKey}|${planesKey}|${solidKey}`;
+  const key = `${geo.uuid}|${boxesKey(obstacles)}|${boxesKey(splitBoxes)}|${tiltKey}|${planesKey}|${solidKey}|${pockets.map(x => x.id).join(',')}:${boxesKey(pockets.map(x => x.box))}`;
   const hit = _gridCache.get(key);
   if (hit) return hit;
 
@@ -1128,7 +1131,7 @@ function buildCavityGrid(
   const ys = uniqSorted(py, body.min[1], body.max[1]);
   const zs = uniqSorted(pz, body.min[2], body.max[2]);
   const nx = xs.length - 1, ny = ys.length - 1, nz = zs.length - 1;
-  const grid: CavityGrid = { body, xs, ys, zs, nx, ny, nz, free: new Uint8Array(nx * ny * nz), obstacles, tiltFaces, ...(solids.length ? { solids } : {}) };
+  const grid: CavityGrid = { body, xs, ys, zs, nx, ny, nz, free: new Uint8Array(nx * ny * nz), obstacles, tiltFaces, ...(solids.length ? { solids } : {}), ...(pockets.length ? { pockets } : {}) };
   // Düz kutu gövdede mesh içi testine gerek yok.
   const inside = groups.length === 6 && axisFaces === 6 ? null : makeInsideMeshTest(geo);
   if (inside) grid.inside = inside;
@@ -1528,7 +1531,25 @@ function candidateFamily(
     if (fine && out.some(o => same(o.bbox, pick.bbox))) continue;
     out.push(pick);
   }
-  return out;
+  // BİÇİMİ İZLEYEN EŞ SEÇENEK: hacme değen çizim cebi varsa (komşu panelde çizimle açılmış boşluk) her adayın hemen ardından aynı hacmin
+  // "üyeler o boşluğa uzar" hâli sunulur. Hacim / açıklık aynıdır (dizilim değişmez); fark üyelerin kenarındadır (VF.fitFaceShape).
+  if (!g.pockets?.length) return out;
+  return out.flatMap(pick => { const fit = pocketsTouching(g.pockets!, pick); return fit ? [pick, { ...pick, key: `${pick.key}+fit`, fit }] : [pick]; });
+}
+/** Adayın kutularına YÜZ YÜZE değen cepler; cep, değdiği kutunun öteki iki eksendeki kapsamına kırpılır (komşu gözün üstü katılmaz). */
+function pocketsTouching(pockets: SketchPocket[], pick: CavityPick): CavityPick['fit'] | null {
+  const ids = new Set<string>(), boxes: CavityBox[] = [], seen = new Set<string>();
+  for (const pk of pockets) for (const b of pick.boxes) for (let a = 0; a < 3; a++) {
+    if (!(Math.abs(pk.box.min[a] - b.max[a]) <= 1 || Math.abs(pk.box.max[a] - b.min[a]) <= 1)) continue;
+    const c = cloneBox(pk.box);
+    let ok = true;
+    for (const o of [0, 1, 2]) if (o !== a) { c.min[o] = Math.max(c.min[o], b.min[o]); c.max[o] = Math.min(c.max[o], b.max[o]); if (c.max[o] - c.min[o] < 1) ok = false; }
+    if (!ok) continue;
+    const k = fmtBox(c);
+    if (!seen.has(k)) { seen.add(k); boxes.push(c); }
+    ids.add(pk.id);
+  }
+  return boxes.length ? { ids: [...ids], boxes } : null;
 }
 
 /** Işın boyunca bölgeler (derinlik sırasıyla) × aday ailesi; sol tık bu listede döner. */
@@ -1897,13 +1918,13 @@ function applyCavityStepsToCells(
   return { cells, planes, resolved };
 }
 
-interface ObstacleSet { obstacles: CavityBox[]; splitBoxes: CavityBox[]; tiltFaces: TiltFace[]; solids?: SolidObstacle[] }
+interface ObstacleSet { obstacles: CavityBox[]; splitBoxes: CavityBox[]; tiltFaces: TiltFace[]; solids?: SolidObstacle[]; pockets?: SketchPocket[] }
 
 /** Düz paneller kutu engeli; eğikler bölme düzlemi + yarım-uzay; eğriler katı. Kapak engel değil; arkalık yalnız `backBox` verirse. */
 export function collectObstacles(
   parent: Shape, panels: Shape[], include: (p: Shape) => boolean = () => true, backBox: (p: Shape) => CavityBox | null = () => null,
 ): ObstacleSet {
-  const obstacles: CavityBox[] = [], splitBoxes: CavityBox[] = [], solids: SolidObstacle[] = [];
+  const obstacles: CavityBox[] = [], splitBoxes: CavityBox[] = [], solids: SolidObstacle[] = [], pockets: SketchPocket[] = [];
   const tilted: Shape[] = [];
   for (const p of panels) {
     if (p.type !== 'panel' || (p.parameters as any)?.parentShapeId !== parent.id) continue;
@@ -1912,6 +1933,11 @@ export function collectObstacles(
     if (!include(p)) continue;
     const b = panelLocalBox(p, parent);
     if (!b) continue;
+    // Çizim cepleri (motorun kaydı): parça kutuları gövde çerçevesinde.
+    for (const pg of sketchPocketsOf(p)) {
+      const pb = localBboxOf(pg);
+      if (pb) pockets.push({ id: p.id, box: toCavityBox(pb.translate(new THREE.Vector3(...[0, 1, 2].map(i => (p.position?.[i] ?? 0) - (parent.position?.[i] ?? 0))))) });
+    }
     if (isCurvedBodyPanel(p)) {
       splitBoxes.push(b); solids.push(solidObstacleOf(p, parent, b));
       // Yayın İÇ sınırı da ızgara düzlemi olur (kutu − kalınlık): yoksa yayın tepesi ile bir alttaki düzlem (düz üst panelin yüzü)
@@ -1931,7 +1957,7 @@ export function collectObstacles(
   }
   // BAZA AYAĞI SETLERİ: yalnız AYAKLAR engeldir, set hacmi değil.
   for (const ps of plinthSetsOf(parent.id)) obstacles.push(...plinthLegBoxes(ps));
-  return { obstacles, splitBoxes, tiltFaces: tiltedPanelFaces(parent, tilted), ...(solids.length ? { solids } : {}) };
+  return { obstacles, splitBoxes, tiltFaces: tiltedPanelFaces(parent, tilted), ...(solids.length ? { solids } : {}), ...(pockets.length ? { pockets } : {}) };
 }
 
 /** Grubun VF sırası = en küçük üye indeksi (üye yoksa ∞: mevcut her panel önce). */
@@ -2012,7 +2038,7 @@ export function repickObstacles(group: PanelGroup, parent: Shape, panels: Shape[
   return groupObstacles(group, parent, panels, useAppStore.getState().panelGroups);
 }
 export const gridForObstacles = (parent: Shape, o: ObstacleSet, extraPlanes: StepPlane[] = []) =>
-  buildCavityGrid(parent, o.obstacles, o.splitBoxes, o.tiltFaces, extraPlanes, o.solids);
+  buildCavityGrid(parent, o.obstacles, o.splitBoxes, o.tiltFaces, extraPlanes, o.solids, o.pockets);
 /** Nokta kutunun içinde mi (sınırlar hariç). */
 const strictlyInside = (c: Vec3, b: CavityBox) =>
   c[0] > b.min[0] && c[0] < b.max[0] && c[1] > b.min[1] && c[1] < b.max[1] && c[2] > b.min[2] && c[2] < b.max[2];
@@ -2217,6 +2243,7 @@ function makeMemberVf(group: PanelGroup, i: number, sol: GroupSolution): Virtual
     normal: g.normal, center: g.center, vertices: g.vertices,
     description: groupName(group), hasPanel: false,
     parentFaceShape: false, interior: true, groupId: group.id, groupIndex: i,
+    ...(group.fitShape ? { fitFaceShape: true } : {}),
     ...({ regionAnchor: g.center } as any),
   };
 }
@@ -2252,6 +2279,7 @@ export function createPanelGroupFromCavity(
     name: name?.trim() || groupKindLabel(kind), cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox), count,
     gaps: equalGaps(L, count, [t]), thickness: t, memberThicknesses: [t], memberVfIds: [], createdAt: Date.now(),
     ...(pick.shape === 'box' ? { boxMode: true, boxFrac: boxFracOf(body, pick.bbox) } : {}),
+    ...(pick.fit ? { fitShape: true } : {}),
     ...extra,
   };
   const sol = solveFromStore(group) || fallbackSolution(group, group.gaps, count, pick.seed);
@@ -2293,14 +2321,23 @@ export async function relocatePanelGroup(groupId: string, pick: CavityPick): Pro
   const patch: Partial<PanelGroup> = {
     axis, facing, arrow, anchorFrac: fracInCavity(body, pick.seed, true), cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox),
     gaps, cavitySteps: undefined, boxMode: pick.shape === 'box', boxFrac: pick.shape === 'box' ? boxFracOf(body, pick.bbox) : undefined,
-    doorBond: undefined,
+    doorBond: undefined, fitShape: pick.fit ? true : undefined,
   };
   const next: PanelGroup = { ...group, ...patch };
   const sol = solveFromStore(next) || fallbackSolution(next, gaps, group.count, pick.seed);
   patchMemberVfs(st, group, next, sol);
+  for (const id of group.memberVfIds) st.updateVirtualFace(id, { fitFaceShape: pick.fit ? true : undefined });
   st.updatePanelGroup(groupId, { ...patch, gaps: sol.gaps });
   await requestRebuild(group.shapeId);
   return true;
+}
+/** Grubun "yüzeyin şeklini al" anahtarı: bütün üyeler komşu panellerin çizimle açılan boşluklarına uzar / uzamaz (yeni üyeler de). */
+export async function setGroupFitShape(groupId: string, on: boolean): Promise<void> {
+  const st = useAppStore.getState(), group = groupById(groupId);
+  if (!group) return;
+  for (const id of group.memberVfIds) st.updateVirtualFace(id, { fitFaceShape: on ? true : undefined });
+  st.updatePanelGroup(groupId, { fitShape: on ? true : undefined });
+  await requestRebuild(group.shapeId);
 }
 
 export function confirmVolumePick(shapeId: string, kind: PanelGroup['kind'], pick: CavityPick): void {

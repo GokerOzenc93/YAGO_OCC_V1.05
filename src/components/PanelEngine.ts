@@ -18,7 +18,7 @@ import {
   createPanelFromVirtualFace, createReplicadBox, createReplicadBoxAt, cutWithTools, deepCopyShape, dot3, errMsg, findFaceByDescriptor,
   fromPlaneUV, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix, halfSpaceSlab, isFlatNormal, localBboxOf, normDeg, panelThickness,
   pointFromFracBox, projRange, resolveVfFracPoint, rotateAboutAxis, round1, round3, spanAlong, toVector3, uniqueMeshPoints, uniquePoints, vec3,
-  vfRawMinAlong, worldBboxOf, keepMainSolid,
+  vfRawMinAlong, worldBboxOf, keepMainSolid, setSketchPockets, solidsOf,
 } from './Geometry';
 import { isInteriorPanel, isInteriorVf, makeInsideMeshTest, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
 import { edgeGapsOf, isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups } from './DoorService';
@@ -423,6 +423,43 @@ function softGrownVerts(parent: Shape, normal: Vec3, verts: Vec3[], t: number): 
     res.push([q.x, q.y, q.z]);
   }
   return res;
+}
+/* ÇİZİM CEBİ — "YÜZEYİN ŞEKLİNİ AL" açık panel, sırada ÖNCE gelen kardeşin çizimle (Drawing › Cut / Shape) açılan boşluğuna uzar.
+   Damga sözleşmesi değişmez: bölge çözümü kardeşi çizim ÖNCESİ iziyle görür (kapalıyken panel kardeşin eski kenarında düz kalır). Açıkken
+   cep katı düzeyinde eklenir: kardeşin çizimle yitirdiği hacmin (çizim öncesi katı − biçim katısı; kanal / delik katılmaz) panelin KENDİ
+   katmanında kalan kısmı, önce gelen öteki kardeşlerle kesilip panele kaynatılır → kenar, kardeşin gerçek (eğik / yay) kesim yüzünü izler.
+   Panele değmeyen cep parçası düşer; panel cebin ötesine (kardeşin öbür yüzünden dışarı) geçmez. */
+const _sketchPockets = new Map<string, { sig: string; uuid: string; rp: Shape3D; pieces: THREE.BufferGeometry[] }>();
+async function fillSketchPockets(rp: Shape3D, panel: Shape, earlier: Shape[], axis: number, near: THREE.Vector3): Promise<Shape3D> {
+  if (!earlier.some(t => _sketchPockets.get(t.id)?.uuid === t.geometry?.uuid)) return rp;
+  const { measureVolume } = await import('replicad');
+  const [lo, hi] = rp.boundingBox.bounds as number[][];
+  let out = rp;
+  for (const t of earlier) {
+    const pk = _sketchPockets.get(t.id);
+    if (!pk || pk.uuid !== t.geometry?.uuid) continue;
+    try {
+      const [plo, phi] = pk.rp.boundingBox.bounds as number[][];
+      // Cep panelin katmanına girmiyor ya da panelin kutusuna değmiyorsa iş yok.
+      if (Math.min(hi[axis], phi[axis]) - Math.max(lo[axis], plo[axis]) < 0.5) continue;
+      if ([0, 1, 2].some(k => k !== axis && (plo[k] > hi[k] + 0.5 || phi[k] < lo[k] - 0.5))) continue;
+      const mn = [plo[0] - 1, plo[1] - 1, plo[2] - 1], mx = [phi[0] + 1, phi[1] + 1, phi[2] + 1];
+      mn[axis] = lo[axis]; mx[axis] = hi[axis];
+      let add = deepCopyShape(pk.rp).intersect(await createReplicadBoxAt(mn, mx)) as Shape3D;
+      const live = () => volOf(measureVolume, add) > 1;
+      for (const c of live() ? earlier : []) {
+        if (c.id === t.id || !c.replicadShape || !c.geometry) continue;
+        if (!boundsOverlapBox(add.boundingBox.bounds, localBboxOf(c.geometry)!)) continue;
+        add = (await robustCut(add, deepCopyShape(c.replicadShape), c.geometry, `${panel.id} cep − ${c.id}`)).rp;
+        if (!live()) break;
+      }
+      if (!live()) continue;
+      const grown = keepMainSolid(deepCopyShape(out).fuse(add) as Shape3D, near);
+      assertBounds(grown);
+      if (measureVolume(grown) > measureVolume(out) + 0.5) out = grown;
+    } catch (err) { console.warn('[YAGO][MOTOR] çizim cebi panele eklenemedi:', panel.id, '←', t.id, errMsg(err)); }
+  }
+  return out;
 }
 export async function cutByEarlierOverlaps(rp: any, panel: Shape, earlier: Shape[]): Promise<any> {
   if (!earlier.length) return rp;
@@ -1449,14 +1486,24 @@ function cutByPanels(rp: any, panels: Shape[]): any {
   return rp;
 }
 /** Hacim adayı: bölge kutuları ∩ gövde − (eğri / eğik sınır panelleri). `cutPanelIds` = ızgaradaki katı + eğik panel kimlikleri. */
-export async function refinedVolumeSurface(parent: Shape, boxes: CavityBox[], seed: Vec3, cutPanelIds: string[]): Promise<Float32Array | null> {
+export async function refinedVolumeSurface(
+  parent: Shape, boxes: CavityBox[], seed: Vec3, cutPanelIds: string[],
+  /** "Biçimi izleyen" seçenek: bu panellerin çizim ceplerinin verilen kutulardaki kısmı hacme eklenir (gerçek kesim yüzüyle). */
+  fit?: { ids: string[]; boxes: CavityBox[] },
+): Promise<Float32Array | null> {
   const cutters = shapingPanels(parent, cutPanelIds);
-  if (!boxes.length || !parent.replicadShape || !previewNeedsRefine(parent, cutters)) return null;
+  const st = useAppStore.getState();
+  const pockets = (fit?.ids ?? []).map(id => ({ pk: _sketchPockets.get(id), p: shapeById(id, st.shapes) })).filter(x => !!x.pk && x.pk.uuid === x.p?.geometry?.uuid).map(x => x.pk!);
+  if (!boxes.length || !parent.replicadShape || !(previewNeedsRefine(parent, cutters) || pockets.length)) return null;
   try {
     let rp: any = null;
     for (const b of boxes) { const x = await createReplicadBoxAt(b.min, b.max); rp = rp ? rp.fuse(x) : x; }
     if (bodyIsShaped(parent)) { const c = await intersectByCut(rp, deepCopyShape(parent.replicadShape)); if (!c) return null; rp = c; }
-    return soupComponentAt(soupOf(cutByPanels(rp, cutters)), seed);
+    rp = cutByPanels(rp, cutters);
+    for (const pk of pockets) for (const b of fit!.boxes) {
+      try { const add = deepCopyShape(pk.rp).intersect(await createReplicadBoxAt(b.min, b.max)); assertBounds(add); rp = rp.fuse(add); } catch { /* bu kutuda cep yok */ }
+    }
+    return soupComponentAt(soupOf(rp), seed);
   } catch (e) { console.warn('[YAGO][MOTOR] hacim önizlemesi inceltilemedi:', errMsg(e)); return null; }
 }
 /** Kapak / arkalık adayı: motorun o levhaya uyguladığı şekillendirmeyle (kapak: ön yüz çevresi − boşluk; arkalık: gövde ∩, panel iç yüzü). */
@@ -2264,6 +2311,13 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
             && (!vf.stackBaseVfId || !panelStampsRegions(c, parentFresh, vfsIn)));
         rp = await cutByEarlierOverlaps(rp, panel, earlier);
       }
+      // "Yüzeyin şeklini al": önce gelen kardeşlerin çizimle açılan boşluklarına uzanır (bkz. fillSketchPockets). Gövde paneli de iç panel de.
+      if (groove && vf.fitFaceShape && !isRotated && !isSheetPanel(panel) && isFlatNormal(vfNormal(vf))) {
+        const myIdx = children.findIndex(c => c.id === panel.id), now = useAppStore.getState().shapes;
+        const earlier = children.slice(0, Math.max(0, myIdx)).map(c => shapeById(c.id, now)).filter((c): c is Shape => !!c && !isSheetPanel(c));
+        const n = vfNormal(vf), k = [0, 1, 2].reduce((m, a) => (Math.abs(n.getComponent(a)) > Math.abs(n.getComponent(m)) ? a : m), 0);
+        rp = await fillSketchPockets(rp, panel, earlier, k, toVector3(vf.center).add(movedBy).addScaledVector(n, -thickness / 2));
+      }
 
       // Son geçiş kesicileri — arkalık kanalı + aksesuar delikleri: yalnız görünüm / katı (kesilmemiş mesh `ungroovedGeometry`).
       // Tek boolean (cutWithTools); aynı mesh + kesiciler için sonuç yeniden kullanılır (_grooveCache). Delik kaydı (Shape.holes) yazılır.
@@ -2389,6 +2443,33 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
           }
         }
         if (shapedGeo && shapedGeo !== geometry) shapedGeo.userData.shapedFor = geometry.uuid;
+      }
+      // ÇİZİM CEBİ kaydı: çizimin bu panelden çıkardığı hacim (çizim öncesi katı − biçim katısı). Sonra gelen "yüzeyin şeklini al" açık
+      // kardeş ona uzar (fillSketchPockets); hacim seçimi de parçalarını okur (Geometry.sketchPocketsOf). Çizim değişmedikçe yeniden kurulmaz.
+      if (groove) {
+        if (!sketched || !sketchArgs) _sketchPockets.delete(panel.id);
+        else {
+          const sig = `${meshSignature(sketchArgs.baseGeo)}|${stepRot.toArray().map(x => x.toFixed(5)).join(',')}|${sketchFeaturesKey(feats)}|${JSON.stringify(sketchArgs.vars)}`;
+          let pk = _sketchPockets.get(panel.id);
+          if (pk && pk.sig === sig) pk.uuid = geometry.uuid;
+          else {
+            pk = undefined; _sketchPockets.delete(panel.id);
+            try {
+              // Biçim katısı: kanal / delik kesilmemiş katıya çizim (kesici yoksa çizimli katının kendisi) → cebe kanal / delik hacmi karışmaz.
+              let shapedSolid: Shape3D | null = sketched.rp;
+              if (grooved) { const res = await applySketchFeatures(rpBare, sketchArgs.baseGeo, feats, stepRot, sketchArgs.vars); shapedSolid = res.applied ? res.shape : null; }
+              const pocket: Shape3D | null = shapedSolid ? deepCopyShape(rpBare).cut(deepCopyShape(shapedSolid)) : null;
+              const { measureVolume } = await import('replicad');
+              if (pocket && volOf(measureVolume, pocket) > 1) {
+                const pieces = solidsOf(pocket).filter(x => volOf(measureVolume, x) > 1).map(x => convertReplicadToThreeGeometry(x));
+                pk = { sig, uuid: geometry.uuid, rp: pocket, pieces };
+                if (_sketchPockets.size > 200) _sketchPockets.clear();
+                _sketchPockets.set(panel.id, pk);
+              }
+            } catch (err) { console.warn('[YAGO][MOTOR] çizim cebi kurulamadı:', panel.id, errMsg(err)); }
+          }
+          if (pk) setSketchPockets(geometry, pk.pieces);
+        }
       }
       const paramPatch: any = {};
       // Uygulanamayan çizim adımları (boş profil, yüz dışında kalan şekil…) panelde işaretlenir → adım listesinde uyarı.

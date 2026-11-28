@@ -713,6 +713,120 @@ function slabInfo(geo: THREE.BufferGeometry | undefined): SlabInfo | null {
   _slabCache.set(geo, info);
   return info;
 }
+/* GERÇEK TEMAS — B'nin uç yüzü ile A'nın geniş yüzünün AYNI DÜZLEMDEKİ kesişimi (iki panelin de biçim ağından: çizimle verilen radüs, pah,
+   çentik dahil). Kapsam aralığı (köşelerin en küçük / en büyük değeri) yüzün İÇİNDEKİ boşluğu görmez: yan panelin köşesine radüs verilince
+   ona dayanan üst panelin ucu önde artık boşa bakar, ama yan panelin yüzü hâlâ "boydan boya" görünürdü → bağlayıcı yerinde kalıyordu.
+   Temas, birleşim çizgisi boyunca TAM olduğu aralıklara bölünür; her aralık kendi boyuyla ayrı dizilir. */
+const _planeTris = new WeakMap<THREE.BufferGeometry, Map<string, Float64Array>>();
+/** Ağın `ax = c` düzlemindeki üçgenleri (üç köşesi de düzlemde), birleşim düzleminin 2B çerçevesinde: [boy, kalınlık] × 3 köşe. */
+function planeTris(geo: THREE.BufferGeometry, ax: number, c: number, a: number, t: number): Float64Array {
+  let m = _planeTris.get(geo);
+  if (!m) { m = new Map(); _planeTris.set(geo, m); }
+  const key = `${ax}:${c.toFixed(2)}:${a}:${t}`, hit = m.get(key);
+  if (hit) return hit;
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute, idx = geo.getIndex(), n = idx ? idx.count : pos.count, out: number[] = [];
+  const P = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+  for (let k = 0; k + 2 < n; k += 3) {
+    let on = true;
+    for (let v = 0; v < 3 && on; v++) {
+      const vi = idx ? idx.getX(k + v) : k + v;
+      P[v * 3] = pos.getX(vi); P[v * 3 + 1] = pos.getY(vi); P[v * 3 + 2] = pos.getZ(vi);
+      // Pay dar: yayın teğetten çıkan ilk şeridi (köşeleri düzleme 0,2 mm) düzlemde sayılırsa temas teğetin ötesine taşar.
+      if (Math.abs(P[v * 3 + ax] - c) > 0.05) on = false;
+    }
+    if (on) for (let v = 0; v < 3; v++) out.push(P[v * 3 + a], P[v * 3 + t]);
+  }
+  const arr = new Float64Array(out);
+  m.set(key, arr);
+  return arr;
+}
+/** Üçgenlerin `boy = x` doğrusundaki kesiti: kalınlık ekseninde birleştirilmiş aralıklar. */
+function sectionAt(tris: Float64Array, x: number): Array<[number, number]> {
+  const iv: Array<[number, number]> = [];
+  for (let k = 0; k + 5 < tris.length; k += 6) {
+    let lo = Infinity, hi = -Infinity;
+    for (let e = 0; e < 3; e++) {
+      const x0 = tris[k + e * 2], y0 = tris[k + e * 2 + 1], x1 = tris[k + ((e + 1) % 3) * 2], y1 = tris[k + ((e + 1) % 3) * 2 + 1];
+      if ((x0 - x) * (x1 - x) > 0 || x0 === x1) continue;
+      const y = y0 + (y1 - y0) * (x - x0) / (x1 - x0);
+      if (y < lo) lo = y; if (y > hi) hi = y;
+    }
+    if (hi > lo) iv.push([lo, hi]);
+  }
+  iv.sort((p, q) => p[0] - q[0]);
+  const out: Array<[number, number]> = [];
+  for (const r of iv) { const last = out[out.length - 1]; if (last && r[0] <= last[1] + 1e-6) last[1] = Math.max(last[1], r[1]); else out.push([r[0], r[1]]); }
+  return out;
+}
+const commonLen = (p: Array<[number, number]>, q: Array<[number, number]>): number => {
+  let s = 0;
+  for (const u of p) for (const w of q) s += Math.max(0, Math.min(u[1], w[1]) - Math.max(u[0], w[0]));
+  return s;
+};
+/** Temasın TAM olduğu aralıklar ([a0, a1] içinde, boy ekseninde). İki yüzün köşe hizaları arasındaki her dilimde temas kalınlığı iki uçta
+ *  ölçülür; kalınlık en büyük temas kalınlığına (0,01 mm payla) eşitse tamdır. Yalnız bir ucu tam olan dilimde (pahın / yayın kalınlık
+ *  bandını kestiği yer köşe değildir) sınır ikiye bölmeyle bulunur. En büyük temas B kalınlığının %60'ından azsa birleşim yok; 10 mm'den
+ *  kısa aralık atılır. */
+function contactIntervals(bTris: Float64Array, aTris: Float64Array, a0: number, a1: number, tB: number): Array<[number, number]> {
+  const cuts = [a0, a1];
+  for (const tr of [bTris, aTris]) for (let k = 0; k < tr.length; k += 2) if (tr[k] > a0 + 0.01 && tr[k] < a1 - 0.01) cuts.push(tr[k]);
+  cuts.sort((p, q) => p - q);
+  const xs: number[] = [];
+  for (const x of cuts) if (!xs.length || x - xs[xs.length - 1] > 0.01) xs.push(x);
+  if (xs.length < 2) return [];
+  const E = 1e-4, covAt = (x: number) => commonLen(sectionAt(bTris, x), sectionAt(aTris, x));
+  const ends: Array<[number, number]> = [];
+  let best = 0;
+  for (let k = 0; k + 1 < xs.length; k++) {
+    const c: [number, number] = [covAt(xs[k] + E), covAt(xs[k + 1] - E)];
+    ends.push(c);
+    best = Math.max(best, c[0], c[1]);
+  }
+  if (best < tB * 0.6) return [];
+  const thr = best - 0.01, out: Array<[number, number]> = [];
+  const add = (lo: number, hi: number) => {
+    if (hi - lo < 0.011) return;
+    const last = out[out.length - 1];
+    if (last && Math.abs(last[1] - lo) < 0.011) last[1] = hi; else out.push([lo, hi]);
+  };
+  for (let k = 0; k < ends.length; k++) {
+    const f0 = ends[k][0] >= thr, f1 = ends[k][1] >= thr;
+    if (f0 && f1) { add(xs[k], xs[k + 1]); continue; }
+    if (!f0 && !f1) continue;
+    // Tam uçtan öbür uca: temasın tam kaldığı son nokta (köşe hizasına 0,5 mm'den yakınsa o hizaya oturur — teğet yayın başlangıcı).
+    let full = f0 ? xs[k] + E : xs[k + 1] - E, part = f0 ? xs[k + 1] - E : xs[k] + E;
+    for (let it = 0; it < 40 && Math.abs(part - full) > 1e-3; it++) { const m = (full + part) / 2; if (covAt(m) >= thr) full = m; else part = m; }
+    if (f0) add(xs[k], full - xs[k] < 0.5 ? xs[k] : full); else add(xs[k + 1] - full < 0.5 ? xs[k + 1] : full, xs[k + 1]);
+  }
+  return out.filter(r => r[1] - r[0] >= 10);
+}
+/* KUTUNUN İÇİNDEKİ UÇ YÜZÜ: basamaklı uç — "yüzeyin şeklini al" ile komşunun çizim boşluğuna uzamış panelde (dil) asıl dayanma yüzü kutu
+   düzleminde değil dilin dibindedir. `ax = c` düzleminde, dış yönü `s` olan üçgenlerin köşe kapsamı (slabInfo'nun kutu düzlemi kaydıyla eş). */
+const _endAt = new WeakMap<THREE.BufferGeometry, Map<string, Range3>>();
+function endRangeAt(geo: THREE.BufferGeometry, ax: number, c: number, s: number): Range3 {
+  let m = _endAt.get(geo);
+  if (!m) { m = new Map(); _endAt.set(geo, m); }
+  const key = `${ax}:${c.toFixed(2)}:${s}`, hit = m.get(key);
+  if (hit) return hit;
+  const r: Range3 = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity], n: 0 };
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute, idx = geo.getIndex(), n = idx ? idx.count : pos.count;
+  const P = [0, 0, 0, 0, 0, 0, 0, 0, 0], u = (ax + 1) % 3, w = (ax + 2) % 3;
+  for (let k = 0; k + 2 < n; k += 3) {
+    let on = true;
+    for (let v = 0; v < 3 && on; v++) {
+      const vi = idx ? idx.getX(k + v) : k + v;
+      P[v * 3] = pos.getX(vi); P[v * 3 + 1] = pos.getY(vi); P[v * 3 + 2] = pos.getZ(vi);
+      if (Math.abs(P[v * 3 + ax] - c) > 0.05) on = false;
+    }
+    if (!on) continue;
+    // Üçgenin dış yönü (sarım): yalnız `s` yönüne bakan yüz uçtur (aynı düzlemdeki ters yüz — çentik tavanı — sayılmaz).
+    const nrm = (P[3 + u] - P[u]) * (P[6 + w] - P[w]) - (P[3 + w] - P[w]) * (P[6 + u] - P[u]);
+    if (nrm * s <= 0) continue;
+    for (let v = 0; v < 3; v++) { r.n++; for (let q = 0; q < 3; q++) { const x = P[v * 3 + q]; if (x < r.min[q]) r.min[q] = x; if (x > r.max[q]) r.max[q] = x; } }
+  }
+  m.set(key, r);
+  return r;
+}
 const unit = (axis: number, sign: number): Vec3 => { const v: Vec3 = [0, 0, 0]; v[axis] = sign; return v; };
 const overlap = (a0: number, a1: number, b0: number, b1: number): [number, number] => [Math.max(a0, b0), Math.min(a1, b1)];
 /** B yüzü işlemlerinin varsayılan tarafı = GÖRÜNMEYEN yüz: üst panel / üst kayıtta üst · öteki yataylarda alt · önsel panellerde arka;
@@ -741,7 +855,7 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
       // Kalınlık ekseni: VF normali (dar şeritte en küçük ölçü kalınlık olmayabilir); belirsizse en küçük ölçü.
       const na = vf.normal.map(Math.abs), byN = na.indexOf(Math.max(...na));
       const thin = na[byN] > 0.9 ? byN : info.size.indexOf(Math.min(...info.size));
-      return { p, vf, info, thin, uuid: geo!.uuid, type: panelTypeOf(vf, st), back: !!vf.backGroupId };
+      return { p, vf, info, thin, geo: geo!, uuid: geo!.uuid, type: panelTypeOf(vf, st), back: !!vf.backGroupId };
     }).filter((x): x is NonNullable<typeof x> => !!x);
   // Arkalık kanalları (panel başına bir kez): kanal açılan birleşime bağlayıcı atılmaz.
   const grooves = new Map<string, CavityBox[]>();
@@ -770,9 +884,8 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
       const list = rulesIn(edges, role).flatMap(rule => (panelEdgeSetOf(B.vf, role, rule.group!, st)?.lines ?? [])
         .map(line => ({ rule, line, conn: st.connectors.find(c => c.id === line.connectorId) }))).filter(x => !!x.conn);
       if (!list.length) continue;
-      const end = B.info.planes[i][s > 0 ? 1 : 0]; if (end.n < 3) continue;
-      const c = s > 0 ? B.info.box.max.getComponent(i) : B.info.box.min.getComponent(i), a = [0, 1, 2].find(k => k !== i && k !== B.thin)!;
-      const tB = end.max[B.thin] - end.min[B.thin];
+      const end0 = B.info.planes[i][s > 0 ? 1 : 0];
+      const c0 = s > 0 ? B.info.box.max.getComponent(i) : B.info.box.min.getComponent(i), a = [0, 1, 2].find(k => k !== i && k !== B.thin)!;
       // Dizilim yönü: kenarın bitiş ucunun rolüne bakan eksen yönü (derinlikte önden arkaya …).
       const endRole = EDGE_ENDS[plane][role]?.[1];
       const aSign = roleOfDir(body, unit(a, 1), st, ec) === endRole ? 1 : roleOfDir(body, unit(a, -1), st, ec) === endRole ? -1 : 1;
@@ -782,7 +895,14 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
       for (const A of slabs) {
         if (A === B || A.thin !== i) continue;
         const faceAt = s > 0 ? A.info.box.min.getComponent(i) : A.info.box.max.getComponent(i);
-        if (Math.abs(faceAt - c) > 0.6) continue;
+        // B'nin ucu kutu düzlemindedir; A'nın yüzü B'nin kutusunun İÇİNDEYSE (basamaklı uç: dil komşunun boşluğuna uzamış) o düzlemdeki uç yüzü.
+        let end = end0, c = c0;
+        if (Math.abs(faceAt - c0) > 0.6) {
+          if (!(faceAt > B.info.box.min.getComponent(i) + 0.6 && faceAt < B.info.box.max.getComponent(i) - 0.6)) continue;
+          end = endRangeAt(B.geo, i, faceAt, s); c = faceAt;
+        }
+        if (end.n < 3) continue;
+        const tB = end.max[B.thin] - end.min[B.thin];
         const face = A.info.planes[i][s > 0 ? 0 : 1]; if (face.n < 3) continue;
         const tOv = overlap(end.min[B.thin], end.max[B.thin], face.min[B.thin], face.max[B.thin]), aOv = overlap(end.min[a], end.max[a], face.min[a], face.max[a]);
         if (tOv[1] - tOv[0] < tB * 0.6 || aOv[1] - aOv[0] < 10) continue;
@@ -797,17 +917,22 @@ export function bodyJoints(bodyId: string, st: St = useAppStore.getState()): Pan
           const solid: CavityBox = { min: other.info.box.min.toArray() as Vec3, max: other.info.box.max.toArray() as Vec3 };
           if (!other.back && groovesOf(other.p).some(g => boxesCut(g, zone) && boxesCut(g, solid))) continue;
         }
-        const o: Vec3 = [0, 0, 0];
-        o[i] = c; o[B.thin] = (end.min[B.thin] + end.max[B.thin]) / 2; o[a] = aSign > 0 ? aOv[0] : aOv[1];
-        const length = round1(aOv[1] - aOv[0]);
-        for (const { rule, line, conn } of list) {
-          if (!lineApplies(line, length)) continue;
-          const positions = linePositions(line, length); if (!positions.length) continue;
-          joints.push({
-            key: `${B.p.id}|${role}|${A.p.id}|${line.id}`, bId: B.p.id, aId: A.p.id, connector: conn!, o, along: unit(a, aSign), nIn: unit(i, -s),
-            t: unit(B.thin, hidden * (panelEdgeFlip(B.vf, role, !!rule.flipFace, st) ? -1 : 1)), length, tB: round1(tB), tA: round1(A.info.size[i]), positions,
-          });
-        }
+        // Gerçek temas aralıkları (iki panelin biçiminden); her aralık kendi başlangıcından, kendi boyuyla dizilir. Dizilim yönünde sıralı.
+        const ivs = contactIntervals(planeTris(B.geo, i, c, a, B.thin), planeTris(A.geo, i, faceAt, a, B.thin), aOv[0], aOv[1], tB);
+        if (aSign < 0) ivs.reverse();
+        ivs.forEach((iv, n) => {
+          const o: Vec3 = [0, 0, 0];
+          o[i] = c; o[B.thin] = (end.min[B.thin] + end.max[B.thin]) / 2; o[a] = aSign > 0 ? iv[0] : iv[1];
+          const length = round1(iv[1] - iv[0]);
+          for (const { rule, line, conn } of list) {
+            if (!lineApplies(line, length)) continue;
+            const positions = linePositions(line, length); if (!positions.length) continue;
+            joints.push({
+              key: `${B.p.id}|${role}|${A.p.id}|${line.id}${n ? `~${n}` : ''}`, bId: B.p.id, aId: A.p.id, connector: conn!, o, along: unit(a, aSign), nIn: unit(i, -s),
+              t: unit(B.thin, hidden * (panelEdgeFlip(B.vf, role, !!rule.flipFace, st) ? -1 : 1)), length, tB: round1(tB), tA: round1(A.info.size[i]), positions,
+            });
+          }
+        });
       }
     }
   }

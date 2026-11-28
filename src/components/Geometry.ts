@@ -2666,6 +2666,22 @@ function groupSamplePoints(faces: FaceData[], group: CoplanarFaceGroup, step = 1
   }
   return out;
 }
+/** Katının parçaları (tek parçalıysa kendisi). */
+export function solidsOf<T>(shape: T): T[] {
+  try {
+    const list = Array.from(iterTopo((shape as unknown as Shape3D).wrapped, 'solid')).map(s => cast(s) as unknown as T);
+    return list.length ? list : [shape];
+  } catch { return [shape]; }
+}
+/* ÇİZİM CEBİ: çizimin (Drawing › Cut / Shape) panelden ÇIKARDIĞI hacim, parça parça (ağ; panel geometrisinin çerçevesinde). Motor son
+   geçişte yazar, anahtar panelin SON geometrisidir (geometri değişince kayıt kendiliğinden düşer). Hacim seçimi okur: çizimli panele dayanan
+   hacmin "biçimi izleyen" seçeneği (PanelGroupService.candidateFamily). */
+const _sketchPocketMeshes = new WeakMap<THREE.BufferGeometry, THREE.BufferGeometry[]>();
+export function setSketchPockets(finalGeo: THREE.BufferGeometry, pieces: THREE.BufferGeometry[]): void { _sketchPocketMeshes.set(finalGeo, pieces); }
+export function sketchPocketsOf(panel: { geometry?: THREE.BufferGeometry } | null | undefined): THREE.BufferGeometry[] {
+  const g = panel?.geometry;
+  return (g && _sketchPocketMeshes.get(g)) || [];
+}
 /** Çok parçalı katıdan tek parça: `near` verilirse kutusu o noktaya en yakın olan (eşitlikte büyük hacim), verilmezse en büyük hacimli.
  *  Tek parçalıysa katının kendisi. Eğri yüzeyle kesimden / uzatmadan sonra öte yanda kalan kopuk artık atılır. */
 export function keepMainSolid<T>(shape: T, near?: THREE.Vector3): T {

@@ -41,7 +41,7 @@ import {
   renamePanelGroup, deletePanelGroupWithMembers, setGroupCount, startCavityEdit, startGroupRepick, setGroupTargetGap, equalizeGroupGaps,
   previewGroupGap, editGroupGap, toggleGroupGapLock, groupLayoutSnapshot, restoreGroupLayout, type GroupLayoutSnap, previewGroupMemberThickness,
   setGroupMemberThickness, applyQuickBody, quickBodyOf, quickBodyVfsOf, removeQuickBody, quickLegsOf, lockedCorners, railCountOf, railBackRelOf, facePartCountOf, railPassesPanel,
-  panelEdgeValue, panelEdgeLimits, backRefOf,
+  panelEdgeValue, panelEdgeLimits, backRefOf, setGroupFitShape,
 } from './PanelGroupService';
 import { confirmBodyPanelPlacement } from './Scene';
 import {
@@ -201,11 +201,16 @@ function RowToggle({ checked, disabled, onToggle, icon: Icon, title }: TogglePro
     </button>
   );
 }
-/* "Yüzeyin şeklini al": AÇIK → panel serbest bölgenin tam şeklini alır (L/U/çentik); KAPALI → kardeş kenarında düz kesilir. */
-export const FitShapeToggle = (p: ToggleProps) => (
-  <RowToggle {...p} icon={Shapes} title={p.checked
-    ? 'Fit to face shape: ON — the panel takes the full shape of its free region (L / U / notch). Click to cut straight at siblings.'
-    : 'Fit to face shape: OFF — the panel is cut straight at the sibling edge. Click to follow the free region\'s full shape.'} />
+/* "Yüzeyin şeklini al": AÇIK → panel serbest bölgenin tam şeklini alır (L/U/çentik) ve önce gelen komşuların çizimle (Drawing › Cut / Shape)
+   açılan boşluklarına uzar; KAPALI → kardeş kenarında düz kesilir. İç panelde (raf / dikme, `interior`) yalnız çizim boşlukları. */
+export const FitShapeToggle = ({ interior, ...p }: ToggleProps & { interior?: boolean }) => (
+  <RowToggle {...p} icon={Shapes} title={interior
+    ? (p.checked
+      ? 'Fit to face shape: ON — the panels of this group extend into the cut-outs drawn on the neighbouring panels. Click to end them at the neighbour\'s straight edge.'
+      : 'Fit to face shape: OFF — the panels end at the neighbour\'s straight edge. Click to extend them into the cut-outs drawn on the neighbouring panels.')
+    : (p.checked
+      ? 'Fit to face shape: ON — the panel takes the full shape of its free region (L / U / notch) and extends into the cut-outs drawn on the neighbouring panels. Click to cut straight at siblings.'
+      : 'Fit to face shape: OFF — the panel is cut straight at the sibling edge. Click to follow the free region\'s full shape, including cut-outs drawn on the neighbouring panels.')} />
 );
 export const DoorRefToggle = (p: ToggleProps) => (
   <RowToggle {...p} icon={DoorClosed} title={p.checked ? 'Door reference: ON — doors are built from this panel\'s edges' : 'Mark as door reference'} />
@@ -2443,7 +2448,7 @@ export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
       <PlacementDock tag={reloc ? `RELOCATE · ${groupName(reloc).toUpperCase()}` : kind.toUpperCase()} defaultName={kind} showName={!reloc} ready={ready}
         status={!shape ? noShape
           : n === 0 ? (reloc ? 'Click the new volume (only panels before this group bound it)' : 'Click inside a volume in the 3D view')
-          : `Volume ${volumePickIndex + 1}/${n} · ${cur?.shape === 'box' ? 'Box' : 'Shaped'} — click: next · right-click: ${reloc ? 'relocate' : 'place'}`}
+          : `Volume ${volumePickIndex + 1}/${n} · ${cur?.shape === 'box' ? 'Box' : 'Shaped'}${cur?.fit ? ' · follows drawn cut-outs' : ''} — click: next · right-click: ${reloc ? 'relocate' : 'place'}`}
         roles={reloc ? null : (() => { const r = surfaceRuleOf(mode); return { options: r.allowed, auto: r.def }; })()}
         onConfirm={() => { if (ready && shape) confirmVolumePick(shape.id, mode, volumePickCandidates[volumePickIndex]); }}
         onExit={() => setVolumePickMode(null)} confirmTitle={reloc ? 'Relocate group to this volume' : `Place ${kind.toLowerCase()}`} />
@@ -3254,8 +3259,9 @@ export function AssemblyPanel() {
         dims: <RowDims w={dims?.primary} h={dims?.secondary} t={dims?.thickness} tLetter="T" />,
         trailW: member ? ROW_TRAIL_W - MEMBER_INSET : ROW_TRAIL_W,
         trail: <>
-          {/* İç panelde (raf/dikme) serbest bölge yok → fit-shape gösterilmez. */}
-          {!member && <FitShapeToggle checked={!!vf.fitFaceShape} disabled={noPanel} onToggle={() => { void toggleFitShape(vf); }} />}
+          {/* Raf / dikme üyesinde anahtar GRUBUNDUR (bütün üyeler birlikte): komşu panellerin çizim boşluklarına uzanır. Kapak / arkalıkta yok. */}
+          {!member ? <FitShapeToggle checked={!!vf.fitFaceShape} disabled={noPanel} onToggle={() => { void toggleFitShape(vf); }} />
+            : group ? <FitShapeToggle interior checked={!!vf.fitFaceShape} disabled={noPanel} onToggle={() => { void setGroupFitShape(group.id, !vf.fitFaceShape); }} /> : null}
           {slab ? <span className={ROW_SPACER} />
             : <DoorRefToggle checked={!!vf.doorBound} disabled={noPanel} onToggle={() => setVfDoorBound(vf.id, !vf.doorBound)} />}
           {slab ? <span className={ROW_SPACER} />
